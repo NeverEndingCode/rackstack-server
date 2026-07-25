@@ -47,6 +47,10 @@ export function upsertUser({ provider, providerId, username, avatarUrl }) {
   return user;
 }
 
+export function getUserById(id) {
+  return db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+}
+
 export function getSave(userId) {
   return db.prepare('SELECT * FROM saves WHERE user_id = ?').get(userId);
 }

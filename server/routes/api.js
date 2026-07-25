@@ -1,7 +1,7 @@
 import express from 'express';
 import passport from 'passport';
 import { requireAuth, issueToken, COOKIE_NAME } from '../auth.js';
-import { getSave, putSave, deleteSave } from '../db.js';
+import { getSave, putSave, deleteSave, getUserById } from '../db.js';
 import { applyOfflineProgress } from '../gameLogic.js';
 
 const router = express.Router();
@@ -39,7 +39,13 @@ router.post('/auth/logout', (req, res) => {
 });
 
 router.get('/api/me', requireAuth, (req, res) => {
-  res.json({ id: req.user.sub, username: req.user.username, avatarUrl: req.user.avatarUrl });
+  const dbUser = getUserById(req.user.sub);
+  res.json({
+    id: req.user.sub,
+    username: req.user.username,
+    avatarUrl: req.user.avatarUrl,
+    memberSince: dbUser ? dbUser.created_at : null,
+  });
 });
 
 // Loads the save, applies any offline production since last_save (capped at
