@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
+import { randomUUID } from 'node:crypto';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -30,12 +31,85 @@ db.exec(`
   );
 `);
 
+// Guarded ALTERs: SQLite has no "ADD COLUMN IF NOT EXISTS", so on every boot
+// we attempt the ALTER and swallow only the "duplicate column name" error
+// (the column already exists from a prior boot) - anything else rethrows.
+function guardedAddColumn(sql) {
+  try {
+    db.exec(sql);
+  } catch (err) {
+    if (!/duplicate column name/i.test(err.message)) throw err;
+  }
+}
+
+guardedAddColumn("ALTER TABLE users ADD COLUMN roles TEXT DEFAULT '[]'");
+guardedAddColumn('ALTER TABLE users ADD COLUMN custom_username INTEGER DEFAULT 0');
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS config (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    version INTEGER NOT NULL,
+    data TEXT NOT NULL,
+    updated_at INTEGER NOT NULL,
+    updated_by TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS config_history (
+    version INTEGER NOT NULL,
+    data TEXT NOT NULL,
+    updated_at INTEGER NOT NULL,
+    updated_by TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS minigame_sessions (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    game TEXT NOT NULL,
+    started_at INTEGER NOT NULL,
+    finished_at INTEGER,
+    score INTEGER
+  );
+`);
+
+// Duplicate usernames (case-insensitively) can exist from before the unique
+// index below was introduced. Must run before the CREATE UNIQUE INDEX or
+// that statement would fail on any pre-existing collision. No-op when there
+// are no duplicates, so it's cheap to run unconditionally on every boot.
+export function dedupeUsernames() {
+  const rows = db.prepare(
+    'SELECT id, username, created_at FROM users WHERE username IS NOT NULL ORDER BY created_at ASC, id ASC',
+  ).all();
+  const taken = new Set();
+  for (const row of rows) {
+    const lower = row.username.toLowerCase();
+    if (!taken.has(lower)) {
+      taken.add(lower);
+      continue;
+    }
+    let n = 2;
+    let candidate = `${row.username}-${n}`;
+    while (taken.has(candidate.toLowerCase())) {
+      n += 1;
+      candidate = `${row.username}-${n}`;
+    }
+    db.prepare('UPDATE users SET username = ? WHERE id = ?').run(candidate, row.id);
+    taken.add(candidate.toLowerCase());
+  }
+}
+
+dedupeUsernames();
+
+db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username COLLATE NOCASE)');
+
 export function upsertUser({ provider, providerId, username, avatarUrl }) {
   const id = `${provider}:${providerId}`;
   const existing = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
   if (existing) {
-    db.prepare('UPDATE users SET username = ?, avatar_url = ? WHERE id = ?').run(username, avatarUrl, id);
-    return { ...existing, username, avatar_url: avatarUrl };
+    // A user who has set a custom username keeps it on re-login; only the
+    // avatar (which the user doesn't control) is refreshed from the profile.
+    const nextUsername = existing.custom_username ? existing.username : username;
+    db.prepare('UPDATE users SET username = ?, avatar_url = ? WHERE id = ?').run(nextUsername, avatarUrl, id);
+    return { ...existing, username: nextUsername, avatar_url: avatarUrl };
   }
   const user = {
     id, provider, provider_id: providerId, username, avatar_url: avatarUrl, created_at: Date.now(),
@@ -74,4 +148,96 @@ export function putSave(userId, data, lastSave) {
 
 export function deleteSave(userId) {
   db.prepare('DELETE FROM saves WHERE user_id = ?').run(userId);
+}
+
+/**
+ * Roles are stored as a JSON array string in users.roles (default '[]').
+ * Membership in the array is the only thing that matters - ordering and
+ * duplicates are not deduped here; callers (server/auth.js, Task 8) treat
+ * this as a plain set.
+ */
+export function getRoles(userId) {
+  const row = db.prepare('SELECT roles FROM users WHERE id = ?').get(userId);
+  if (!row || !row.roles) return [];
+  try {
+    return JSON.parse(row.roles);
+  } catch (e) {
+    return [];
+  }
+}
+
+export function setRoles(userId, roles) {
+  db.prepare('UPDATE users SET roles = ? WHERE id = ?').run(JSON.stringify(roles), userId);
+}
+
+/**
+ * Sets a user's username, format-agnostic (the route layer owns the regex).
+ * Performs its own case-insensitive availability check excluding the user
+ * themself, and marks the username as user-chosen so upsertUser stops
+ * overwriting it from the OAuth profile on future logins.
+ */
+export function setUsername(userId, name) {
+  const collision = db.prepare(
+    'SELECT id FROM users WHERE username = ? COLLATE NOCASE AND id != ?',
+  ).get(name, userId);
+  if (collision) return { ok: false, error: 'taken' };
+  db.prepare('UPDATE users SET username = ?, custom_username = 1 WHERE id = ?').run(name, userId);
+  return { ok: true };
+}
+
+export function createMinigameSession(userId, game) {
+  const session = {
+    id: randomUUID(),
+    user_id: userId,
+    game,
+    started_at: Date.now(),
+    finished_at: null,
+    score: null,
+  };
+  db.prepare(`
+    INSERT INTO minigame_sessions (id, user_id, game, started_at, finished_at, score)
+    VALUES (@id, @user_id, @game, @started_at, @finished_at, @score)
+  `).run(session);
+  return session;
+}
+
+export function getMinigameSession(id) {
+  return db.prepare('SELECT * FROM minigame_sessions WHERE id = ?').get(id);
+}
+
+export function finishMinigameSession(id, score) {
+  db.prepare('UPDATE minigame_sessions SET finished_at = ?, score = ? WHERE id = ?').run(Date.now(), score, id);
+}
+
+/**
+ * Returns the singleton config row (id=1): { id, version, data, updated_at,
+ * updated_by }, or undefined if no config has been seeded yet. `data` is
+ * returned as the raw JSON text exactly as stored - mirroring getSave's
+ * convention, callers JSON.parse it themselves.
+ */
+export function getConfigRow() {
+  return db.prepare('SELECT * FROM config WHERE id = 1').get();
+}
+
+/**
+ * Upserts the singleton config row (id=1) to `{ version, data, userId }`
+ * and appends a matching row to config_history for audit/rollback. `data`
+ * is a plain JS object; it is JSON.stringify'd here (the same convention
+ * putSave uses) - callers never pass pre-stringified JSON.
+ */
+export function putConfigRow(version, data, userId) {
+  const text = JSON.stringify(data);
+  const now = Date.now();
+  db.prepare(`
+    INSERT INTO config (id, version, data, updated_at, updated_by) VALUES (1, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET version = excluded.version, data = excluded.data,
+      updated_at = excluded.updated_at, updated_by = excluded.updated_by
+  `).run(version, text, now, userId);
+  db.prepare(`
+    INSERT INTO config_history (version, data, updated_at, updated_by) VALUES (?, ?, ?, ?)
+  `).run(version, text, now, userId);
+}
+
+export function getConfigHistory() {
+  return db.prepare('SELECT * FROM config_history ORDER BY rowid DESC').all();
 }
