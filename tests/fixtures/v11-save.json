@@ -1,0 +1,22 @@
+{
+  "run": {
+    "credits": 123,
+    "lifetimeRun": 5000,
+    "tiers": [{ "id": 0, "owned": 5, "manager": true, "ready": 0 }],
+    "grid": [],
+    "overclock": [],
+    "heat": 40
+  },
+  "meta": {
+    "legacyCores": 1,
+    "wafers": 7,
+    "level": 2,
+    "xp": 10,
+    "goalsCompleted": { "g1": true },
+    "upgrades": { "firmware": 2 },
+    "shardUpgrades": {},
+    "repeatable": {},
+    "singularityShards": 0,
+    "stats": { "migrates": 1, "minigamesWon": 3, "singularities": 0, "totalWafersEarned": 20 }
+  }
+}
