@@ -51,6 +51,16 @@ export function getUserById(id) {
   return db.prepare('SELECT * FROM users WHERE id = ?').get(id);
 }
 
+export function getAllUsersWithSaves() {
+  return db.prepare(`
+    SELECT u.id, u.provider, u.username, u.avatar_url, u.created_at,
+           s.data, s.last_save
+    FROM users u
+    LEFT JOIN saves s ON s.user_id = u.id
+    ORDER BY u.created_at DESC
+  `).all();
+}
+
 export function getSave(userId) {
   return db.prepare('SELECT * FROM saves WHERE user_id = ?').get(userId);
 }

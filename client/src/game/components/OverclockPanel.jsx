@@ -17,7 +17,7 @@ export default function OverclockPanel({ run, overclockMult, thresholds, onBuy, 
         </div>
         {run.heat > 80 && !onCooldown && (
           <div className="text-xs mt-1 flex items-center gap-1" style={{ color: danger }}>
-            <AlertTriangle size={12} /> Meltdown risk &mdash; vent now, or you'll lose half your Overclock nodes
+            <AlertTriangle size={12} /> Overheating risk &mdash; vent now to avoid a mandatory cooldown
           </div>
         )}
         {onCooldown && (
@@ -30,7 +30,7 @@ export default function OverclockPanel({ run, overclockMult, thresholds, onBuy, 
         </button>
       </div>
       <div className="rounded-lg p-3 text-xs" style={{ background: cardBg, border: `1px solid ${cardBorder}`, color: textDim }}>
-        Overclock nodes run on their own like the Grid, but generate heat. Let it hit 100% and half your nodes melt down, freezing the lane for 10s. Keep venting.
+        Overclock nodes run on their own like the Grid, but generate heat. Let it hit 100% and the lane freezes for 10s while it cools down - no nodes are ever lost. Keep venting to avoid the lockout.
       </div>
       {OVERCLOCK_DEFS.map((def, i) => {
         const o = run.overclock[i];

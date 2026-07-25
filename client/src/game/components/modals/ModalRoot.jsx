@@ -5,7 +5,7 @@ import SingularityConfirmModal from './SingularityConfirmModal.jsx';
 import ResetConfirmModal from './ResetConfirmModal.jsx';
 import ResetTypeConfirmModal from './ResetTypeConfirmModal.jsx';
 
-const NON_DISMISSIBLE = ['migrate', 'reset', 'resetConfirmType', 'singularity'];
+const NON_DISMISSIBLE = ['migrate', 'reset', 'resetConfirmType', 'singularity', 'minigameResult'];
 const MESSAGE_TYPES = ['welcome', 'eventClaim', 'minigameResult', 'goalClaim', 'levelUp', 'singularityDone', 'meltdown'];
 
 export default function ModalRoot({ modal, setModal, meta, gain, singularityGain, onMigrate, onSingularity, onHardReset }) {

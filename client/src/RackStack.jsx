@@ -174,8 +174,8 @@ export default function RackStack({ user }) {
           const netHeat = heatGain - eff.autoVentPerSec;
           newHeat = Math.min(100, Math.max(0, prev.heat + netHeat * dt));
           if (newHeat >= 100) {
+            // Overheating never destroys nodes - it just forces the cooldown.
             meltdown = true;
-            overclock = prev.overclock.map((o) => ({ ...o, owned: Math.floor(o.owned * 0.5) }));
             newHeat = 0;
             heatCooldownUntil = now + HEAT_COOLDOWN_MS;
           }
@@ -354,6 +354,7 @@ export default function RackStack({ user }) {
     setRun({ ...initialRun(), credits: startCredits });
     setMeta((prev) => ({ ...prev, legacyCores: prev.legacyCores + gain + echoBonus, stats: { ...prev.stats, migrates: prev.stats.migrates + 1 } }));
     setModal(null);
+    setActiveTab('racks');
   }
   function doSingularity() {
     const shardsGained = Math.floor(Math.sqrt(meta.legacyCores));
@@ -556,6 +557,7 @@ export default function RackStack({ user }) {
   const overclockOutput = heatOnCooldown ? 0 : run.overclock.reduce((sum, o, i) => sum + tierRate(o.owned, OVERCLOCK_DEFS[i].baseProd, overclockMult, thresholds), 0);
   const totalOutputPerSec = racksOutput + gridOutput + overclockOutput;
   const anyReady = run.tiers.some((ts) => !ts.manager && ts.ready > 0.01);
+  const anyManualOwned = run.tiers.some((ts) => ts.owned > 0 && !ts.manager);
   const gain = migrateGain(run.lifetimeRun, eff.legacyGainMult);
   const singularityGain = Math.floor(Math.sqrt(meta.legacyCores));
 
@@ -617,7 +619,7 @@ export default function RackStack({ user }) {
         <div className="max-w-2xl mx-auto px-4 pt-3">
           <HeaderBar user={user} level={meta.level} onOpenProfile={() => setProfileOpen(true)} />
           <StatsRow run={run} meta={meta} totalOutputPerSec={totalOutputPerSec} xpNeeded={xpNeeded} boost={boost} boostMultNow={boostMultNow} />
-          <MigrateBar gain={gain} anyReady={anyReady} onMigrate={() => setModal({ type: 'migrate' })} onCollectAll={collectAll} />
+          <MigrateBar gain={gain} showCollectAll={anyManualOwned} collectDisabled={!anyReady} onMigrate={() => setModal({ type: 'migrate' })} onCollectAll={collectAll} />
           <TabBar tabs={TABS} activeTab={activeTab} setActiveTab={setActiveTab} gridUnlocked={gridUnlocked} overclockUnlocked={overclockUnlocked} singularityUnlocked={singularityUnlocked} />
         </div>
       </div>
@@ -673,6 +675,7 @@ export default function RackStack({ user }) {
 
       {profileOpen && (
         <ProfileView
+          user={user}
           meta={meta}
           memberSince={user && user.memberSince}
           onClose={() => setProfileOpen(false)}

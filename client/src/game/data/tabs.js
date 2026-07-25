@@ -5,7 +5,7 @@ export const TABS = [
   { id: 'grid', label: 'Grid', Icon: Network },
   { id: 'overclock', label: 'Overclock', Icon: Flame },
   { id: 'upgrades', label: 'Upgrades', Icon: ShoppingBag },
-  { id: 'singularity', label: 'Singular.', Icon: Sparkles },
+  { id: 'singularity', label: 'Singularity', Icon: Sparkles },
   { id: 'goals', label: 'Goals', Icon: ListChecks },
   { id: 'games', label: 'Games', Icon: Gamepad2 },
 ];

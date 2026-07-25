@@ -1,7 +1,7 @@
 import { RefreshCw } from 'lucide-react';
 import { amber, cardBg, inset, cardBorder, textDim, textMain } from '../theme.js';
 
-export default function MigrateBar({ gain, anyReady, onMigrate, onCollectAll }) {
+export default function MigrateBar({ gain, showCollectAll, collectDisabled, onMigrate, onCollectAll }) {
   return (
     <div className="mt-3 flex gap-2">
       <button
@@ -12,8 +12,19 @@ export default function MigrateBar({ gain, anyReady, onMigrate, onCollectAll }) 
       >
         <RefreshCw size={16} /> Migrate{gain > 0 ? ` (+${gain} cores)` : ''}
       </button>
-      {anyReady && (
-        <button onClick={onCollectAll} className="rounded-lg px-4 py-2 text-sm font-semibold" style={{ background: inset, border: `1px solid ${cardBorder}`, color: textMain }}>
+      {showCollectAll && (
+        <button
+          onClick={onCollectAll}
+          disabled={collectDisabled}
+          className="rounded-lg px-4 py-2 text-sm font-semibold"
+          style={{
+            background: collectDisabled ? cardBg : inset,
+            border: `1px solid ${cardBorder}`,
+            color: collectDisabled ? textDim : textMain,
+            opacity: collectDisabled ? 0.55 : 1,
+            cursor: collectDisabled ? 'not-allowed' : 'pointer',
+          }}
+        >
           Collect All
         </button>
       )}

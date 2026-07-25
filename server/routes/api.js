@@ -1,7 +1,7 @@
 import express from 'express';
 import passport from 'passport';
-import { requireAuth, issueToken, COOKIE_NAME } from '../auth.js';
-import { getSave, putSave, deleteSave, getUserById } from '../db.js';
+import { requireAuth, issueToken, COOKIE_NAME, ADMIN_USER_ID } from '../auth.js';
+import { getSave, putSave, deleteSave, getUserById, getAllUsersWithSaves } from '../db.js';
 import { applyOfflineProgress } from '../gameLogic.js';
 
 const router = express.Router();
@@ -77,6 +77,41 @@ router.post('/api/save', requireAuth, (req, res) => {
 router.delete('/api/save', requireAuth, (req, res) => {
   deleteSave(req.user.sub);
   res.json({ ok: true });
+});
+
+// Admin-only: list every user and their save stats. Gated on a hardcoded
+// user id, not a role stored in the DB - checked on every request, never
+// trusted from the client.
+router.get('/api/admin/users', requireAuth, (req, res) => {
+  if (req.user.sub !== ADMIN_USER_ID) {
+    return res.status(403).json({ error: 'forbidden' });
+  }
+  const rows = getAllUsersWithSaves();
+  const users = rows.map((row) => {
+    let meta = null;
+    if (row.data) {
+      try {
+        meta = JSON.parse(row.data).meta || null;
+      } catch (e) {
+        meta = null;
+      }
+    }
+    return {
+      id: row.id,
+      provider: row.provider,
+      username: row.username,
+      avatarUrl: row.avatar_url,
+      createdAt: row.created_at,
+      lastSave: row.last_save || null,
+      level: meta ? meta.level : null,
+      xp: meta ? meta.xp : null,
+      wafers: meta ? meta.wafers : null,
+      legacyCores: meta ? meta.legacyCores : null,
+      singularityShards: meta ? meta.singularityShards : null,
+      stats: meta ? meta.stats : null,
+    };
+  });
+  res.json({ users });
 });
 
 export default router;

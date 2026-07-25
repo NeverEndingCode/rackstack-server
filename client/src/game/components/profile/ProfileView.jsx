@@ -7,7 +7,7 @@ import ProfileSettings from './ProfileSettings.jsx';
 // Rendered above minigame overlays (z-30) but below ModalRoot (z-40) so the
 // reset confirmation modals launched from the Danger Zone always stack above
 // this view.
-export default function ProfileView({ meta, memberSince, onClose, onLogout, onOpenReset }) {
+export default function ProfileView({ user, meta, memberSince, onClose, onLogout, onOpenReset }) {
   const [tab, setTab] = useState('stats');
   return (
     <div className="fixed inset-0 flex items-center justify-center p-4" style={{ background: 'rgba(10,14,19,0.96)', zIndex: 35 }}>
@@ -35,7 +35,7 @@ export default function ProfileView({ meta, memberSince, onClose, onLogout, onOp
         </div>
 
         {tab === 'stats' && <ProfileStats meta={meta} memberSince={memberSince} />}
-        {tab === 'settings' && <ProfileSettings onLogout={onLogout} onOpenReset={onOpenReset} />}
+        {tab === 'settings' && <ProfileSettings user={user} onLogout={onLogout} onOpenReset={onOpenReset} />}
       </div>
     </div>
   );

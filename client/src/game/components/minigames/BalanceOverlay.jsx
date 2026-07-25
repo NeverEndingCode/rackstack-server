@@ -1,6 +1,6 @@
 import { useRef, useEffect } from 'react';
 import { X } from 'lucide-react';
-import { textDim, danger, teal, inset, cardBorder } from '../../theme.js';
+import { textDim, textMain, danger, teal, inset, cardBorder } from '../../theme.js';
 import { BALANCE_SAFE_ZONE_MIN, BALANCE_SAFE_ZONE_MAX, BALANCE_BASE_SPEED, BALANCE_SPEED_VARIANCE } from '../../constants.js';
 
 // Smooth, rAF-driven indicator. Position lives in a ref and is painted
@@ -40,8 +40,13 @@ export default function BalanceOverlay({ minigame, onBarHit, onMiss, onCancel })
     return () => cancelAnimationFrame(rafId);
   }, []);
 
-  function handleBarClick(e) {
-    e.stopPropagation();
+  // Shared by both the bar's own click and the STABILIZE button below it -
+  // both are "attempt to score now" actions, so they get identical
+  // in-zone/out-of-zone behavior (silent no-op when out of zone, same as
+  // clicking the bar directly - only clicks *outside* the bar/button count
+  // as a miss).
+  function attemptScore(e) {
+    if (e) e.stopPropagation();
     const inZone = posRef.current >= BALANCE_SAFE_ZONE_MIN && posRef.current <= BALANCE_SAFE_ZONE_MAX;
     if (inZone) onBarHit();
   }
@@ -58,11 +63,14 @@ export default function BalanceOverlay({ minigame, onBarHit, onMiss, onCancel })
           <span>{minigame.timeLeft}s left</span>
           <span style={{ color: danger }}>{minigame.score} stabilized</span>
         </div>
-        <div className="relative h-8 rounded-full mb-8 cursor-pointer" style={{ background: inset, border: `1px solid ${cardBorder}` }} onClick={handleBarClick}>
+        <div className="relative h-8 rounded-full mb-8 cursor-pointer" style={{ background: inset, border: `1px solid ${cardBorder}` }} onClick={attemptScore}>
           <div className="absolute top-0 bottom-0" style={{ left: `${BALANCE_SAFE_ZONE_MIN}%`, width: `${BALANCE_SAFE_ZONE_MAX - BALANCE_SAFE_ZONE_MIN}%`, background: 'rgba(79,195,176,0.25)', borderLeft: `1px solid ${teal}`, borderRight: `1px solid ${teal}` }} />
           <div ref={needleRef} className="absolute top-0 bottom-0 w-1.5 rounded" style={{ left: 'calc(0% - 3px)', background: danger }} />
         </div>
-        <div className="text-xs" style={{ color: textDim }}>Click the bar while the marker is in the safe zone &mdash; clicking elsewhere costs points</div>
+        <div className="text-xs mb-4" style={{ color: textDim }}>Click the bar or press STABILIZE while the marker is in the safe zone &mdash; clicking elsewhere costs points</div>
+        <button onClick={attemptScore} className="w-full rounded-2xl py-4 text-base font-bold" style={{ background: danger, color: textMain }}>
+          STABILIZE
+        </button>
       </div>
     </div>
   );

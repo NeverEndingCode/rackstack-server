@@ -11,6 +11,9 @@ if (!JWT_SECRET) {
 
 export const COOKIE_NAME = 'rackstack_token';
 
+// Hardcoded admin - only this user id can access the /api/admin/* routes.
+export const ADMIN_USER_ID = 'github:37058311';
+
 export function configurePassport() {
   let configured = 0;
 

@@ -16,7 +16,7 @@ export default function HeaderBar({ user, level, onOpenProfile }) {
             ) : (
               <UserCircle size={22} color={textDim} />
             )}
-            <span className="text-xs font-mono truncate max-w-[90px]" style={{ color: textDim }}>{user.username}</span>
+            <span className="text-xs font-mono truncate max-w-[160px]" style={{ color: textDim }}>{user.username}</span>
           </button>
         )}
         <div className="rounded-lg px-2 py-1 text-xs font-mono" style={{ background: inset, border: `1px solid ${cardBorder}`, color: violet }}>Lv {level}</div>

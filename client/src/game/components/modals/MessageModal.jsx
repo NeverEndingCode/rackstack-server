@@ -41,8 +41,8 @@ export default function MessageModal({ modal, onClose }) {
     case 'meltdown':
       return (
         <>
-          <h2 className="text-lg font-bold mb-2 flex items-center gap-2" style={{ color: danger }}><AlertTriangle size={18} /> Thermal Meltdown!</h2>
-          <p className="text-sm mb-4" style={{ color: textDim }}>Your Overclock Bay overheated and half your nodes were lost. The lane is frozen for a short cooldown. Keep an eye on the heat gauge and vent regularly, or invest in Thermal Regulators / Auto-Vent upgrades.</p>
+          <h2 className="text-lg font-bold mb-2 flex items-center gap-2" style={{ color: danger }}><AlertTriangle size={18} /> Overheated!</h2>
+          <p className="text-sm mb-4" style={{ color: textDim }}>Your Overclock Bay hit 100% heat and the lane is frozen for a short cooldown - no nodes were lost. Keep an eye on the heat gauge and vent regularly, or invest in Thermal Regulators / Auto-Vent upgrades to avoid the lockout.</p>
           <button onClick={onClose} className="w-full rounded-lg py-2 text-sm font-semibold" style={{ background: danger, color: textMain }}>Understood</button>
         </>
       );
