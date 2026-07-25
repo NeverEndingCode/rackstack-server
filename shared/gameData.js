@@ -1,0 +1,58 @@
+export const GROWTH = 1.14;
+export const MILESTONES = [25, 50, 100, 200, 500, 1000];
+
+export const TIER_DEFS = [
+  { id: 0, name: 'Spare Raspberry Pi', baseCost: 4, baseProd: 0.5, managerCost: 500 },
+  { id: 1, name: 'Refurbished Gaming Rig', baseCost: 60, baseProd: 6, managerCost: 6000 },
+  { id: 2, name: 'Home NAS Tower', baseCost: 720, baseProd: 45, managerCost: 70000 },
+  { id: 3, name: 'Colo Rack Unit', baseCost: 8800, baseProd: 320, managerCost: 900000 },
+  { id: 4, name: 'Server Room', baseCost: 110000, baseProd: 2200, managerCost: 12000000 },
+  { id: 5, name: 'Regional Data Center', baseCost: 1400000, baseProd: 16000, managerCost: 170000000 },
+  { id: 6, name: 'Cloud Availability Zone', baseCost: 20000000, baseProd: 120000, managerCost: 2400000000 },
+  { id: 7, name: 'Hyperscale Campus', baseCost: 330000000, baseProd: 900000, managerCost: 40000000000 },
+  { id: 8, name: 'Orbital Compute Platform', baseCost: 5000000000, baseProd: 7000000, managerCost: 650000000000 },
+  { id: 9, name: 'Dyson Swarm Cluster', baseCost: 80000000000, baseProd: 55000000, managerCost: 10000000000000 },
+  { id: 10, name: 'Lunar Compute Colony', baseCost: 1250000000000, baseProd: 430000000, managerCost: 160000000000000 },
+  { id: 11, name: 'Interstellar Relay Farm', baseCost: 19000000000000, baseProd: 3300000000, managerCost: 2400000000000000 },
+  { id: 12, name: 'Galactic Mesh Network', baseCost: 300000000000000, baseProd: 26000000000, managerCost: 37000000000000000 },
+  { id: 13, name: 'Quantum Foam Harvester', baseCost: 4600000000000000, baseProd: 200000000000, managerCost: 580000000000000000 },
+];
+
+export const GRID_DEFS = [
+  { id: 0, name: 'Home Volunteer', baseCost: 50, baseProd: 3 },
+  { id: 1, name: "Internet Cafe Node", baseCost: 900, baseProd: 28 },
+  { id: 2, name: 'University Cluster', baseCost: 15000, baseProd: 220 },
+  { id: 3, name: 'Corporate Donor Farm', baseCost: 260000, baseProd: 1800 },
+  { id: 4, name: 'Global BOINC Alliance', baseCost: 4500000, baseProd: 15000 },
+];
+
+export const OVERCLOCK_DEFS = [
+  { id: 0, name: 'Air-Cooled Overclock Rig', baseCost: 300, baseProd: 40, heatPerSec: 0.15 },
+  { id: 1, name: 'Liquid-Cooled Blade', baseCost: 5500, baseProd: 320, heatPerSec: 0.22 },
+  { id: 2, name: 'Immersion Tank Cluster', baseCost: 95000, baseProd: 2600, heatPerSec: 0.30 },
+  { id: 3, name: 'Cryo-Chilled Array', baseCost: 1600000, baseProd: 21000, heatPerSec: 0.40 },
+  { id: 4, name: 'Superconducting Core', baseCost: 28000000, baseProd: 170000, heatPerSec: 0.55 },
+];
+
+export const UPGRADE_DEFS = [
+  { id: 'firmware', name: 'Overclocked Firmware', desc: '+10% output on every lane per level', baseCost: 5, costMult: 1.6, maxLevel: 20 },
+  { id: 'psu', name: 'Redundant PSUs', desc: 'Automation costs -4% per level', baseCost: 8, costMult: 1.6, maxLevel: 10 },
+  { id: 'uptime', name: 'Extended Uptime', desc: 'Offline earnings cap +1 hour per level', baseCost: 12, costMult: 1.8, maxLevel: 8 },
+  { id: 'signal', name: 'Signal Boost', desc: 'Anomaly event rewards +20% per level', baseCost: 6, costMult: 1.5, maxLevel: 10 },
+  { id: 'gridamp', name: 'Grid Amplifier', desc: 'Grid lane output +25% per level', baseCost: 10, costMult: 1.6, maxLevel: 15 },
+  { id: 'legacy', name: 'Legacy Insight', desc: 'Migrate Legacy Core gain +10% per level', baseCost: 20, costMult: 2.0, maxLevel: 10 },
+  { id: 'thermal', name: 'Thermal Regulators', desc: 'Overclock Bay heat generation -8% per level', baseCost: 8, costMult: 1.7, maxLevel: 8 },
+  { id: 'autovent', name: 'Auto-Vent System', desc: 'Passively vents 0.5 heat/sec per level', baseCost: 15, costMult: 1.8, maxLevel: 8 },
+  { id: 'occlock', name: 'Overclock Amplifier', desc: '+25% Overclock Bay output per level', baseCost: 12, costMult: 1.6, maxLevel: 15 },
+  { id: 'lucky', name: 'Lucky Silicon', desc: 'Minigame wafer rewards +15% per level', baseCost: 6, costMult: 1.5, maxLevel: 10 },
+  { id: 'deepcache', name: 'Deep Cache', desc: 'Start each Migrate with +10 Compute Balance per level', baseCost: 4, costMult: 1.4, maxLevel: 10 },
+];
+
+export const SINGULARITY_DEFS = [
+  { id: 'bootstrap', name: 'Quantum Bootstrap', desc: 'Starting Compute Balance after Migrate x10 per level', baseCost: 3, costMult: 2.2, maxLevel: 5 },
+  { id: 'temporal', name: 'Temporal Compression', desc: 'Legacy Core gain from Migrate +25% per level', baseCost: 4, costMult: 2.4, maxLevel: 5 },
+  { id: 'engine', name: 'Singularity Engine', desc: '+50% output on every lane per level', baseCost: 6, costMult: 2.6, maxLevel: 8 },
+  { id: 'heatsink', name: 'Heat Sink Mastery', desc: 'Overclock Bay heat generation -25% per level', baseCost: 3, costMult: 2.2, maxLevel: 4 },
+  { id: 'infiniteloop', name: 'Infinite Loop', desc: 'Milestone thresholds -10% per level, easier to reach', baseCost: 5, costMult: 2.5, maxLevel: 5 },
+  { id: 'echocores', name: 'Echo Cores', desc: 'Instantly regain 1 free Legacy Core per level after every Migrate', baseCost: 4, costMult: 2.3, maxLevel: 10 },
+];
