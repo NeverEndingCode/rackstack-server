@@ -98,6 +98,11 @@ export function evaluate(state, config, lastEvaluatedAt, now) {
   const elapsedSec = Math.max(0, (now - lastEvaluatedAt) / 1000);
   if (elapsedSec < 1) return { state: s, gained: 0 };
 
+  // The overheat flag is a one-shot signal for the client toast: truthy only
+  // on the evaluate() call that crossed the heat cap, cleared on every
+  // subsequent call regardless of what happens this time.
+  delete s.server.overheated;
+
   const online = elapsedSec <= config.offline.onlineGapThresholdSec;
   let gained = 0;
 

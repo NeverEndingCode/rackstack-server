@@ -54,4 +54,17 @@ describe('evaluate', () => {
     expect(s2.run.heatCooldownUntil).toBe(t0 + 10_000 + cfg.heat.overheatCooldownMs);
     expect(s2.run.overclock[4].owned).toBe(400);
   });
+  it('overheated flag is set on the overheating evaluate and cleared on the next one', () => {
+    const cfg = structuredClone(DEFAULT_CONFIG);
+    cfg.heat.capacity = 100;
+    const s = initialState();
+    s.run.overclock[4] = { id: 4, owned: 400 };       // 400 * 0.55 = 220 heat/s
+    const t0 = 1_000_000;
+    const { state: s2 } = evaluate(s, cfg, t0, t0 + 10_000);
+    expect(s2.server.overheated).toBe(true);
+    // Next evaluate, short online gap, no new overheat crossing this time.
+    const t1 = t0 + 10_000;
+    const { state: s3 } = evaluate(s2, cfg, t1, t1 + 5_000);
+    expect(s3.server.overheated).toBeFalsy();
+  });
 });
