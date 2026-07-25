@@ -1,0 +1,42 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>rackstack-server</Name>
+  <Repository>ghcr.io/neverendingcode/rackstack-server:latest</Repository>
+  <Registry>https://ghcr.io/neverendingcode/rackstack-server</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/NeverEndingCode/rackstack-server</Support>
+  <Project>https://github.com/NeverEndingCode/rackstack-server</Project>
+  <Overview>RackStack self-hosted server. Persists save data to a local SQLite database and requires a stable JWT_SECRET for logins to survive updates - do not leave it blank or change it after first run.</Overview>
+  <Category>Tools:</Category>
+  <WebUI>http://[IP]:[PORT:3000]/</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/NeverEndingCode/rackstack-server/main/unraid-template.xml</TemplateURL>
+  <Icon/>
+  <ExtraParams/>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled/>
+  <DonateText/>
+  <DonateLink/>
+  <Requires/>
+
+  <Config Name="WebUI Port" Target="3000" Default="3000" Mode="tcp" Description="Port the web UI is served on" Type="Port" Display="always" Required="true" Mask="false">3000</Config>
+
+  <Config Name="Data" Target="/app/data" Default="/mnt/user/appdata/rackstack-server/data" Mode="rw" Description="SQLite database storage - the entire persistent state (users + saves). Do not remove this mapping when updating the container." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/rackstack-server/data</Config>
+
+  <Config Name="JWT_SECRET" Target="JWT_SECRET" Default="" Mode="" Description="Required. Signs login cookies. Generate once with 'openssl rand -hex 32' and never change it after first run, or all existing users will be logged out." Type="Variable" Display="always" Required="true" Mask="true"></Config>
+
+  <Config Name="DISCORD_CLIENT_ID" Target="DISCORD_CLIENT_ID" Default="" Mode="" Description="Discord OAuth client ID. Leave blank to disable Discord login." Type="Variable" Display="always" Required="false" Mask="false"></Config>
+
+  <Config Name="DISCORD_CLIENT_SECRET" Target="DISCORD_CLIENT_SECRET" Default="" Mode="" Description="Discord OAuth client secret." Type="Variable" Display="always" Required="false" Mask="true"></Config>
+
+  <Config Name="DISCORD_CALLBACK_URL" Target="DISCORD_CALLBACK_URL" Default="" Mode="" Description="Must match the redirect URL configured on the Discord OAuth app." Type="Variable" Display="always" Required="false" Mask="false"></Config>
+
+  <Config Name="GITHUB_CLIENT_ID" Target="GITHUB_CLIENT_ID" Default="" Mode="" Description="GitHub OAuth client ID. Leave blank to disable GitHub login." Type="Variable" Display="always" Required="false" Mask="false"></Config>
+
+  <Config Name="GITHUB_CLIENT_SECRET" Target="GITHUB_CLIENT_SECRET" Default="" Mode="" Description="GitHub OAuth client secret." Type="Variable" Display="always" Required="false" Mask="true"></Config>
+
+  <Config Name="GITHUB_CALLBACK_URL" Target="GITHUB_CALLBACK_URL" Default="" Mode="" Description="Must match the authorization callback URL configured on the GitHub OAuth app." Type="Variable" Display="always" Required="false" Mask="false"></Config>
+</Container>

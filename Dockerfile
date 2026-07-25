@@ -23,6 +23,10 @@ ENV NODE_ENV=production
 ENV PORT=3000
 ENV DB_PATH=/app/data/rackstack.db
 
+LABEL org.opencontainers.image.source="https://github.com/NeverEndingCode/rackstack-server"
+LABEL org.opencontainers.image.description="RackStack self-hosted server"
+LABEL org.opencontainers.image.licenses="MIT"
+
 VOLUME ["/app/data"]
 EXPOSE 3000
 

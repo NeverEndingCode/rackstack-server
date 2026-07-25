@@ -66,6 +66,46 @@ volume, so it survives container rebuilds.
 
 Point your reverse proxy / Cloudflare tunnel at `http://<host>:3000`.
 
+## Running on Unraid (prebuilt image)
+
+Every push of a `vX.Y.Z` git tag builds and publishes a multi-tag image to
+GitHub Container Registry via `.github/workflows/docker-publish.yml`:
+
+- `ghcr.io/neverendingcode/rackstack-server:latest`
+- `ghcr.io/neverendingcode/rackstack-server:vX.Y.Z`
+
+No Docker Hub account needed - GHCR authenticates with the repo's own
+`GITHUB_TOKEN`, and the package is public, so Unraid can pull it with no
+credentials.
+
+**Install:** in Unraid's Docker tab, "Add Container" -> "Template repositories"
+-> add `https://raw.githubusercontent.com/NeverEndingCode/rackstack-server/main/unraid-template.xml`,
+or fill the fields in by hand using [`unraid-template.xml`](./unraid-template.xml)
+as a reference. Two things matter for updates to be safe:
+
+- **Data path** must be a stable host path (e.g.
+  `/mnt/user/appdata/rackstack-server/data`) mapped to the container's
+  `/app/data` - this holds the entire SQLite database (saves + users) and is
+  untouched by "Apply Update," since that only swaps the image and reuses the
+  existing volume/variable config.
+- **`JWT_SECRET`** must be set once as a container Variable and never changed
+  afterward - it signs the 90-day login cookie, so rotating it logs every
+  user out (no data loss, just re-login required). The other OAuth variables
+  mirror `.env.example`.
+
+Once installed this way, updates are just Unraid's Docker tab -> "Check for
+Updates" / "Apply Update" whenever a new `:latest` digest is published.
+
+**Cutting a release:** bump `version` in `package.json` and
+`client/package.json`, commit, then:
+
+```bash
+git tag vX.Y.Z
+git push --tags
+```
+
+The Actions workflow builds and pushes automatically.
+
 ## Local development (without Docker)
 
 Two processes:
