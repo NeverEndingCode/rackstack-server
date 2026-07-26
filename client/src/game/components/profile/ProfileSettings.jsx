@@ -73,7 +73,7 @@ function UsernameForm({ displayName, onUsernameChanged }) {
   );
 }
 
-export default function ProfileSettings({ user, displayName, onUsernameChanged, onLogout, onOpenReset }) {
+export default function ProfileSettings({ user, displayName, onUsernameChanged, onLogout, onOpenReset, onConfigSaved }) {
   // Admin-only UI visibility - the real gate is server-side (server/auth.js
   // requireRole('admin')), this only decides whether to show the section at
   // all. /api/me now returns the caller's effective roles (owners implicitly
@@ -86,7 +86,7 @@ export default function ProfileSettings({ user, displayName, onUsernameChanged, 
         <LogOut size={16} /> Log out
       </button>
       <DangerZone onOpenReset={onOpenReset} />
-      {isAdmin && <AdminPanel />}
+      {isAdmin && <AdminPanel user={user} onConfigSaved={onConfigSaved} />}
     </div>
   );
 }

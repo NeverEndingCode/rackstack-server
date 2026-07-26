@@ -8,7 +8,7 @@ import { fetchChangelog } from '../../api.js';
 // Rendered above minigame overlays (z-30) but below ModalRoot (z-40) so the
 // reset confirmation modals launched from the Danger Zone always stack above
 // this view.
-export default function ProfileView({ user, meta, memberSince, displayName, onUsernameChanged, onClose, onLogout, onOpenReset }) {
+export default function ProfileView({ user, meta, memberSince, displayName, onUsernameChanged, onClose, onLogout, onOpenReset, onConfigSaved }) {
   const [tab, setTab] = useState('stats');
   // Changelog text is fetched lazily on first tap of the version footer and
   // cached here for the lifetime of this view (no need to re-fetch on
@@ -35,7 +35,7 @@ export default function ProfileView({ user, meta, memberSince, displayName, onUs
       <div className="w-full max-w-sm rounded-xl p-5" style={{ background: cardBg, border: `1px solid ${cardBorder}`, maxHeight: '85vh', overflowY: 'auto' }}>
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-bold" style={{ color: textMain }}>Profile</h2>
-          <button onClick={onClose} style={{ color: textDim }}><X size={22} /></button>
+          <button onClick={onClose} data-testid="profile-close" style={{ color: textDim }}><X size={22} /></button>
         </div>
 
         <div className="flex gap-1 mb-4 rounded-lg p-1" style={{ background: '#0E141B' }}>
@@ -63,6 +63,7 @@ export default function ProfileView({ user, meta, memberSince, displayName, onUs
             onUsernameChanged={onUsernameChanged}
             onLogout={onLogout}
             onOpenReset={onOpenReset}
+            onConfigSaved={onConfigSaved}
           />
         )}
 

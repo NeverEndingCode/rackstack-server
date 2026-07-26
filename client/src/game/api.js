@@ -91,6 +91,44 @@ export function setUsername(name) {
   return postJSON('/api/me/username', { username: name }, 'PUT');
 }
 
+// ---------------------------------------------------------------------------
+// Admin (role-gated server-side; see server/routes/api.js)
+// ---------------------------------------------------------------------------
+
+// GET /api/admin/users -> { users: [{ id, username, provider, level, wafers,
+//   legacyCores, singularityShards, stats }] }
+export function fetchAdminUsers() {
+  return request('/api/admin/users');
+}
+
+// PUT /api/admin/config { data } -> { version } | 400 { errors: string[] }
+export function putAdminConfig(data) {
+  return postJSON('/api/admin/config', { data }, 'PUT');
+}
+
+// GET /api/admin/config/history -> { history: [{ version, data, updatedAt, updatedBy }] }
+// (newest-first)
+export function fetchConfigHistory() {
+  return request('/api/admin/config/history');
+}
+
+// POST /api/admin/config/rollback { version } -> { version }
+//   | 400 { error: 'not_found' | 'corrupt' } | 400 { errors: string[] }
+export function rollbackConfig(version) {
+  return postJSON('/api/admin/config/rollback', { version });
+}
+
+// GET /api/admin/roles -> { users: [{ id, username, roles, isOwner }] }
+export function fetchAdminRoles() {
+  return request('/api/admin/roles');
+}
+
+// POST /api/admin/roles { userId, role: 'admin'|'event_coordinator', op: 'grant'|'revoke' }
+//   -> { ok, roles } | 403 { error: 'owner_required' } | 400 { error: 'cannot_modify_owner' | 'invalid_request' }
+export function postRoleChange(userId, role, op) {
+  return postJSON('/api/admin/roles', { userId, role, op });
+}
+
 // GET /api/changelog -> plain text on success, { status, error } on failure.
 export async function fetchChangelog() {
   let res;

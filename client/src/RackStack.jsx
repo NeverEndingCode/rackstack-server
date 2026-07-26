@@ -306,6 +306,16 @@ export default function RackStack({ user }) {
   function logout() {
     fetch('/auth/logout', { method: 'POST', credentials: 'include' }).finally(() => window.location.reload());
   }
+  // Admin balancing editor (AdminBalancing.jsx, via ProfileView ->
+  // ProfileSettings -> AdminPanel) hands back the freshly-saved/rolled-back
+  // { version, data } after a successful write so the live game picks up
+  // the new tunables immediately rather than waiting for a reload.
+  // configRef is updated synchronously (same pattern as the boot effect)
+  // since ticks/dispatches read it mid-render-cycle.
+  function handleConfigSaved(newConfig) {
+    configRef.current = newConfig.data;
+    setConfig(newConfig);
+  }
   function claimGoal(g) {
     const result = dispatchAction({ type: 'claimGoal', id: g.id });
     if (result.ok) {
@@ -687,6 +697,7 @@ export default function RackStack({ user }) {
           onClose={() => setProfileOpen(false)}
           onLogout={logout}
           onOpenReset={() => setModal({ type: 'reset' })}
+          onConfigSaved={handleConfigSaved}
         />
       )}
 
