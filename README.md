@@ -156,12 +156,27 @@ Visit the client dev server's printed URL (usually `http://localhost:5173`).
 ## Notes / things worth knowing
 
 - **SQLite, not Postgres**: chosen for zero-config, single-file persistence
-  that's trivial to back up (`cp data/rackstack.db data/rackstack.db.bak`).
+  that's easy to back up - see [Upgrading](#upgrading) for the safe way (stop
+  the container, then copy the file; it runs in WAL mode, so a bare `cp`
+  against a live server can grab an inconsistent snapshot). If you need a
+  backup without stopping the server, use SQLite's own online-safe backup
+  command instead: `sqlite3 data/rackstack.db ".backup data/rackstack.db.bak"`.
   Fine for a personal or small-group deployment. If you outgrow it (many
-  concurrent users, wanting replication, etc.), the `server/db.js` module is
-  the only place that touches the database - swapping it for a `pg` version
-  behind the same function signatures (`upsertUser`, `getSave`, `putSave`,
-  `deleteSave`) wouldn't require touching routes or game logic at all.
+  concurrent users, wanting replication, etc.), `server/db.js` is still the
+  only module that touches the database, but the porting surface is its full
+  export list now, not a handful of functions: saves (`getSave`/`putSave`,
+  consumed by `stateService.js` and, for `putSave`, also `routes/api.js`'s
+  minigame handler; `deleteSave` is exported but currently unused), users
+  (`upsertUser` in `auth.js`; `getUserById`, `getAllUsersWithSaves`,
+  `setUsername` in `routes/api.js`), roles (`getRoles` in both `auth.js` and
+  `routes/api.js`; `setRoles` in `routes/api.js`), the tunables config
+  (`getConfigRow`/`putConfigRow`/`getConfigHistory`, all consumed by
+  `configService.js`), minigame sessions (`createMinigameSession`/
+  `getMinigameSession`/`getOpenMinigameSession`/`finishMinigameSession`, all
+  consumed by `routes/api.js`), and `dedupeUsernames`, which db.js calls on
+  itself at boot rather than exposing to a caller. Swapping in a `pg`
+  version behind the same signatures still wouldn't require touching those
+  callers, but it's a bigger module to port than it used to be.
 - **JWT cookie, not sessions**: avoids needing a session store. The cookie
   is httpOnly and `secure` in production, valid for 90 days.
 - **Multi-user by default**: every Discord/GitHub login gets its own
