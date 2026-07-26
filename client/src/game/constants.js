@@ -20,26 +20,13 @@ export const ANOMALY_LABELS = [
 // (run.heatCooldownUntil, server.lastVentAt, config.heat.*) - no client
 // constants needed for them any more.
 
-// Per-game post-win cooldown, ephemeral (not persisted) - see gameCooldownsRef.
-export const GAME_WIN_COOLDOWN_MS = 30000;
-
-// Debug Sprint
-export const DEBUG_MAX_LIT = 3;
-export const DEBUG_SPAWN_MIN_MS = 400;
-export const DEBUG_SPAWN_MAX_MS = 900;
-
-// Cable Match
-export const MATCH_PAIR_COUNT = 10;
+// Minigame durations, spawn timing, pair counts, win cooldown, and the
+// Balance risk-zone tuning are all server/config-authoritative as of Task 11
+// (config.data.minigames.*, plus server.gameCooldowns for the per-game
+// cooldown display) - no client constants needed for them any more.
 
 // Action queue: how often makeActionQueue() (game/api.js) auto-flushes
 // queued actions to the server when the queue is non-empty, and the cap on
 // its exponential backoff after consecutive batch-send failures.
 export const ACTION_FLUSH_MS = 1000;
 export const ACTION_RETRY_MAX_MS = 30000;
-
-// Overclock Balance
-export const BALANCE_SAFE_ZONE_MIN = 35;
-export const BALANCE_SAFE_ZONE_MAX = 65;
-export const BALANCE_BASE_SPEED = 0.024; // % of bar per ms
-export const BALANCE_SPEED_VARIANCE = 0.010; // +/- fluctuation applied periodically
-export const BALANCE_MISS_PENALTY = 2;

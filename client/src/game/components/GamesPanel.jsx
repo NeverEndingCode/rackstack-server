@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Zap, Bug, Cable, Flame } from 'lucide-react';
 import { cardBg, cardBorder, textMain, textDim, amber, teal, violet, danger } from '../theme.js';
-import { MATCH_PAIR_COUNT } from '../constants.js';
 
 function GameCard({ Icon, iconColor, title, desc, btnColor, btnTextColor, onPlay, cooldownUntil }) {
   const [, forceTick] = useState(0);
@@ -31,13 +30,14 @@ function GameCard({ Icon, iconColor, title, desc, btnColor, btnTextColor, onPlay
   );
 }
 
-export default function GamesPanel({ onStartRush, onStartDebug, onStartMatch, onStartBalance, cooldowns }) {
+export default function GamesPanel({ onStartRush, onStartDebug, onStartMatch, onStartBalance, cooldowns, minigamesConfig }) {
+  const { rush, debug, match, balance } = minigamesConfig;
   return (
     <div className="max-w-2xl mx-auto px-4 py-4 flex flex-col gap-3">
-      <GameCard Icon={Zap} iconColor={amber} title="Overclock Rush" desc="Tap as fast as you can for 10 seconds." btnColor={amber} btnTextColor="#0E141B" onPlay={onStartRush} cooldownUntil={cooldowns.rush} />
-      <GameCard Icon={Bug} iconColor={teal} title="Debug Sprint" desc="Squash the highlighted bugs before they hide - up to 3 can appear at once. 15 seconds." btnColor={teal} btnTextColor="#0E141B" onPlay={onStartDebug} cooldownUntil={cooldowns.debug} />
-      <GameCard Icon={Cable} iconColor={violet} title="Cable Match" desc={`Find all ${MATCH_PAIR_COUNT} matching pairs - the round ends the instant you finish. Only a full match pays out. 40 seconds.`} btnColor={violet} btnTextColor="#0E141B" onPlay={onStartMatch} cooldownUntil={cooldowns.match} />
-      <GameCard Icon={Flame} iconColor={danger} title="Overclock Balance" desc="Click the bar when the moving marker is in the safe zone. Clicking elsewhere costs you points. 12 seconds." btnColor={danger} btnTextColor={textMain} onPlay={onStartBalance} cooldownUntil={cooldowns.balance} />
+      <GameCard Icon={Zap} iconColor={amber} title="Overclock Rush" desc={`Tap as fast as you can for ${rush.durationSec} seconds.`} btnColor={amber} btnTextColor="#0E141B" onPlay={onStartRush} cooldownUntil={cooldowns.rush} />
+      <GameCard Icon={Bug} iconColor={teal} title="Debug Sprint" desc={`Squash the highlighted bugs before they hide - up to ${debug.maxLit} can appear at once. ${debug.durationSec} seconds.`} btnColor={teal} btnTextColor="#0E141B" onPlay={onStartDebug} cooldownUntil={cooldowns.debug} />
+      <GameCard Icon={Cable} iconColor={violet} title="Cable Match" desc={`Find all ${match.pairCount} matching pairs - the round ends the instant you finish. Only a full match pays out. ${match.durationSec} seconds.`} btnColor={violet} btnTextColor="#0E141B" onPlay={onStartMatch} cooldownUntil={cooldowns.match} />
+      <GameCard Icon={Flame} iconColor={danger} title="Overclock Balance" desc={`Click the bar when the moving marker is in the safe zone. Clicking elsewhere costs you points. ${balance.durationSec} seconds.`} btnColor={danger} btnTextColor={textMain} onPlay={onStartBalance} cooldownUntil={cooldowns.balance} />
     </div>
   );
 }
