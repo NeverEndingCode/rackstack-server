@@ -1,21 +1,24 @@
 export const GROWTH = 1.14;
 export const TICK_MS = 250;
 export const MILESTONES = [25, 50, 100, 200, 500, 1000];
-export const EVENT_WINDOW = 15000;
-export const EVENT_MIN_DELAY = 70000;
-export const EVENT_MAX_DELAY = 150000;
-export const EVENT_LABELS = [
+
+// Anomaly (formerly "event") timing is now server/config-authoritative
+// (server.nextAnomalyAt/anomalyExpiresAt, config.anomaly.*) - these survive
+// only as the client-side flavor-text pool plus legacy fallback numbers, no
+// longer used to actually schedule anything.
+export const ANOMALY_WINDOW = 15000;
+export const ANOMALY_MIN_DELAY = 70000;
+export const ANOMALY_MAX_DELAY = 150000;
+export const ANOMALY_LABELS = [
   'Anomalous compute spike detected',
   'Unscheduled maintenance window open',
   'Surplus cycles up for grabs',
   'Rogue background process found',
 ];
 
-// Overclock heat cooldown: mandatory lockout once heat hits 100%. Stored as
-// an absolute timestamp (run.heatCooldownUntil) rather than a ref so it
-// correctly reflects elapsed time even if the tab was closed and reopened.
-export const HEAT_COOLDOWN_MS = 10000;
-export const VENT_COOLDOWN_MS = 2500;
+// Overclock heat cooldown and vent cooldown are now server state/config
+// (run.heatCooldownUntil, server.lastVentAt, config.heat.*) - no client
+// constants needed for them any more.
 
 // Per-game post-win cooldown, ephemeral (not persisted) - see gameCooldownsRef.
 export const GAME_WIN_COOLDOWN_MS = 30000;
