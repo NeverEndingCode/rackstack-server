@@ -17,16 +17,31 @@ returns.
   (`GET /api/config`, admin-only `PUT /api/admin/config` with rollback and
   history) drives production, costs, heat, and minigame payouts without a
   redeploy.
-- Roles: env-derived owners plus DB-stored `admin` / `event_coordinator`
-  roles, returned from `/api/me` and enforced server-side on every
-  admin-gated route - no more single hardcoded admin user id.
-- Custom usernames: `PUT /api/me/username`, unique and validated
-  server-side.
+- Admin dashboard v2 (Profile > Settings, admins/owner only): a schema-driven
+  Balancing tab to edit every tunable live with inline range validation, save
+  errors, and a rollback-able version history, alongside a new Roles tab for
+  granting/revoking `admin` (owner-only) and `event_coordinator` and the
+  existing per-user stats tab.
+- Roles: env-derived owners (`SUPER_ADMIN_IDS`) plus DB-stored `admin` /
+  `event_coordinator` roles, returned from `/api/me` and enforced
+  server-side on every admin-gated route - no more single hardcoded admin
+  user id.
+- Custom usernames: `PUT /api/me/username`, unique (case-insensitive) and
+  validated server-side, with existing duplicate usernames deduplicated on
+  upgrade. The profile footer now shows the running version and opens an
+  in-app changelog (this file, served from `GET /api/changelog`).
 - Minigame sessions: `POST /api/minigame/start` / `/finish` replace
   client-trusted scores with server-issued, time-boxed sessions and
   server-side cooldown enforcement (including a fix for concurrent-session
   cooldown bypass).
-- Heat and Balance minigame retuning driven by the new config system.
+- Overclock Balance retuned around the new config system and given visible
+  amber risk-zone strips on the bar - clicking (or STABILIZE-ing) while the
+  marker sits in a risk zone pays more than the plain safe zone, missing the
+  bar entirely costs points, and every payout curve is a live tunable.
+- Docs: a v1.1 -> v1.2 upgrade note (new required `SUPER_ADMIN_IDS` env var,
+  no other breaking changes to the persistent volume), `.env`/Unraid
+  template updates, and a refreshed `server/db.js` porting note for the new
+  tables.
 
 ## v1.1.1
 
