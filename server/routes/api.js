@@ -1,9 +1,21 @@
 import express from 'express';
 import passport from 'passport';
-import { requireAuth, issueToken, COOKIE_NAME, ADMIN_USER_ID } from '../auth.js';
-import { getSave, putSave, deleteSave, getUserById, getAllUsersWithSaves } from '../db.js';
-import { applyOfflineProgress } from '../gameLogic.js';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import {
+  requireAuth, requireRole, issueToken, COOKIE_NAME,
+  isOwner, getEffectiveRoles,
+} from '../auth.js';
+import {
+  getUserById, getAllUsersWithSaves, getRoles, setRoles, setUsername,
+  createMinigameSession, getMinigameSession, finishMinigameSession, putSave,
+} from '../db.js';
+import { getConfig, updateConfig, rollbackConfig, getHistory } from '../configService.js';
+import { loadAndEvaluate, applyActions } from '../stateService.js';
+import { minigameWafers } from '../../shared/gameRules.js';
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const router = express.Router();
 
 const COOKIE_OPTS = {
@@ -12,6 +24,9 @@ const COOKIE_OPTS = {
   secure: process.env.NODE_ENV === 'production',
   maxAge: 90 * 24 * 3600 * 1000,
 };
+
+const USERNAME_RE = /^[A-Za-z0-9_-]{3,20}$/;
+const MINIGAMES = ['rush', 'debug', 'match', 'balance'];
 
 function finishLogin(req, res) {
   const token = issueToken(req.user);
@@ -45,47 +60,206 @@ router.get('/api/me', requireAuth, (req, res) => {
     username: req.user.username,
     avatarUrl: req.user.avatarUrl,
     memberSince: dbUser ? dbUser.created_at : null,
+    roles: getEffectiveRoles(req.user.sub),
+    isOwner: isOwner(req.user.sub),
   });
 });
 
-// Loads the save, applies any offline production since last_save (capped at
-// 72h server-side), persists the caught-up state, and returns it.
-router.get('/api/save', requireAuth, (req, res) => {
-  const row = getSave(req.user.sub);
-  if (!row) {
-    return res.json({ run: null, meta: null, offlineGain: 0 });
-  }
-  let saved;
-  try {
-    saved = JSON.parse(row.data);
-  } catch (e) {
-    return res.status(500).json({ error: 'corrupt save' });
+// ---------------------------------------------------------------------------
+// State & actions (server-authoritative economy)
+// ---------------------------------------------------------------------------
+
+router.get('/api/state', requireAuth, (req, res) => {
+  const now = Date.now();
+  const { state, gained } = loadAndEvaluate(req.user.sub, now);
+  const { version } = getConfig();
+  res.json({
+    run: state.run,
+    meta: state.meta,
+    server: state.server,
+    offlineGain: gained,
+    configVersion: version,
+    serverTime: now,
+  });
+});
+
+router.post('/api/actions', requireAuth, (req, res) => {
+  const { actions } = req.body || {};
+  if (!Array.isArray(actions) || actions.length > 100) {
+    return res.status(400).json({ error: 'actions must be an array of at most 100 items' });
   }
   const now = Date.now();
-  const { run: newRun, gained } = applyOfflineProgress(saved.run, saved.meta, row.last_save, now);
-  putSave(req.user.sub, { run: newRun, meta: saved.meta }, now);
-  res.json({ run: newRun, meta: saved.meta, offlineGain: gained });
+  const { state, results } = applyActions(req.user.sub, actions, now);
+  res.json({ state, results, serverTime: now });
 });
 
-router.post('/api/save', requireAuth, (req, res) => {
-  const { run, meta } = req.body || {};
-  if (!run || !meta) return res.status(400).json({ error: 'run and meta are required' });
-  putSave(req.user.sub, { run, meta }, Date.now());
-  res.json({ ok: true });
+// ---------------------------------------------------------------------------
+// Config (tunables) - read for everyone signed in, write for admins
+// ---------------------------------------------------------------------------
+
+router.get('/api/config', requireAuth, (req, res) => {
+  const { version, data } = getConfig();
+  res.json({ version, data });
 });
 
-router.delete('/api/save', requireAuth, (req, res) => {
-  deleteSave(req.user.sub);
-  res.json({ ok: true });
+router.put('/api/admin/config', requireAuth, requireRole('admin'), (req, res) => {
+  const { data } = req.body || {};
+  const result = updateConfig(data, req.user.sub);
+  if (!result.ok) return res.status(400).json({ errors: result.errors });
+  res.json({ version: result.version });
 });
 
-// Admin-only: list every user and their save stats. Gated on a hardcoded
-// user id, not a role stored in the DB - checked on every request, never
-// trusted from the client.
-router.get('/api/admin/users', requireAuth, (req, res) => {
-  if (req.user.sub !== ADMIN_USER_ID) {
-    return res.status(403).json({ error: 'forbidden' });
+router.get('/api/admin/config/history', requireAuth, requireRole('admin'), (req, res) => {
+  res.json({ history: getHistory() });
+});
+
+router.post('/api/admin/config/rollback', requireAuth, requireRole('admin'), (req, res) => {
+  const { version } = req.body || {};
+  if (typeof version !== 'number') return res.status(400).json({ error: 'version required' });
+  const result = rollbackConfig(version, req.user.sub);
+  if (!result.ok) {
+    return res.status(400).json(result.errors ? { errors: result.errors } : { error: result.error });
   }
+  res.json({ version: result.version });
+});
+
+// ---------------------------------------------------------------------------
+// Roles
+// ---------------------------------------------------------------------------
+
+router.get('/api/admin/roles', requireAuth, requireRole('admin'), (req, res) => {
+  const rows = getAllUsersWithSaves();
+  const users = rows.map((row) => ({
+    id: row.id,
+    username: row.username,
+    roles: getEffectiveRoles(row.id),
+    isOwner: isOwner(row.id),
+  }));
+  res.json({ users });
+});
+
+// Granting/revoking 'admin' requires owner; 'event_coordinator' requires
+// admin-or-owner (the requireRole('admin') gate below already covers that
+// half - owner passes it too since 'admin' is one of an owner's effective
+// roles). An owner id's own roles are env-derived, not DB-stored, so there
+// is nothing to grant/revoke on them - reject outright.
+router.post('/api/admin/roles', requireAuth, requireRole('admin'), (req, res) => {
+  const { userId, role, op } = req.body || {};
+  if (!userId || !['admin', 'event_coordinator'].includes(role) || !['grant', 'revoke'].includes(op)) {
+    return res.status(400).json({ error: 'invalid_request' });
+  }
+  if (role === 'admin' && !isOwner(req.user.sub)) {
+    return res.status(403).json({ error: 'owner_required' });
+  }
+  if (isOwner(userId)) {
+    return res.status(400).json({ error: 'cannot_modify_owner' });
+  }
+
+  const current = new Set(getRoles(userId));
+  if (op === 'grant') current.add(role); else current.delete(role);
+  setRoles(userId, [...current]);
+  res.json({ ok: true, roles: getEffectiveRoles(userId) });
+});
+
+// ---------------------------------------------------------------------------
+// Username
+// ---------------------------------------------------------------------------
+
+router.put('/api/me/username', requireAuth, (req, res) => {
+  const { username } = req.body || {};
+  if (typeof username !== 'string' || !USERNAME_RE.test(username)) {
+    return res.status(400).json({ error: 'invalid_username' });
+  }
+  const result = setUsername(req.user.sub, username);
+  if (!result.ok) return res.status(409).json({ error: result.error });
+  res.json({ ok: true, username });
+});
+
+// ---------------------------------------------------------------------------
+// Minigames
+// ---------------------------------------------------------------------------
+
+router.post('/api/minigame/start', requireAuth, (req, res) => {
+  const { game } = req.body || {};
+  if (!MINIGAMES.includes(game)) return res.status(400).json({ error: 'unknown_game' });
+
+  const now = Date.now();
+  const { state } = loadAndEvaluate(req.user.sub, now);
+  const cooldownUntil = state.server.gameCooldowns[game] || 0;
+  if (now < cooldownUntil) {
+    return res.status(429).json({ error: 'cooldown_active', retryAt: cooldownUntil });
+  }
+
+  const session = createMinigameSession(req.user.sub, game);
+  res.json({ sessionId: session.id });
+});
+
+router.post('/api/minigame/finish', requireAuth, (req, res) => {
+  const { sessionId, metric } = req.body || {};
+  if (typeof metric !== 'number' || !Number.isFinite(metric)) {
+    return res.status(400).json({ error: 'invalid_metric' });
+  }
+
+  const session = getMinigameSession(sessionId);
+  if (!session || session.user_id !== req.user.sub) return res.status(404).json({ error: 'not_found' });
+  if (session.finished_at !== null) return res.status(410).json({ error: 'gone' });
+
+  const now = Date.now();
+  const { data: config } = getConfig();
+  const gameConf = config.minigames[session.game];
+  const windowEnd = session.started_at + gameConf.durationSec * 1000 + 10000;
+  if (now > windowEnd) return res.status(410).json({ error: 'gone' });
+
+  let clamped;
+  let won = true;
+  if (session.game === 'rush') {
+    clamped = Math.min(metric, gameConf.durationSec * gameConf.maxTapsPerSec);
+  } else if (session.game === 'debug') {
+    clamped = Math.min(metric, (gameConf.durationSec * 1000) / gameConf.spawnMinMs);
+  } else if (session.game === 'match') {
+    clamped = Math.min(metric, gameConf.pairCount);
+    won = clamped === gameConf.pairCount;
+  } else {
+    // balance
+    clamped = Math.min(metric, gameConf.maxScore);
+  }
+  clamped = Math.max(0, clamped);
+
+  const { state } = loadAndEvaluate(req.user.sub, now);
+  const wafers = won ? minigameWafers(session.game, clamped, state.meta, config) : 0;
+
+  if (wafers > 0) {
+    state.meta.wafers += wafers;
+    state.meta.stats.minigamesWon += 1;
+    state.meta.stats.totalWafersEarned += wafers;
+    state.server.gameCooldowns[session.game] = now + config.minigames.winCooldownMs;
+  }
+
+  putSave(req.user.sub, state, now);
+  finishMinigameSession(sessionId, clamped);
+  res.json({ state, wafers });
+});
+
+// ---------------------------------------------------------------------------
+// Changelog
+// ---------------------------------------------------------------------------
+
+router.get('/api/changelog', requireAuth, (req, res) => {
+  const changelogPath = path.join(__dirname, '..', '..', 'CHANGELOG.md');
+  fs.readFile(changelogPath, 'utf8', (err, data) => {
+    res.type('text/plain');
+    if (err) return res.status(200).send('No changelog available.');
+    res.status(200).send(data);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Admin: users list
+// ---------------------------------------------------------------------------
+
+// Lists every user and their save stats. Gated on the requireRole('admin')
+// middleware - never a client-trusted flag - re-checked on every request.
+router.get('/api/admin/users', requireAuth, requireRole('admin'), (req, res) => {
   const rows = getAllUsersWithSaves();
   const users = rows.map((row) => {
     let meta = null;
