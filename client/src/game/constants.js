@@ -29,8 +29,10 @@ export const DEBUG_SPAWN_MAX_MS = 900;
 export const MATCH_PAIR_COUNT = 10;
 
 // Action queue: how often makeActionQueue() (game/api.js) auto-flushes
-// queued actions to the server when the queue is non-empty.
+// queued actions to the server when the queue is non-empty, and the cap on
+// its exponential backoff after consecutive batch-send failures.
 export const ACTION_FLUSH_MS = 1000;
+export const ACTION_RETRY_MAX_MS = 30000;
 
 // Overclock Balance
 export const BALANCE_SAFE_ZONE_MIN = 35;

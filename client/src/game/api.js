@@ -20,8 +20,13 @@
 //
 // All requests send `credentials: 'include'` so the auth cookie rides
 // along cross-origin-safe same-site requests.
+//
+// makeActionQueue() layers its own failure handling on top of the above for
+// *batch-level* failures (the whole /api/actions POST failed, as opposed to
+// an individual action in it being rejected): see its doc comment below for
+// the retry/backoff/onQueueError contract.
 
-import { ACTION_FLUSH_MS } from './constants.js';
+import { ACTION_FLUSH_MS, ACTION_RETRY_MAX_MS } from './constants.js';
 import { fmt } from '@shared/gameRules.js';
 
 // Re-exported for convenience so UI code that already imports from
@@ -111,7 +116,7 @@ const IMMEDIATE = new Set([
   'claimGoal', 'claimRepeatable', 'claimAnomaly',
 ]);
 
-// makeActionQueue({ onReconcile, onReject }) -> { dispatch, flush, pending }
+// makeActionQueue({ onReconcile, onReject, onQueueError }) -> { dispatch, flush, pending }
 //
 // - dispatch(action): assigns action.id (incrementing), enqueues it, and
 //   (for IMMEDIATE types) kicks off an immediate flush().
@@ -119,20 +124,44 @@ const IMMEDIATE = new Set([
 //   in flight at a time - if one is already running, this is a no-op (and
 //   anything dispatched meanwhile just accumulates for the next flush).
 //   On success: calls onReconcile(state, results, serverTime), then
-//   onReject(result) for each per-action result with `ok: false`.
-//   On failure (network error, or a non-2xx from the batch endpoint
-//   itself): the whole batch is put back at the front of the queue so it's
-//   retried on the next tick.
+//   onReject(result) for each per-action result with `ok: false`. Also
+//   resets the backoff below to its normal cadence.
+//   On batch-level failure (network error, or a non-2xx from the batch
+//   endpoint itself - as opposed to an individual action inside it being
+//   rejected, which is onReject's job): the whole batch is put back at the
+//   front of the queue for retry, `onQueueError` is called (if provided)
+//   with `{ status, error, attempts, nextRetryMs }` (`status` is 0 for a
+//   network error; `attempts` is the number of consecutive batch failures
+//   so far; `nextRetryMs` is how long until the next attempt is allowed),
+//   and further attempts back off exponentially: ACTION_FLUSH_MS on the
+//   first failure, doubling on each consecutive one, capped at
+//   ACTION_RETRY_MAX_MS. The 1s auto-flush timer keeps ticking throughout,
+//   but flush() no-ops until the backoff window elapses, so this never
+//   sends more than one request per backoff interval - including
+//   IMMEDIATE-triggered flushes, which go through the same gate rather
+//   than bypassing it.
+//   Special case: a 401 means the session itself is gone (expired/invalid
+//   auth cookie) - retrying the same batch would just fail the same way
+//   forever. On a 401, `onQueueError` is called with `nextRetryMs: null`
+//   and the queue stops attempting to flush entirely (queued actions are
+//   left in place, not dropped - `pending()` still reflects them). There
+//   is no automatic recovery from this state; the caller is expected to
+//   react to `onQueueError`'s 401 (e.g. by sending the user back to the
+//   login gate, which will tear down and recreate this queue on reload).
 // - pending(): a snapshot array of not-yet-flushed queued actions.
 //
 // Also wires up best-effort delivery on tab close/hide: pagehide and
 // visibilitychange->hidden send whatever's still queued via
 // navigator.sendBeacon (fire-and-forget, no response handling) and clear
 // the queue.
-export function makeActionQueue({ onReconcile, onReject }) {
+export function makeActionQueue({ onReconcile, onReject, onQueueError }) {
   let queue = [];
   let nextId = 1;
   let inFlight = false;
+  let consecutiveFailures = 0;
+  let nextAllowedAttemptAt = 0;
+  let authStopped = false;
+  let intervalId = null;
 
   function dispatch(action) {
     const withId = { ...action, id: nextId++ };
@@ -142,7 +171,9 @@ export function makeActionQueue({ onReconcile, onReject }) {
   }
 
   async function flush() {
-    if (inFlight || queue.length === 0) return;
+    if (authStopped || inFlight || queue.length === 0) return;
+    if (Date.now() < nextAllowedAttemptAt) return;
+
     const batch = queue;
     queue = [];
     inFlight = true;
@@ -151,10 +182,27 @@ export function makeActionQueue({ onReconcile, onReject }) {
 
     if (!res || res.error) {
       // Keep the batch queued (ahead of anything dispatched meanwhile) for
-      // retry on the next auto-flush tick.
+      // retry once the backoff window below elapses.
       queue = batch.concat(queue);
+      consecutiveFailures += 1;
+      const status = res && typeof res.status === 'number' ? res.status : 0;
+      const error = (res && res.error) || 'network_error';
+
+      if (status === 401) {
+        authStopped = true;
+        if (intervalId !== null) { clearInterval(intervalId); intervalId = null; }
+        if (onQueueError) onQueueError({ status, error, attempts: consecutiveFailures, nextRetryMs: null });
+        return;
+      }
+
+      const delayMs = Math.min(ACTION_FLUSH_MS * 2 ** (consecutiveFailures - 1), ACTION_RETRY_MAX_MS);
+      nextAllowedAttemptAt = Date.now() + delayMs;
+      if (onQueueError) onQueueError({ status, error, attempts: consecutiveFailures, nextRetryMs: delayMs });
       return;
     }
+
+    consecutiveFailures = 0;
+    nextAllowedAttemptAt = 0;
 
     const { state, results, serverTime } = res;
     onReconcile(state, results, serverTime);
@@ -181,7 +229,7 @@ export function makeActionQueue({ onReconcile, onReject }) {
     });
   }
 
-  setInterval(() => { if (queue.length > 0) flush(); }, ACTION_FLUSH_MS);
+  intervalId = setInterval(() => { if (queue.length > 0) flush(); }, ACTION_FLUSH_MS);
 
   return { dispatch, flush, pending };
 }
