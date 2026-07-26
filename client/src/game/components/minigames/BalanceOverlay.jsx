@@ -74,23 +74,23 @@ export default function BalanceOverlay({ minigame, balanceConfig: z, onScore, on
   }
 
   return (
-    <div className="fixed inset-0 z-30 flex items-center justify-center p-4" style={{ background: 'rgba(10,14,19,0.96)' }} onClick={(e) => attemptScore(e, true)}>
+    <div data-testid="balance-overlay" className="fixed inset-0 z-30 flex items-center justify-center p-4" style={{ background: 'rgba(10,14,19,0.96)' }} onClick={(e) => attemptScore(e, true)}>
       <div className="w-full max-w-sm text-center">
-        <button onClick={handleCancelClick} className="absolute top-4 right-4" style={{ color: textDim }}><X size={22} /></button>
+        <button onClick={handleCancelClick} data-testid="balance-cancel" className="absolute top-4 right-4" style={{ color: textDim }}><X size={22} /></button>
         <div className="flex justify-between font-mono text-sm mb-6" style={{ color: textDim }}>
           <span>{minigame.timeLeft}s left</span>
-          <span style={{ color: danger }}>{minigame.score} stabilized</span>
+          <span data-testid="balance-score" style={{ color: danger }}>{minigame.score} stabilized</span>
         </div>
-        <div className="relative h-8 rounded-full mb-8 cursor-pointer" style={{ background: inset, border: `1px solid ${cardBorder}` }} onClick={(e) => attemptScore(e, false)}>
-          <div className="absolute top-0 bottom-0" style={{ left: `${z.safeZoneMin}%`, width: `${z.safeZoneMax - z.safeZoneMin}%`, background: 'rgba(79,195,176,0.25)', borderLeft: `1px solid ${teal}`, borderRight: `1px solid ${teal}` }} />
-          <div className="absolute top-0 bottom-0" style={{ left: `${z.safeZoneMin}%`, width: `${z.riskZoneWidth}%`, background: 'rgba(232,163,61,0.35)' }} />
-          <div className="absolute top-0 bottom-0" style={{ left: `${z.safeZoneMax - z.riskZoneWidth}%`, width: `${z.riskZoneWidth}%`, background: 'rgba(232,163,61,0.35)' }} />
-          <div ref={needleRef} className="absolute top-0 bottom-0 w-1.5 rounded" style={{ left: 'calc(0% - 3px)', background: danger }} />
+        <div data-testid="balance-bar" className="relative h-8 rounded-full mb-8 cursor-pointer" style={{ background: inset, border: `1px solid ${cardBorder}` }} onClick={(e) => attemptScore(e, false)}>
+          <div data-testid="balance-zone-safe" className="absolute top-0 bottom-0" style={{ left: `${z.safeZoneMin}%`, width: `${z.safeZoneMax - z.safeZoneMin}%`, background: 'rgba(79,195,176,0.25)', borderLeft: `1px solid ${teal}`, borderRight: `1px solid ${teal}` }} />
+          <div data-testid="balance-zone-risk-low" className="absolute top-0 bottom-0" style={{ left: `${z.safeZoneMin}%`, width: `${z.riskZoneWidth}%`, background: 'rgba(232,163,61,0.35)' }} />
+          <div data-testid="balance-zone-risk-high" className="absolute top-0 bottom-0" style={{ left: `${z.safeZoneMax - z.riskZoneWidth}%`, width: `${z.riskZoneWidth}%`, background: 'rgba(232,163,61,0.35)' }} />
+          <div ref={needleRef} data-testid="balance-needle" className="absolute top-0 bottom-0 w-1.5 rounded" style={{ left: 'calc(0% - 3px)', background: danger }} />
         </div>
         <div className="text-xs mb-4" style={{ color: textDim }}>
           Click the bar or press STABILIZE while the marker is in the safe zone &mdash; the <span style={{ color: amber }}>amber edges</span> pay more but clicking outside the zone entirely costs points
         </div>
-        <button onClick={(e) => attemptScore(e, false)} className="w-full rounded-2xl py-4 text-base font-bold" style={{ background: danger, color: textMain }}>
+        <button onClick={(e) => attemptScore(e, false)} data-testid="balance-stabilize" className="w-full rounded-2xl py-4 text-base font-bold" style={{ background: danger, color: textMain }}>
           STABILIZE
         </button>
       </div>
