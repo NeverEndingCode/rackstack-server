@@ -1,30 +1,29 @@
 # RACKSTACK server
 
 Self-hosted version of the game: Discord/GitHub OAuth login, SQLite for
-persistence, and server-authoritative offline progress (hard-capped at 72
-hours regardless of upgrades).
+persistence, and a server-authoritative economy (hard-capped at 72 hours of
+offline progress regardless of upgrades).
 
 ## Architecture
 
+- `shared/` - a package used by both server and client (via a `@shared` Vite
+  alias on the client side): canonical game state, a config-parameterized
+  rules/production engine, the action reducer, goals, and offline-progress
+  evaluation. This is the single source of truth for game math - there's no
+  separate client copy to keep in sync.
 - `server/` - Express API. Passport handles the Discord/GitHub OAuth
   handshake; on success we issue our own JWT in an httpOnly cookie (no
-  server-side session store needed). SQLite (`better-sqlite3`) holds two
-  tables: `users` and `saves` (one JSON blob per user).
-- `server/gameLogic.js` - a server-side mirror of the client's production
-  math, used only to compute how much a player produced while away. If you
-  change tier costs, production rates, or upgrade effects in
-  `client/src/RackStack.jsx`, mirror the change here too, or offline and
-  online production will drift apart.
+  server-side session store needed). SQLite (`better-sqlite3`) persists
+  users, saves, roles, a versioned tunables config, and minigame sessions.
+  The client no longer computes or stores the economy itself - it dispatches
+  actions to `POST /api/actions` and renders whatever `GET /api/state`
+  returns, with offline gain computed lazily on load rather than by an
+  always-on background worker. As of v1.2 the old client-computed save flow
+  (`GET`/`POST`/`DELETE /api/save`) is gone - if you had anything external
+  talking to those endpoints, point it at `/api/state` and `/api/actions`
+  instead.
 - `client/` - the game itself (Vite + React + Tailwind + lucide-react),
   talking to the API instead of browser storage.
-
-Offline progress works like this: the client ticks production locally in
-real time while a tab is open and POSTs its state to `/api/save` every 5s.
-On next load (`GET /api/save`), the server computes elapsed time since the
-last save, capped at 72h, applies the same production formulas, persists the
-caught-up result, and returns it - the client just displays what it's given.
-There's no always-on background worker simulating idle games 24/7; that's
-unnecessary for an idle game and would just waste resources.
 
 ## 1. Create OAuth apps
 
@@ -53,6 +52,19 @@ including the scheme (`https://`) - if you're putting this behind the
 Cloudflare tunnel you already use for other services, point a subdomain at
 this container and use that in both places.
 
+Also set `SUPER_ADMIN_IDS` to your own `provider:providerId` (e.g.
+`github:37058311`, comma-separated if there's more than one) - this is what
+grants admin access (the live balance-tuning dashboard, roles management,
+the user list). Without it, nobody can reach any admin route, including you,
+and there's no other way to bootstrap the first admin. Log in once first if
+you don't know your provider id: GitHub's is the numeric id at
+`https://api.github.com/users/<your-username>`; Discord's is the numeric id
+shown in Discord's own "Copy User ID" (enable Developer Mode) or visible in
+the server's `users` table after your first login. DB-stored `admin` /
+`event_coordinator` roles (grantable from the dashboard once you're in) are
+for everyone else - `SUPER_ADMIN_IDS` is only for the owner(s) who should
+always have full access no matter what's in the database.
+
 ## 3. Run with Docker Compose
 
 ```bash
@@ -65,6 +77,23 @@ and persists the SQLite file to `./data/rackstack.db` via a bind-mounted
 volume, so it survives container rebuilds.
 
 Point your reverse proxy / Cloudflare tunnel at `http://<host>:3000`.
+
+## Upgrading
+
+Back up `rackstack.db` before upgrading across a major/minor version (e.g.
+v1.1.x -> v1.2.x): stop the container, copy the file
+(`./data/rackstack.db` for Docker Compose, or
+`<data path>/rackstack.db` for Unraid), then start the upgraded container.
+The database uses WAL mode, so copying it while the server is still running
+can grab an inconsistent snapshot - stopping first avoids that.
+
+That said, upgrading in place should just work without a backup too: v1.1
+saves are migrated to the current shape automatically and losslessly the
+first time each one loads (padding in any new fields with defaults; nothing
+existing is dropped or recomputed destructively), and the SQLite schema
+additions (`config`, `roles`, minigame sessions, etc.) are additive and
+applied on boot. The backup is a safety net for the upgrade itself (interrupted
+copy, wrong image, etc.), not something the migration needs to succeed.
 
 ## Running on Unraid (prebuilt image)
 
@@ -138,6 +167,7 @@ Visit the client dev server's printed URL (usually `http://localhost:5173`).
 - **Multi-user by default**: every Discord/GitHub login gets its own
   save, keyed by `provider:providerId`. If you want this to be just-you,
   nothing extra to do - your account is simply the only one with data.
-- **72h offline cap** is a hard ceiling in `gameLogic.js`
-  (`OFFLINE_CAP_HOURS`), applied on top of whatever the Extended Uptime
-  upgrade computes, so no upgrade or future change can push past it.
+- **72h offline cap** (`offline.hardCapHours` in the tunables config,
+  admin-editable from the dashboard) is a ceiling applied on top of whatever
+  the Extended Uptime upgrade computes (`shared/state.js`), so no upgrade
+  can push past it - only an admin raising the config value can.
