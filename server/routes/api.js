@@ -15,6 +15,7 @@ import {
 import { getConfig, updateConfig, rollbackConfig, getHistory } from '../configService.js';
 import { loadAndEvaluate, loadEvaluateAndSchedule, applyActions } from '../stateService.js';
 import { minigameWafers } from '../../shared/gameRules.js';
+import { USERNAME_RE } from '../../shared/validation.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const router = express.Router();
@@ -26,7 +27,6 @@ const COOKIE_OPTS = {
   maxAge: 90 * 24 * 3600 * 1000,
 };
 
-const USERNAME_RE = /^[A-Za-z0-9_-]{3,20}$/;
 const MINIGAMES = ['rush', 'debug', 'match', 'balance'];
 
 function finishLogin(req, res) {

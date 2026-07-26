@@ -4,12 +4,11 @@ import { textMain, textDim, danger, teal, inset, cardBorder, amber } from '../..
 import DangerZone from './DangerZone.jsx';
 import AdminPanel from './AdminPanel.jsx';
 import { setUsername } from '../../api.js';
+import { USERNAME_RE } from '@shared/validation.js';
 
-// Same rule the server enforces (server/routes/api.js USERNAME_RE) - kept in
-// sync manually since this is the only client file that needs it. Used here
-// purely for instant inline feedback; the server's regex is still the source
-// of truth (see the 400 branch in handleSave below).
-const USERNAME_RE = /^[A-Za-z0-9_-]{3,20}$/;
+// Same rule the server enforces (server/routes/api.js, via shared/validation.js).
+// Used here purely for instant inline feedback; the server's regex is still
+// the source of truth (see the 400 branch in handleSave below).
 
 function UsernameForm({ displayName, onUsernameChanged }) {
   const [name, setName] = useState(displayName || '');

@@ -76,10 +76,16 @@ export default function ProfileView({ user, meta, memberSince, displayName, onUs
       </div>
 
       {changelogOpen && (
-        // Simple overlay layer local to ProfileView rather than routing through
-        // ModalRoot: it only ever needs to stack above this view (zIndex 35),
-        // so it borrows ModalRoot's z-40 convention via inline style without
-        // adding a new modal type to that shared component.
+        // Simple overlay layer local to ProfileView, nested inside this
+        // component's own zIndex:35 element, rather than routing through the
+        // shared ModalRoot. zIndex:40 here only orders it above ProfileView's
+        // own children (the profile card) - it does NOT escape ProfileView's
+        // stacking context, so this overlay always paints below ModalRoot's
+        // actual z-40 (a sibling elsewhere in the tree), never above or level
+        // with it. That's fine in practice: nothing currently opens ModalRoot
+        // while the changelog overlay is up. Kept local instead of adding a
+        // new modal type to ModalRoot since it only ever needs to stack above
+        // this view.
         <div
           className="fixed inset-0 flex items-center justify-center p-4"
           style={{ background: 'rgba(0,0,0,0.6)', zIndex: 40 }}
