@@ -75,10 +75,23 @@ export default function RackStack({ user }) {
   // replayed on top of the server's canonical state each time one lands (see
   // handleReconcile) so in-flight optimism isn't lost/flickered away.
   const pendingActionsRef = useRef([]);
+  // minigameRef mirrors `minigame` synchronously - like configRef/stateRef,
+  // never via a plain useEffect (which would lag a render behind). Every
+  // mutation of the minigame state goes through setMinigameSynced (below,
+  // in the Minigames section) so the 1s heartbeat's read of
+  // minigameRef.current can never observe a stale value: in particular,
+  // Match's early-completion path nulls this out in the same synchronous
+  // tick as the click handler, so the heartbeat's next tick can't also
+  // fire a finishMinigameRound for the same (already-finishing) session -
+  // see finishingRef there for the belt-and-suspenders guard too.
   const minigameRef = useRef(null);
+  // sessionId of a minigame round currently mid-finish, or null - a second,
+  // structural guard against double-invoking finishMinigameRound for the
+  // same session (see the comment on minigameRef above for the race this
+  // closes).
+  const finishingRef = useRef(null);
   const debugSpawnRef = useRef(null);
 
-  useEffect(() => { minigameRef.current = minigame; }, [minigame]);
   useEffect(() => () => { if (debugSpawnRef.current) clearTimeout(debugSpawnRef.current); }, []);
   useEffect(() => {
     if (!rejectToast) return undefined;
@@ -226,8 +239,13 @@ export default function RackStack({ user }) {
   }, [loaded]);
 
   // Heartbeat (1s): forces a re-render for wall-clock displays, and ticks
-  // down the active minigame's timer (minigame sessions themselves stay
-  // client-local this task - Task 11 wires them to the server).
+  // down the active minigame's timer. Minigame sessions are server-verified
+  // (Task 11): when a round's timer reaches 0 here, this redeems the
+  // session by calling finishMinigameRound (below), which posts the round's
+  // metric to finishMinigame(sessionId, metric) and folds the server's
+  // payout back in via handleReconcile - see the "Minigames" section for
+  // the full flow, including how Match's early-completion path and this
+  // natural-end check are kept from double-firing the same session.
   useEffect(() => {
     if (!loaded) return undefined;
     const iv = setInterval(() => {
@@ -238,10 +256,10 @@ export default function RackStack({ user }) {
         const newTimeLeft = mg.timeLeft - 1;
         if (newTimeLeft <= 0) {
           if (mg.type === 'debug' && debugSpawnRef.current) { clearTimeout(debugSpawnRef.current); debugSpawnRef.current = null; }
-          setMinigame(null);
+          setMinigameSynced(null);
           finishMinigameRound(mg);
         } else {
-          setMinigame((m) => (m ? { ...m, timeLeft: newTimeLeft } : m));
+          setMinigameSynced((m) => (m ? { ...m, timeLeft: newTimeLeft } : m));
         }
       }
     }, 1000);
@@ -322,7 +340,58 @@ export default function RackStack({ user }) {
   // anything still in flight - the same reconcile path optimistic economy
   // actions use. Cancel (the X button) just clears local minigame state and
   // never calls finish - the session simply expires server-side.
+  //
+  // setMinigameSynced wraps every mutation of the `minigame` state so
+  // minigameRef.current is always updated in the same synchronous tick as
+  // the state change (matching the configRef/stateRef pattern) rather than
+  // lagging behind via a plain useEffect. That closes a race between Match's
+  // early-completion path (tapMatchTile, below) and the 1s heartbeat's
+  // natural-end check: both read minigameRef.current to decide whether to
+  // call finishMinigameRound, and without a synchronous ref the heartbeat
+  // could still see the pre-completion mg (lower pairsFound) and redeem the
+  // session first, causing the legitimate full-match finish to lose the
+  // race and get rejected by the server's 410. finishMinigameRound also
+  // carries its own finishingRef guard as a second, structural layer against
+  // ever posting two finish calls for the same session.
   // ---------------------------------------------------------------------
+
+  function setMinigameSynced(updaterOrValue) {
+    const next = typeof updaterOrValue === 'function' ? updaterOrValue(minigameRef.current) : updaterOrValue;
+    minigameRef.current = next;
+    setMinigame(next);
+    return next;
+  }
+
+  // Applies a 429 cooldown_active response's retryAt directly onto local
+  // canon (cloned, not mutated) so GamesPanel's countdown reflects it
+  // immediately instead of waiting for the next unrelated reconcile.
+  function applyGameCooldown(game, retryAt) {
+    const prev = stateRef.current;
+    const next = {
+      ...prev,
+      server: { ...prev.server, gameCooldowns: { ...prev.server.gameCooldowns, [game]: retryAt } },
+    };
+    stateRef.current = next;
+    setState(next);
+  }
+
+  // Fallback for a 429 whose body didn't carry a retryAt (shouldn't happen
+  // per the documented contract, but cheap to cover): re-fetch canonical
+  // state outright and reconcile it in, which also refreshes gameCooldowns.
+  async function refreshCooldownsFromServer() {
+    const fresh = await fetchState();
+    if (fresh && !fresh.error) {
+      handleReconcile({ run: fresh.run, meta: fresh.meta, server: fresh.server }, []);
+    }
+  }
+
+  async function handleMinigameStartFailure(game, res) {
+    if (res && res.status === 429) {
+      if (res.retryAt) applyGameCooldown(game, res.retryAt);
+      else await refreshCooldownsFromServer();
+    }
+    showToast(REJECT_MESSAGES[res && res.error] || 'Action failed');
+  }
 
   const MINIGAME_METRIC = {
     rush: (mg) => mg.taps,
@@ -332,40 +401,50 @@ export default function RackStack({ user }) {
   };
 
   async function finishMinigameRound(mg) {
-    const metric = MINIGAME_METRIC[mg.type](mg);
-    const res = await finishMinigame(mg.sessionId, metric);
-    if (res && res.state) {
-      handleReconcile(res.state, []);
-      const { wafers } = res;
-      let text;
-      if (mg.type === 'rush') text = `${mg.taps} taps — +${wafers} wafers`;
-      else if (mg.type === 'debug') text = `${mg.score} bugs squashed — +${wafers} wafers`;
-      else if (mg.type === 'match') {
-        const pairCount = configRef.current.minigames.match.pairCount;
-        text = wafers > 0
-          ? `${mg.pairsFound}/${pairCount} pairs matched — +${wafers} wafers`
-          : `${mg.pairsFound}/${pairCount} pairs matched — no payout, not fully matched`;
-      } else text = `${mg.score} stabilizations — +${wafers} wafers`;
-      setModal({ type: 'minigameResult', text });
-    } else {
-      showToast(REJECT_MESSAGES[res && res.error] || 'Session expired');
+    // Structural single-fire guard: if this exact session is already being
+    // finished (e.g. Match's early-completion path and the heartbeat both
+    // reached this point), the second caller no-ops instead of posting a
+    // second /api/minigame/finish for the same sessionId.
+    if (finishingRef.current === mg.sessionId) return;
+    finishingRef.current = mg.sessionId;
+    try {
+      const metric = MINIGAME_METRIC[mg.type](mg);
+      const res = await finishMinigame(mg.sessionId, metric);
+      if (res && res.state) {
+        handleReconcile(res.state, []);
+        const { wafers } = res;
+        let text;
+        if (mg.type === 'rush') text = `${mg.taps} taps — +${wafers} wafers`;
+        else if (mg.type === 'debug') text = `${mg.score} bugs squashed — +${wafers} wafers`;
+        else if (mg.type === 'match') {
+          const pairCount = configRef.current.minigames.match.pairCount;
+          text = wafers > 0
+            ? `${mg.pairsFound}/${pairCount} pairs matched — +${wafers} wafers`
+            : `${mg.pairsFound}/${pairCount} pairs matched — no payout, not fully matched`;
+        } else text = `${mg.score} stabilizations — +${wafers} wafers`;
+        setModal({ type: 'minigameResult', text });
+      } else {
+        showToast(REJECT_MESSAGES[res && res.error] || 'Session expired');
+      }
+    } finally {
+      finishingRef.current = null;
     }
   }
 
   async function startRushGame() {
     const res = await startMinigame('rush');
     if (res && res.sessionId) {
-      setMinigame({ type: 'rush', sessionId: res.sessionId, timeLeft: config.data.minigames.rush.durationSec, taps: 0 });
+      setMinigameSynced({ type: 'rush', sessionId: res.sessionId, timeLeft: config.data.minigames.rush.durationSec, taps: 0 });
     } else {
-      showToast(REJECT_MESSAGES[res && res.error] || 'Action failed');
+      await handleMinigameStartFailure('rush', res);
     }
   }
-  function tapRush() { setMinigame((m) => (m && m.type === 'rush' ? { ...m, taps: m.taps + 1 } : m)); }
+  function tapRush() { setMinigameSynced((m) => (m && m.type === 'rush' ? { ...m, taps: m.taps + 1 } : m)); }
 
   function scheduleDebugSpawn(debugConf) {
     const delay = debugConf.spawnMinMs + Math.random() * (debugConf.spawnMaxMs - debugConf.spawnMinMs);
     debugSpawnRef.current = setTimeout(() => {
-      setMinigame((m) => {
+      setMinigameSynced((m) => {
         if (!m || m.type !== 'debug') return m;
         if (m.lit.length >= debugConf.maxLit) return m;
         let idx;
@@ -379,15 +458,15 @@ export default function RackStack({ user }) {
     const res = await startMinigame('debug');
     if (res && res.sessionId) {
       const debugConf = config.data.minigames.debug;
-      setMinigame({ type: 'debug', sessionId: res.sessionId, timeLeft: debugConf.durationSec, score: 0, lit: [] });
+      setMinigameSynced({ type: 'debug', sessionId: res.sessionId, timeLeft: debugConf.durationSec, score: 0, lit: [] });
       if (debugSpawnRef.current) clearTimeout(debugSpawnRef.current);
       scheduleDebugSpawn(debugConf);
     } else {
-      showToast(REJECT_MESSAGES[res && res.error] || 'Action failed');
+      await handleMinigameStartFailure('debug', res);
     }
   }
   function tapDebugTile(idx) {
-    setMinigame((m) => {
+    setMinigameSynced((m) => {
       if (!m || m.type !== 'debug') return m;
       if (!m.lit.includes(idx)) return m;
       return { ...m, score: m.score + 1, lit: m.lit.filter((i) => i !== idx) };
@@ -404,13 +483,13 @@ export default function RackStack({ user }) {
         const j = Math.floor(Math.random() * (i + 1));
         const tmp = deck[i]; deck[i] = deck[j]; deck[j] = tmp;
       }
-      setMinigame({ type: 'match', sessionId: res.sessionId, order: deck, revealed: Array(deck.length).fill(false), matched: Array(deck.length).fill(false), picks: [], timeLeft: config.data.minigames.match.durationSec, pairsFound: 0 });
+      setMinigameSynced({ type: 'match', sessionId: res.sessionId, order: deck, revealed: Array(deck.length).fill(false), matched: Array(deck.length).fill(false), picks: [], timeLeft: config.data.minigames.match.durationSec, pairsFound: 0 });
     } else {
-      showToast(REJECT_MESSAGES[res && res.error] || 'Action failed');
+      await handleMinigameStartFailure('match', res);
     }
   }
   function tapMatchTile(idx) {
-    setMinigame((m) => {
+    setMinigameSynced((m) => {
       if (!m || m.type !== 'match') return m;
       if (m.matched[idx] || m.revealed[idx] || m.picks.length >= 2) return m;
       const revealed = [...m.revealed]; revealed[idx] = true;
@@ -423,7 +502,11 @@ export default function RackStack({ user }) {
           const pairsFound = m.pairsFound + 1;
           const pairCount = configRef.current.minigames.match.pairCount;
           if (pairsFound === pairCount) {
-            // Finish immediately - don't wait for the timer.
+            // Finish immediately - don't wait for the timer. minigameRef is
+            // already null by the time this returns (setMinigameSynced
+            // applies the `return null` below synchronously), so the 1s
+            // heartbeat can't also see a completed-but-not-yet-null mg and
+            // race this finish call.
             const finished = { ...next, matched, picks: [], pairsFound };
             setTimeout(() => finishMinigameRound(finished), 0);
             return null;
@@ -431,7 +514,7 @@ export default function RackStack({ user }) {
           next = { ...next, matched, picks: [], pairsFound };
         } else {
           setTimeout(() => {
-            setMinigame((mm) => {
+            setMinigameSynced((mm) => {
               if (!mm || mm.type !== 'match') return mm;
               const revealed2 = [...mm.revealed]; revealed2[a] = false; revealed2[b] = false;
               return { ...mm, revealed: revealed2, picks: [] };
@@ -446,18 +529,18 @@ export default function RackStack({ user }) {
   async function startBalanceGame() {
     const res = await startMinigame('balance');
     if (res && res.sessionId) {
-      setMinigame({ type: 'balance', sessionId: res.sessionId, timeLeft: config.data.minigames.balance.durationSec, score: 0 });
+      setMinigameSynced({ type: 'balance', sessionId: res.sessionId, timeLeft: config.data.minigames.balance.durationSec, score: 0 });
     } else {
-      showToast(REJECT_MESSAGES[res && res.error] || 'Action failed');
+      await handleMinigameStartFailure('balance', res);
     }
   }
   function balanceScore(delta) {
-    setMinigame((m) => (m && m.type === 'balance' ? { ...m, score: Math.max(0, m.score + delta) } : m));
+    setMinigameSynced((m) => (m && m.type === 'balance' ? { ...m, score: Math.max(0, m.score + delta) } : m));
   }
 
   function cancelMinigame() {
     if (minigame && minigame.type === 'debug' && debugSpawnRef.current) { clearTimeout(debugSpawnRef.current); debugSpawnRef.current = null; }
-    setMinigame(null);
+    setMinigameSynced(null);
   }
 
   if (!loaded || !state || !config) {
