@@ -1,0 +1,187 @@
+// Network layer for the server-authoritative economy: plain fetch wrappers
+// for the one-shot endpoints, plus makeActionQueue() for batched/queued
+// game actions (buy, collect, migrate, ...).
+//
+// Error convention: every exported function *returns* (never throws) on
+// failure - this codebase prefers return values over exceptions for
+// expected failure modes. On success, a function resolves to exactly the
+// JSON shape documented on its declaration below. On failure - a non-2xx
+// HTTP response or a network/fetch error - it resolves to a plain object
+// `{ status, error, ...extra }`:
+//   - `status` is the HTTP status code, or 0 for a network-level failure
+//     (fetch threw, e.g. offline).
+//   - `error` is the server's `error` code from the JSON body (e.g.
+//     'cooldown_active', 'invalid_username'), or a generic fallback string
+//     if the body wasn't JSON or had no `error` field.
+//   - any other fields the server's error body included (e.g. `retryAt` on
+//     a 429 cooldown response) are spread onto the result too.
+// None of the documented success shapes ever contain a top-level `error`
+// key, so callers can branch with `if (result.error) { ... }`.
+//
+// All requests send `credentials: 'include'` so the auth cookie rides
+// along cross-origin-safe same-site requests.
+
+import { ACTION_FLUSH_MS } from './constants.js';
+import { fmt } from '@shared/gameRules.js';
+
+// Re-exported for convenience so UI code that already imports from
+// game/api.js doesn't need a second import for the shared number
+// formatter (still fine to import '@shared/gameRules.js' directly too).
+export { fmt };
+
+async function request(path, opts) {
+  let res;
+  try {
+    res = await fetch(path, { credentials: 'include', ...opts });
+  } catch (e) {
+    return { status: 0, error: 'network_error' };
+  }
+
+  const text = await res.text();
+  let body = null;
+  if (text) {
+    try { body = JSON.parse(text); } catch (e) { body = null; }
+  }
+
+  if (!res.ok) {
+    const errBody = (body && typeof body === 'object') ? body : {};
+    return { status: res.status, ...errBody, error: errBody.error || 'request_failed' };
+  }
+  return body;
+}
+
+function postJSON(path, payload, method = 'POST') {
+  return request(path, {
+    method,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+}
+
+// GET /api/state -> { run, meta, server, offlineGain, configVersion, serverTime }
+export function fetchState() {
+  return request('/api/state');
+}
+
+// GET /api/config -> { version, data }
+export function fetchConfig() {
+  return request('/api/config');
+}
+
+// POST /api/minigame/start { game } -> { sessionId }
+//   | 429 { error: 'cooldown_active', retryAt } | 409 { error: 'session_open' }
+export function startMinigame(game) {
+  return postJSON('/api/minigame/start', { game });
+}
+
+// POST /api/minigame/finish { sessionId, metric } -> { state, wafers }
+//   | 410 { error: 'gone' } | 404 { error: 'not_found' } | 429 { error: 'cooldown_active' }
+export function finishMinigame(sessionId, metric) {
+  return postJSON('/api/minigame/finish', { sessionId, metric });
+}
+
+// PUT /api/me/username { username } -> { ok, username }
+//   | 400 { error: 'invalid_username' } | 409 { error: 'taken' }
+export function setUsername(name) {
+  return postJSON('/api/me/username', { username: name }, 'PUT');
+}
+
+// GET /api/changelog -> plain text on success, { status, error } on failure.
+export async function fetchChangelog() {
+  let res;
+  try {
+    res = await fetch('/api/changelog', { credentials: 'include' });
+  } catch (e) {
+    return { status: 0, error: 'network_error' };
+  }
+  const text = await res.text();
+  if (!res.ok) return { status: res.status, error: text || 'request_failed' };
+  return text;
+}
+
+// ---------------------------------------------------------------------------
+// Action queue
+// ---------------------------------------------------------------------------
+
+// Action types that skip the 1s auto-flush timer and post immediately:
+// one-off/high-stakes moves the player expects to resolve right away rather
+// than sit queued for up to a second.
+const IMMEDIATE = new Set([
+  'migrate', 'singularity', 'hardReset', 'buyUpgrade', 'buyShardUpgrade',
+  'claimGoal', 'claimRepeatable', 'claimAnomaly',
+]);
+
+// makeActionQueue({ onReconcile, onReject }) -> { dispatch, flush, pending }
+//
+// - dispatch(action): assigns action.id (incrementing), enqueues it, and
+//   (for IMMEDIATE types) kicks off an immediate flush().
+// - flush(): POSTs the queued batch to /api/actions. Only one flush is ever
+//   in flight at a time - if one is already running, this is a no-op (and
+//   anything dispatched meanwhile just accumulates for the next flush).
+//   On success: calls onReconcile(state, results, serverTime), then
+//   onReject(result) for each per-action result with `ok: false`.
+//   On failure (network error, or a non-2xx from the batch endpoint
+//   itself): the whole batch is put back at the front of the queue so it's
+//   retried on the next tick.
+// - pending(): a snapshot array of not-yet-flushed queued actions.
+//
+// Also wires up best-effort delivery on tab close/hide: pagehide and
+// visibilitychange->hidden send whatever's still queued via
+// navigator.sendBeacon (fire-and-forget, no response handling) and clear
+// the queue.
+export function makeActionQueue({ onReconcile, onReject }) {
+  let queue = [];
+  let nextId = 1;
+  let inFlight = false;
+
+  function dispatch(action) {
+    const withId = { ...action, id: nextId++ };
+    queue.push(withId);
+    if (IMMEDIATE.has(action.type)) flush();
+    return withId.id;
+  }
+
+  async function flush() {
+    if (inFlight || queue.length === 0) return;
+    const batch = queue;
+    queue = [];
+    inFlight = true;
+    const res = await postJSON('/api/actions', { actions: batch });
+    inFlight = false;
+
+    if (!res || res.error) {
+      // Keep the batch queued (ahead of anything dispatched meanwhile) for
+      // retry on the next auto-flush tick.
+      queue = batch.concat(queue);
+      return;
+    }
+
+    const { state, results, serverTime } = res;
+    onReconcile(state, results, serverTime);
+    for (const result of results || []) {
+      if (!result.ok) onReject(result);
+    }
+  }
+
+  function pending() {
+    return [...queue];
+  }
+
+  function flushViaBeacon() {
+    if (queue.length === 0 || typeof navigator === 'undefined' || !navigator.sendBeacon) return;
+    const blob = new Blob([JSON.stringify({ actions: queue })], { type: 'application/json' });
+    navigator.sendBeacon('/api/actions', blob);
+    queue = [];
+  }
+
+  if (typeof window !== 'undefined') {
+    window.addEventListener('pagehide', flushViaBeacon);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') flushViaBeacon();
+    });
+  }
+
+  setInterval(() => { if (queue.length > 0) flush(); }, ACTION_FLUSH_MS);
+
+  return { dispatch, flush, pending };
+}

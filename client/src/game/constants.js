@@ -28,9 +28,9 @@ export const DEBUG_SPAWN_MAX_MS = 900;
 // Cable Match
 export const MATCH_PAIR_COUNT = 10;
 
-// Admin-only UI visibility - the real gate is server-side (server/auth.js),
-// this only decides whether to show the section at all.
-export const ADMIN_USER_ID = 'github:37058311';
+// Action queue: how often makeActionQueue() (game/api.js) auto-flushes
+// queued actions to the server when the queue is non-empty.
+export const ACTION_FLUSH_MS = 1000;
 
 // Overclock Balance
 export const BALANCE_SAFE_ZONE_MIN = 35;

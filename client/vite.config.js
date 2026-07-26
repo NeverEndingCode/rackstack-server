@@ -1,6 +1,15 @@
+import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
+
+// Root package.json is the release-version authority (bumped alongside the
+// server, not the client's own package.json) - read it via createRequire
+// rather than a JSON import assertion, since Vite 5's config file runs
+// directly under Node and this avoids the assert/with-syntax churn.
+const require = createRequire(import.meta.url);
+const pkg = require('../package.json');
 
 export default defineConfig({
   plugins: [
@@ -39,10 +48,21 @@ export default defineConfig({
       },
     }),
   ],
+  resolve: {
+    alias: {
+      '@shared': fileURLToPath(new URL('../shared', import.meta.url)),
+    },
+  },
   server: {
+    fs: {
+      allow: ['..'],
+    },
     proxy: {
       '/api': 'http://localhost:3000',
       '/auth': 'http://localhost:3000',
     },
+  },
+  define: {
+    __APP_VERSION__: JSON.stringify(pkg.version),
   },
 });
