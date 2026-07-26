@@ -58,6 +58,11 @@ export default function RackStack({ user }) {
   const [activeTab, setActiveTab] = useState('racks');
   const [minigame, setMinigame] = useState(null);
   const [profileOpen, setProfileOpen] = useState(false);
+  // Local mirror of the display name so a successful username change (see
+  // ProfileSettings) reflects in the header/profile immediately, without a
+  // page reload or waiting on the next /api/me fetch (App.jsx's `user`
+  // object is fetched once on boot and never re-fetched).
+  const [displayName, setDisplayName] = useState(user && user.username);
   // Bumped every second purely to force a re-render for wall-clock-driven
   // displays (boost/vent/heat-cooldown countdowns, the anomaly toast) that
   // don't otherwise change React state between production ticks.
@@ -607,7 +612,7 @@ export default function RackStack({ user }) {
 
       <div className="sticky top-0 z-10 border-b" style={{ background: 'rgba(14,20,27,0.96)', backdropFilter: 'blur(6px)', borderColor: cardBorder }}>
         <div className="max-w-2xl mx-auto px-4 pt-3">
-          <HeaderBar user={user} level={state.meta.level} onOpenProfile={() => setProfileOpen(true)} />
+          <HeaderBar user={user} displayName={displayName} level={state.meta.level} onOpenProfile={() => setProfileOpen(true)} />
           <StatsRow run={state.run} meta={state.meta} totalOutputPerSec={ctx.totalOutputPerSec} xpNeeded={xpNeeded} boost={boost} boostMultNow={boostMultNow} />
           <MigrateBar gain={gain} showCollectAll={anyManualOwned} collectDisabled={!anyReady} onMigrate={() => setModal({ type: 'migrate' })} onCollectAll={collectAll} />
           <TabBar tabs={TABS} activeTab={activeTab} setActiveTab={setActiveTab} gridUnlocked={gridUnlocked} overclockUnlocked={overclockUnlocked} singularityUnlocked={singularityUnlocked} />
@@ -677,6 +682,8 @@ export default function RackStack({ user }) {
           user={user}
           meta={state.meta}
           memberSince={user && user.memberSince}
+          displayName={displayName}
+          onUsernameChanged={setDisplayName}
           onClose={() => setProfileOpen(false)}
           onLogout={logout}
           onOpenReset={() => setModal({ type: 'reset' })}
