@@ -9,10 +9,11 @@ import {
 } from '../auth.js';
 import {
   getUserById, getAllUsersWithSaves, getRoles, setRoles, setUsername,
-  createMinigameSession, getMinigameSession, finishMinigameSession, putSave,
+  createMinigameSession, getMinigameSession, getOpenMinigameSession,
+  finishMinigameSession, putSave,
 } from '../db.js';
 import { getConfig, updateConfig, rollbackConfig, getHistory } from '../configService.js';
-import { loadAndEvaluate, applyActions } from '../stateService.js';
+import { loadAndEvaluate, loadEvaluateAndSchedule, applyActions } from '../stateService.js';
 import { minigameWafers } from '../../shared/gameRules.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -190,6 +191,18 @@ router.post('/api/minigame/start', requireAuth, (req, res) => {
     return res.status(429).json({ error: 'cooldown_active', retryAt: cooldownUntil });
   }
 
+  // Block a second concurrently-open session for the same game: without
+  // this, a burst of back-to-back starts (none finished yet, so none has
+  // set the cooldown) could each be redeemed independently once opened,
+  // multiplying payouts far past the intended ~1 win per winCooldownMs.
+  const { data: config } = getConfig();
+  const gameConf = config.minigames[game];
+  const minStartedAt = now - (gameConf.durationSec * 1000 + 10000);
+  const openSession = getOpenMinigameSession(req.user.sub, game, minStartedAt);
+  if (openSession) {
+    return res.status(409).json({ error: 'session_open' });
+  }
+
   const session = createMinigameSession(req.user.sub, game);
   res.json({ sessionId: session.id });
 });
@@ -225,8 +238,18 @@ router.post('/api/minigame/finish', requireAuth, (req, res) => {
   }
   clamped = Math.max(0, clamped);
 
-  const { state } = loadAndEvaluate(req.user.sub, now);
-  const wafers = won ? minigameWafers(session.game, clamped, state.meta, config) : 0;
+  // Single load+evaluate (not persisted yet) so wafer/stat/cooldown
+  // mutations below land in one putSave, matching applyActions' pattern.
+  const { state } = loadEvaluateAndSchedule(req.user.sub, now);
+
+  // Re-check the cooldown against the freshly-evaluated state, not just at
+  // start time: a burst of sessions opened concurrently for the same game
+  // (each individually valid when it was opened) must not all be redeemable
+  // once the first win of the batch sets the cooldown. The session is still
+  // marked finished below either way, so a blocked attempt can't be replayed.
+  const cooldownUntil = state.server.gameCooldowns[session.game] || 0;
+  const onCooldown = now < cooldownUntil;
+  const wafers = !onCooldown && won ? minigameWafers(session.game, clamped, state.meta, config) : 0;
 
   if (wafers > 0) {
     state.meta.wafers += wafers;
@@ -237,6 +260,10 @@ router.post('/api/minigame/finish', requireAuth, (req, res) => {
 
   putSave(req.user.sub, state, now);
   finishMinigameSession(sessionId, clamped);
+
+  if (onCooldown) {
+    return res.status(429).json({ error: 'cooldown_active' });
+  }
   res.json({ state, wafers });
 });
 

@@ -16,8 +16,13 @@ function safeParse(text) {
  * evaluates it forward to `now`. A brand-new user (no save row) is treated
  * as "last evaluated now" so they don't get charged an offline gap back to
  * the epoch.
+ *
+ * Does NOT persist - exported (in addition to loadAndEvaluate below) for
+ * callers like the minigame/finish route that need to mutate the evaluated
+ * state further (crediting wafers, setting a cooldown) before a single
+ * putSave, the same one-write pattern applyActions uses.
  */
-function loadEvaluateAndSchedule(userId, now) {
+export function loadEvaluateAndSchedule(userId, now) {
   const config = getConfig().data;
   const row = getSave(userId);
   const raw = row ? safeParse(row.data) : null;

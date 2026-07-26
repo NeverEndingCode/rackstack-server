@@ -14,7 +14,7 @@ import { DEFAULT_CONFIG } from '../shared/configSchema.js';
 // tests/db.test.js - these have to be dynamic to see the env vars set here.
 const { buildApp } = await import('../server/app.js');
 const { ensureConfig } = await import('../server/configService.js');
-const { upsertUser, putSave, setRoles } = await import('../server/db.js');
+const { upsertUser, putSave, setRoles, createMinigameSession } = await import('../server/db.js');
 const { COOKIE_NAME } = await import('../server/auth.js');
 
 const v11Fixture = JSON.parse(readFileSync(new URL('./fixtures/v11-save.json', import.meta.url)));
@@ -279,6 +279,73 @@ describe('minigames', () => {
       .set('Cookie', cookieFor(user))
       .send({ game: 'rush' });
     expect(secondStart.status).toBe(429);
+  });
+
+  it('a second concurrently-open session for the same game is rejected -> 409 (burst-start regression)', async () => {
+    const user = makeUser();
+
+    const first = await request(app)
+      .post('/api/minigame/start')
+      .set('Cookie', cookieFor(user))
+      .send({ game: 'rush' });
+    expect(first.status).toBe(200);
+
+    // Same game, still unfinished - must not be allowed to open a second
+    // one just because the first hasn't been redeemed yet.
+    const second = await request(app)
+      .post('/api/minigame/start')
+      .set('Cookie', cookieFor(user))
+      .send({ game: 'rush' });
+    expect(second.status).toBe(409);
+    expect(second.body.error).toBe('session_open');
+
+    // A different game for the same user is unaffected.
+    const otherGame = await request(app)
+      .post('/api/minigame/start')
+      .set('Cookie', cookieFor(user))
+      .send({ game: 'debug' });
+    expect(otherGame.status).toBe(200);
+  });
+
+  it('a session that predates a win cannot be redeemed once the win cooldown is set -> 429, no credit, still marked finished (burst-finish regression)', async () => {
+    const user = makeUser();
+
+    // Win once, which sets server.gameCooldowns.rush.
+    const startRes = await request(app)
+      .post('/api/minigame/start')
+      .set('Cookie', cookieFor(user))
+      .send({ game: 'rush' });
+    const winFinish = await request(app)
+      .post('/api/minigame/finish')
+      .set('Cookie', cookieFor(user))
+      .send({ sessionId: startRes.body.sessionId, metric: 999999 });
+    expect(winFinish.status).toBe(200);
+    const wafersAfterWin = winFinish.body.state.meta.wafers;
+    expect(wafersAfterWin).toBeGreaterThan(0);
+
+    // Craft a second session directly via the db layer, bypassing the
+    // start-time session_open/cooldown gate entirely, to simulate one that
+    // was opened concurrently before the win landed.
+    const craftedSession = createMinigameSession(user.id, 'rush');
+
+    const blockedFinish = await request(app)
+      .post('/api/minigame/finish')
+      .set('Cookie', cookieFor(user))
+      .send({ sessionId: craftedSession.id, metric: 999999 });
+    expect(blockedFinish.status).toBe(429);
+    expect(blockedFinish.body).toEqual({ error: 'cooldown_active' });
+
+    // No further credit landed...
+    const stateRes = await request(app).get('/api/state').set('Cookie', cookieFor(user));
+    expect(stateRes.body.meta.wafers).toBe(wafersAfterWin);
+
+    // ...and the blocked session was still marked finished, so it can't be
+    // replayed once the cooldown clears.
+    const replay = await request(app)
+      .post('/api/minigame/finish')
+      .set('Cookie', cookieFor(user))
+      .send({ sessionId: craftedSession.id, metric: 1 });
+    expect(replay.status).toBe(410);
   });
 
   it('an unknown session id -> 404', async () => {

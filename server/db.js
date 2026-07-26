@@ -205,6 +205,23 @@ export function getMinigameSession(id) {
   return db.prepare('SELECT * FROM minigame_sessions WHERE id = ?').get(id);
 }
 
+/**
+ * Finds the most recent still-open (unfinished, not yet expired) session
+ * for `userId`+`game`, if any. "Not yet expired" is caller-supplied as
+ * `minStartedAt` (a session's `started_at` must be >= this to count) since
+ * the expiry window depends on `config.minigames[game].durationSec`, which
+ * this module doesn't have access to - the route layer computes it.
+ * Used to block a burst of concurrently-open sessions for the same game
+ * (each of which would otherwise dodge the win cooldown independently).
+ */
+export function getOpenMinigameSession(userId, game, minStartedAt) {
+  return db.prepare(`
+    SELECT * FROM minigame_sessions
+    WHERE user_id = ? AND game = ? AND finished_at IS NULL AND started_at >= ?
+    ORDER BY started_at DESC LIMIT 1
+  `).get(userId, game, minStartedAt);
+}
+
 export function finishMinigameSession(id, score) {
   db.prepare('UPDATE minigame_sessions SET finished_at = ?, score = ? WHERE id = ?').run(Date.now(), score, id);
 }
