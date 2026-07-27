@@ -7,6 +7,7 @@ import request from 'supertest';
 import jwt from 'jsonwebtoken';
 import { readFileSync } from 'node:fs';
 import { DEFAULT_CONFIG } from '../shared/configSchema.js';
+import { initialState } from '../shared/state.js';
 
 // Dynamic imports: server/auth.js reads JWT_SECRET (and server/db.js reads
 // DB_PATH) at module-evaluation time. Static imports get hoisted above the
@@ -143,6 +144,87 @@ describe('POST /api/actions', () => {
     expect(res.status).toBe(200);
     expect(res.body.results).toHaveLength(1);
     expect(res.body.results[0]).toEqual({ id: 'p1', ok: false, error: 'unknown_action' });
+  });
+});
+
+// Task 5: proves the existing, unmodified POST /api/actions route (and
+// applyActions() in server/stateService.js) dispatches all 7 Cold Storage
+// action types registered in shared/reducer.js's HANDLERS table correctly,
+// with zero server route/service code changes. Business-logic edge cases for
+// these handlers are already covered exhaustively at the reducer-unit level
+// in tests/reducer.coldStorage.test.js (Task 3); these tests only need to
+// prove the generic HTTP dispatch pipeline reaches them.
+describe('POST /api/actions: Cold Storage', () => {
+  it('dispatches claimBlock through the existing generic action pipeline', async () => {
+    const user = makeUser();
+    const state = initialState();
+    // DEFAULT_CONFIG.batchQueue.blockDurationMs is 6h; starting the track 20h
+    // ago means floor(20/6) = 3 blocks (indices 0-2) have arrived.
+    state.meta.coldStorage.trackStartedAt = Date.now() - 20 * 3600 * 1000;
+    putSave(user.id, state, Date.now());
+
+    const res = await request(app)
+      .post('/api/actions')
+      .set('Cookie', cookieFor(user))
+      .send({ actions: [{ id: 1, type: 'claimBlock', index: 0 }] });
+
+    expect(res.status).toBe(200);
+    expect(res.body.results[0]).toMatchObject({ id: 1, ok: true });
+    expect(res.body.state.meta.coldStorage.blocksClaimed[0]).toBe(true);
+  });
+
+  it('dispatches claimAllBlocks, resetTrack, startJob, and cancelJob in one batch', async () => {
+    const user = makeUser();
+    const state = initialState();
+    state.meta.coldStorage.trackStartedAt = Date.now() - 200 * 3600 * 1000; // all 16 blocks arrived
+    putSave(user.id, state, Date.now());
+
+    const res = await request(app)
+      .post('/api/actions')
+      .set('Cookie', cookieFor(user))
+      .send({
+        actions: [
+          { id: 1, type: 'claimAllBlocks' },
+          { id: 2, type: 'resetTrack' },
+          { id: 3, type: 'startJob', jobType: 'defrag' },
+          { id: 4, type: 'cancelJob' },
+        ],
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.results).toHaveLength(4);
+    expect(res.body.results[0]).toMatchObject({ id: 1, ok: true, claimedCount: 16 });
+    expect(res.body.results[1]).toMatchObject({ id: 2, ok: true });
+    expect(res.body.results[2]).toMatchObject({ id: 3, ok: true });
+    expect(res.body.results[3]).toMatchObject({ id: 4, ok: true });
+    expect(res.body.state.meta.coldStorage.trackCycle).toBe(1);
+    expect(res.body.state.meta.coldStorage.job).toBeNull();
+  });
+
+  // The brief's sketch payload `{ id: 1, type: 'buyTapeUpgrade', id: 'headstart' }`
+  // has a literal duplicate `id` key - impossible in a JS object literal (the
+  // second silently wins, so the client-correlation id `1` is lost, not sent).
+  // shared/reducer.js's buyTapeUpgrade handler destructures `action.id` as the
+  // upgrade identifier - exactly like the pre-existing buyUpgrade/buyShardUpgrade
+  // buyFromDefs() handlers already do - and applyActions() (server/stateService.js)
+  // separately echoes `action.id` back as the per-result correlation id. So for
+  // this action type (like buyUpgrade/buyShardUpgrade before it) the single `id`
+  // field necessarily serves both purposes; there is no second field to invent.
+  it('rejects buyTapeUpgrade at max level via the existing config-driven check', async () => {
+    const user = makeUser();
+    const state = initialState();
+    state.meta.coldStorage.upgrades.headstart = 5; // DEFAULT_CONFIG.upgrades.maxLevels.headstart
+    state.meta.coldStorage.tapes = 1e9; // plenty of tapes - proves this is max_level, not insufficient_credits
+    putSave(user.id, state, Date.now());
+
+    const res = await request(app)
+      .post('/api/actions')
+      .set('Cookie', cookieFor(user))
+      .send({ actions: [{ type: 'buyTapeUpgrade', id: 'headstart' }] });
+
+    expect(res.status).toBe(200);
+    expect(res.body.results[0]).toMatchObject({ id: 'headstart', ok: false, error: 'max_level' });
+    expect(res.body.state.meta.coldStorage.upgrades.headstart).toBe(5); // unchanged
   });
 });
 
