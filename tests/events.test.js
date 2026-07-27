@@ -44,6 +44,34 @@ describe('mergeEventModifiers', () => {
     expect(merged.production.globalMult).toBe(3);
     expect(merged.heat.capacity).toBe(5000);
   });
+
+  // Regression: mergeEventModifiers must be safe on unvalidated input, not
+  // just on input that has already passed validateModifiers. setAtPath
+  // walks path.split('.') with plain `cur[k]` assignment and no own-key
+  // guard, so a path like '__proto__.polluted' reaches Object.prototype and
+  // corrupts it process-wide. If the TUNABLE_PATHS guard in
+  // mergeEventModifiers were removed, `({}).polluted` below would read back
+  // 'PWNED' instead of undefined — these assertions fail loudly in that case.
+  it('does not pollute Object.prototype via __proto__.<key> paths', () => {
+    mergeEventModifiers(DEFAULT_CONFIG, [{ path: '__proto__.polluted', value: 'PWNED' }]);
+    expect(({}).polluted).toBeUndefined();
+  });
+  it('does not pollute Object.prototype via constructor.prototype.<key> paths', () => {
+    mergeEventModifiers(DEFAULT_CONFIG, [{ path: 'constructor.prototype.polluted', value: 'PWNED' }]);
+    expect(({}).polluted).toBeUndefined();
+  });
+  it('does not pollute Object.prototype via a bare __proto__ path', () => {
+    mergeEventModifiers(DEFAULT_CONFIG, [{ path: '__proto__', value: { polluted: 'PWNED' } }]);
+    expect(({}).polluted).toBeUndefined();
+  });
+  it('skips a hostile modifier but still applies a valid one in the same array', () => {
+    const merged = mergeEventModifiers(DEFAULT_CONFIG, [
+      { path: '__proto__.polluted', value: 'PWNED' },
+      { path: 'production.gridMult', value: 2 },
+    ]);
+    expect(merged.production.gridMult).toBe(2);
+    expect(({}).polluted).toBeUndefined();
+  });
 });
 
 describe('validateModifiers', () => {

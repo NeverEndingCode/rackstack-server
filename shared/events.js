@@ -3,7 +3,7 @@
 // Zero runtime dependencies outside shared/ — consumed identically by the
 // server (authoritative validation) and the client (progress rendering).
 
-import { DEFAULT_CONFIG, TUNABLES, getAtPath, setAtPath, validateConfig } from './configSchema.js';
+import { DEFAULT_CONFIG, TUNABLES, setAtPath, validateConfig } from './configSchema.js';
 
 // EVENT_METRICS is built with Object.create(null) (no Object.prototype in its
 // chain) and every lookup is additionally guarded with hasOwnProperty. This
@@ -33,17 +33,35 @@ export function eventMetricValue(metricId, meta) {
   }
 }
 
+// Known-safe leaf paths a modifier is allowed to touch. Computed once at
+// module scope so both mergeEventModifiers and validateModifiers share the
+// exact same allowlist.
+const TUNABLE_PATHS = new Set(TUNABLES.map((t) => t.path));
+
+// mergeEventModifiers MUST be safe to call with untrusted/unvalidated
+// modifiers on its own — do not rely on "callers already ran
+// validateModifiers first". This function sits on a hot per-request read
+// path (getEffectiveConfig, Task 4), so it skips bad entries rather than
+// throwing; validateModifiers is the place authoring errors surface loudly,
+// at write time.
+//
+// The `TUNABLE_PATHS.has(mod.path)` check below is not optional: setAtPath
+// (configSchema.js) walks path.split('.') and assigns via `cur[k] = ...`
+// with no own-key guard, so an unvalidated path like '__proto__.polluted'
+// or 'constructor.prototype.polluted' reaches Object.prototype and corrupts
+// it for the entire running process — not just the merged config, every
+// request the server handles afterward. Do not "simplify" this guard away;
+// see the regression tests in tests/events.test.js.
 export function mergeEventModifiers(baseConfig, modifiers) {
   const out = structuredClone(baseConfig);
   if (!Array.isArray(modifiers)) return out;
   for (const mod of modifiers) {
     if (!mod || typeof mod.path !== 'string') continue;
+    if (!TUNABLE_PATHS.has(mod.path)) continue;
     setAtPath(out, mod.path, mod.value);
   }
   return out;
 }
-
-const TUNABLE_PATHS = new Set(TUNABLES.map((t) => t.path));
 
 export function validateModifiers(modifiers) {
   const errors = [];
