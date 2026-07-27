@@ -191,8 +191,16 @@ const IMMEDIATE = new Set([
 // Also wires up best-effort delivery on tab close/hide: pagehide and
 // visibilitychange->hidden send whatever's still queued via
 // navigator.sendBeacon (fire-and-forget, no response handling) and clear
-// the queue.
-export function makeActionQueue({ onReconcile, onReject, onQueueError }) {
+// the queue. Because sendBeacon never yields a response, there's no
+// `results` array to reconcile against - `onBeaconFlush(ids)` is called
+// synchronously with the ids of the flushed actions right before they're
+// sent, so a caller tracking "still-pending, needs replaying" actions (like
+// RackStack's pendingActionsRef) can drop them instead of replaying them on
+// every future reconcile forever. This is optimistic-and-assumed-durable:
+// if the beacon didn't actually make it, the next GET /api/state or POST
+// /api/actions reconcile will just show the pre-flush state again, the same
+// eventual-correction tolerance the rest of the optimistic system relies on.
+export function makeActionQueue({ onReconcile, onReject, onQueueError, onBeaconFlush }) {
   let queue = [];
   let nextId = 1;
   let inFlight = false;
@@ -257,6 +265,7 @@ export function makeActionQueue({ onReconcile, onReject, onQueueError }) {
     if (queue.length === 0 || typeof navigator === 'undefined' || !navigator.sendBeacon) return;
     const blob = new Blob([JSON.stringify({ actions: queue })], { type: 'application/json' });
     navigator.sendBeacon('/api/actions', blob);
+    if (onBeaconFlush) onBeaconFlush(queue.map((a) => a.id));
     queue = [];
   }
 

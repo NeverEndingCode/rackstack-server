@@ -80,6 +80,11 @@ export default function RackStack({ user }) {
   // replayed on top of the server's canonical state each time one lands (see
   // handleReconcile) so in-flight optimism isn't lost/flickered away.
   const pendingActionsRef = useRef([]);
+  // ids of in-flight claimAnomaly actions whose reward modal is still
+  // waiting on the server's reconciled result - see claimAnomaly() and the
+  // matching block in handleReconcile for why (the server rolls its own
+  // reward independently of the client's optimistic prediction).
+  const pendingAnomalyIdsRef = useRef(new Set());
   // minigameRef mirrors `minigame` synchronously - like configRef/stateRef,
   // never via a plain useEffect (which would lag a render behind). Every
   // mutation of the minigame state goes through setMinigameSynced (below,
@@ -129,12 +134,34 @@ export default function RackStack({ user }) {
     const stamped = { ...action, id };
     const result = applyLocal(stamped, now);
     pendingActionsRef.current.push(stamped);
-    return result;
+    return { ...result, id };
+  }
+
+  // claimAnomaly's reward (credits-vs-boost, and the amount) is rolled by
+  // shared/reducer.js's Math.random() call - independently on the client
+  // (the optimistic prediction in applyLocal, above) and on the server.
+  // That's a coin flip on the reward *kind* alone, so showing the
+  // optimistic roll's reward would show the wrong thing to the player
+  // roughly half the time. Called from handleReconcile once the
+  // authoritative result for a pending claimAnomaly lands.
+  function openAnomalyRewardModal(reward) {
+    if (reward.kind === 'credits') {
+      setModal({ type: 'eventClaim', text: `+${Math.round(reward.amount)} FLOPS collected` });
+    } else {
+      const seconds = Math.max(0, Math.round((reward.until - Date.now()) / 1000));
+      setModal({ type: 'eventClaim', text: `×${reward.mult} output boost for ${seconds}s` });
+    }
   }
 
   function handleReconcile(serverState, results) {
     const resultIds = new Set((results || []).map((r) => r.id));
     pendingActionsRef.current = pendingActionsRef.current.filter((a) => !resultIds.has(a.id));
+
+    for (const result of results || []) {
+      if (!pendingAnomalyIdsRef.current.has(result.id)) continue;
+      pendingAnomalyIdsRef.current.delete(result.id);
+      if (result.ok && result.reward) openAnomalyRewardModal(result.reward);
+    }
 
     const now = Date.now();
     let next = serverState;
@@ -178,11 +205,36 @@ export default function RackStack({ user }) {
     // exponential backoff; nothing else to do here.
   }
 
+  // sendBeacon (used on pagehide/tab-hide, see game/api.js) is fire-and-
+  // forget: there's no response, so no `results` array ever comes back for
+  // those actions. Without this, they'd stay in pendingActionsRef forever
+  // and get replayed via applyAction on top of every future server state
+  // on every subsequent reconcile (handleReconcile above), indefinitely -
+  // since visibilitychange->hidden fires constantly on mobile/PWA use.
+  // Dropping them here (rather than waiting for a reconcile that will never
+  // name their ids) breaks that cycle; if the beacon didn't actually
+  // persist, the next normal reconcile just shows the pre-flush state again
+  // and any real UI discrepancy self-corrects then - the tab is
+  // backgrounding/closing anyway, so there's no UI left to keep predicting
+  // for in the meantime.
+  function handleBeaconFlush(ids) {
+    const idSet = new Set(ids);
+    pendingActionsRef.current = pendingActionsRef.current.filter((a) => !idSet.has(a.id));
+    // A claimAnomaly normally leaves the api.js queue instantly (it's
+    // IMMEDIATE, see api.js), but a prior network outage can leave one
+    // re-queued for retry - if a beacon flush sweeps it up here, its result
+    // will never reconcile normally, so stop waiting on it for the reward
+    // modal too (rather than leaking an entry in pendingAnomalyIdsRef that
+    // never gets cleared).
+    for (const id of ids) pendingAnomalyIdsRef.current.delete(id);
+  }
+
   if (queueRef.current === null) {
     queueRef.current = makeActionQueue({
       onReconcile: handleReconcile,
       onReject: handleReject,
       onQueueError: handleQueueError,
+      onBeaconFlush: handleBeaconFlush,
     });
   }
 
@@ -331,16 +383,14 @@ export default function RackStack({ user }) {
     }
   }
   function claimAnomaly() {
+    // Dispatch optimistically (as usual - this still moves credits/starts a
+    // boost/clears the anomaly window locally so the toast disappears
+    // immediately), but don't open the reward modal from this local result:
+    // see openAnomalyRewardModal's doc comment. claimAnomaly is in api.js's
+    // IMMEDIATE set, so the server round-trip (and thus the modal) follows
+    // within one request, not up to the full 1s auto-flush window.
     const result = dispatchAction({ type: 'claimAnomaly' });
-    if (result.ok) {
-      const { reward } = result;
-      if (reward.kind === 'credits') {
-        setModal({ type: 'eventClaim', text: `+${Math.round(reward.amount)} FLOPS collected` });
-      } else {
-        const seconds = Math.max(0, Math.round((reward.until - Date.now()) / 1000));
-        setModal({ type: 'eventClaim', text: `×${reward.mult} output boost for ${seconds}s` });
-      }
-    }
+    if (result.ok) pendingAnomalyIdsRef.current.add(result.id);
   }
 
   // ---------------------------------------------------------------------
