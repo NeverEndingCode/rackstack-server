@@ -71,6 +71,25 @@ db.exec(`
   );
 `);
 
+/**
+ * Returns a username derived from `desiredName` that `isTaken` reports as
+ * free, suffixing `-2`, `-3`, ... until one is. `desiredName` itself is
+ * returned unchanged if it's already free. Shared by dedupeUsernames (bulk
+ * cleanup, checks an in-memory Set) and upsertUser (per-insert retry,
+ * checks the DB) so both use the same suffixing convention against the
+ * same COLLATE NOCASE uniqueness rule.
+ */
+function findAvailableUsername(desiredName, isTaken) {
+  if (!isTaken(desiredName)) return desiredName;
+  let n = 2;
+  let candidate = `${desiredName}-${n}`;
+  while (isTaken(candidate)) {
+    n += 1;
+    candidate = `${desiredName}-${n}`;
+  }
+  return candidate;
+}
+
 // Duplicate usernames (case-insensitively) can exist from before the unique
 // index below was introduced. Must run before the CREATE UNIQUE INDEX or
 // that statement would fail on any pre-existing collision. No-op when there
@@ -86,12 +105,7 @@ export function dedupeUsernames() {
       taken.add(lower);
       continue;
     }
-    let n = 2;
-    let candidate = `${row.username}-${n}`;
-    while (taken.has(candidate.toLowerCase())) {
-      n += 1;
-      candidate = `${row.username}-${n}`;
-    }
+    const candidate = findAvailableUsername(row.username, (name) => taken.has(name.toLowerCase()));
     db.prepare('UPDATE users SET username = ? WHERE id = ?').run(candidate, row.id);
     taken.add(candidate.toLowerCase());
   }
@@ -100,6 +114,15 @@ export function dedupeUsernames() {
 dedupeUsernames();
 
 db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username COLLATE NOCASE)');
+
+function isUsernameTakenInDb(name) {
+  return !!db.prepare('SELECT id FROM users WHERE username = ? COLLATE NOCASE').get(name);
+}
+
+const insertUserStmt = db.prepare(`
+  INSERT INTO users (id, provider, provider_id, username, avatar_url, created_at)
+  VALUES (@id, @provider, @provider_id, @username, @avatar_url, @created_at)
+`);
 
 export function upsertUser({ provider, providerId, username, avatarUrl }) {
   const id = `${provider}:${providerId}`;
@@ -111,13 +134,24 @@ export function upsertUser({ provider, providerId, username, avatarUrl }) {
     db.prepare('UPDATE users SET username = ?, avatar_url = ? WHERE id = ?').run(nextUsername, avatarUrl, id);
     return { ...existing, username: nextUsername, avatar_url: avatarUrl };
   }
+
   const user = {
     id, provider, provider_id: providerId, username, avatar_url: avatarUrl, created_at: Date.now(),
   };
-  db.prepare(`
-    INSERT INTO users (id, provider, provider_id, username, avatar_url, created_at)
-    VALUES (@id, @provider, @provider_id, @username, @avatar_url, @created_at)
-  `).run(user);
+  try {
+    insertUserStmt.run(user);
+  } catch (e) {
+    // Two different brand-new OAuth accounts can independently supply the
+    // same (or case-variant) username - the COLLATE NOCASE unique index
+    // rejects the second insert with SQLITE_CONSTRAINT_UNIQUE. Without this
+    // catch, that error would propagate to a 500 and - since upsertUser
+    // runs on every login, not just the first - permanently block that
+    // account from ever logging in. Pick a free variant using the same
+    // suffixing convention as dedupeUsernames and retry once.
+    if (e.code !== 'SQLITE_CONSTRAINT_UNIQUE' && e.code !== 'SQLITE_CONSTRAINT') throw e;
+    user.username = findAvailableUsername(username, isUsernameTakenInDb);
+    insertUserStmt.run(user);
+  }
   return user;
 }
 

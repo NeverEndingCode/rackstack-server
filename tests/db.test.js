@@ -99,6 +99,37 @@ describe('upsertUser', () => {
   });
 });
 
+describe('upsertUser username collisions on first login', () => {
+  it('two different providers both requesting a case-variant of the same username both succeed with distinct usernames', () => {
+    const a = upsertUser({ provider: 'github', providerId: 'collide-a', username: 'Morpheus', avatarUrl: null });
+    let b;
+    expect(() => {
+      b = upsertUser({ provider: 'discord', providerId: 'collide-b', username: 'morpheus', avatarUrl: null });
+    }).not.toThrow();
+
+    expect(a.username.toLowerCase()).toBe('morpheus');
+    expect(b.username).not.toBe(a.username);
+    expect(b.username.toLowerCase()).not.toBe(a.username.toLowerCase());
+    expect(b.username.toLowerCase()).toBe('morpheus-2');
+
+    // Both persisted distinctly and are independently retrievable.
+    expect(getUserById(a.id).username).toBe(a.username);
+    expect(getUserById(b.id).username).toBe(b.username);
+  });
+
+  it('a three-way collision suffixes incrementally without throwing', () => {
+    const a = upsertUser({ provider: 'x', providerId: 'c1', username: 'zion', avatarUrl: null });
+    const b = upsertUser({ provider: 'x', providerId: 'c2', username: 'Zion', avatarUrl: null });
+    const c = upsertUser({ provider: 'x', providerId: 'c3', username: 'ZION', avatarUrl: null });
+
+    const usernames = [a.username, b.username, c.username].map((u) => u.toLowerCase());
+    expect(new Set(usernames).size).toBe(3); // all distinct case-insensitively
+    expect(usernames).toContain('zion');
+    expect(usernames).toContain('zion-2');
+    expect(usernames).toContain('zion-3');
+  });
+});
+
 describe('dedupeUsernames', () => {
   it('suffixes later-created duplicates (case-insensitive), keeping the earliest untouched', () => {
     // The unique index (created at module init, after dedupeUsernames' first
