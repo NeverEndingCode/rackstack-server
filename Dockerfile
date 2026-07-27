@@ -4,6 +4,13 @@ WORKDIR /app/client
 COPY client/package.json client/package-lock.json* ./
 RUN npm install
 COPY client/ ./
+# The client's @shared Vite alias resolves '../shared' relative to
+# client/vite.config.js, i.e. /app/shared from this stage's /app/client
+# WORKDIR - copy shared/ one level up to match. vite.config.js also reads
+# the root package.json (release-version authority) via the same
+# one-level-up relative path for __APP_VERSION__.
+COPY shared/ /app/shared/
+COPY package.json /app/package.json
 RUN npm run build
 
 # --- Stage 2: server + runtime deps ---
@@ -17,6 +24,7 @@ COPY package.json package-lock.json* ./
 RUN npm install --omit=dev
 
 COPY server/ ./server/
+COPY shared/ ./shared/
 COPY --from=client-build /app/client/dist ./client/dist
 
 ENV NODE_ENV=production
