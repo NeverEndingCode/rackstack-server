@@ -7,6 +7,7 @@ import request from 'supertest';
 import jwt from 'jsonwebtoken';
 import { readFileSync } from 'node:fs';
 import { DEFAULT_CONFIG } from '../shared/configSchema.js';
+import { initialState } from '../shared/state.js';
 
 // Dynamic imports: server/auth.js reads JWT_SECRET (and server/db.js reads
 // DB_PATH) at module-evaluation time. Static imports get hoisted above the
@@ -80,7 +81,7 @@ describe('POST /api/actions', () => {
 
   it('400s when actions has more than 100 entries', async () => {
     const user = makeUser();
-    const actions = Array.from({ length: 101 }, (_, i) => ({ id: i, type: 'collectAll' }));
+    const actions = Array.from({ length: 101 }, (_, i) => ({ _cid: i, type: 'collectAll' }));
     const res = await request(app)
       .post('/api/actions')
       .set('Cookie', cookieFor(user))
@@ -96,15 +97,15 @@ describe('POST /api/actions', () => {
       .set('Cookie', cookieFor(user))
       .send({
         actions: [
-          { id: 'a1', type: 'buy', lane: 'tiers', index: 0, mode: 'max' },
-          { id: 'a2', type: 'buy', lane: 'tiers', index: 0, mode: 'max' },
+          { _cid: 'a1', type: 'buy', lane: 'tiers', index: 0, mode: 'max' },
+          { _cid: 'a2', type: 'buy', lane: 'tiers', index: 0, mode: 'max' },
         ],
       });
 
     expect(res.status).toBe(200);
     expect(res.body.results).toHaveLength(2);
-    expect(res.body.results[0]).toMatchObject({ id: 'a1', ok: true });
-    expect(res.body.results[1]).toMatchObject({ id: 'a2', ok: false, error: 'insufficient_credits' });
+    expect(res.body.results[0]).toMatchObject({ _cid: 'a1', ok: true });
+    expect(res.body.results[1]).toMatchObject({ _cid: 'a2', ok: false, error: 'insufficient_credits' });
     // the first buy's effect stuck: tier 0 owned went up, credits dropped from 10.
     expect(res.body.state.run.tiers[0].owned).toBeGreaterThan(0);
     expect(res.body.state.run.credits).toBeLessThan(10);
@@ -118,15 +119,15 @@ describe('POST /api/actions', () => {
       .set('Cookie', cookieFor(user))
       .send({
         actions: [
-          { id: 'm1', type: 'buy', lane: 'tiers', index: 'push', mode: 1 },
-          { id: 'm2', type: 'buy', lane: 'tiers', index: 'length', mode: 1 },
+          { _cid: 'm1', type: 'buy', lane: 'tiers', index: 'push', mode: 1 },
+          { _cid: 'm2', type: 'buy', lane: 'tiers', index: 'length', mode: 1 },
         ],
       });
 
     expect(res.status).toBe(200);
     expect(res.body.results).toHaveLength(2);
-    expect(res.body.results[0]).toEqual({ id: 'm1', ok: false, error: 'invalid_target' });
-    expect(res.body.results[1]).toEqual({ id: 'm2', ok: false, error: 'invalid_target' });
+    expect(res.body.results[0]).toEqual({ _cid: 'm1', ok: false, error: 'invalid_target' });
+    expect(res.body.results[1]).toEqual({ _cid: 'm2', ok: false, error: 'invalid_target' });
     expect(res.body.state.run.credits).toBe(10); // unchanged, not NaN
   });
 
@@ -137,12 +138,94 @@ describe('POST /api/actions', () => {
       .post('/api/actions')
       .set('Cookie', cookieFor(user))
       .send({
-        actions: [{ id: 'p1', type: '__proto__' }],
+        actions: [{ _cid: 'p1', type: '__proto__' }],
       });
 
     expect(res.status).toBe(200);
     expect(res.body.results).toHaveLength(1);
-    expect(res.body.results[0]).toEqual({ id: 'p1', ok: false, error: 'unknown_action' });
+    expect(res.body.results[0]).toEqual({ _cid: 'p1', ok: false, error: 'unknown_action' });
+  });
+});
+
+// Task 5: proves the existing, unmodified POST /api/actions route (and
+// applyActions() in server/stateService.js) dispatches all 7 Cold Storage
+// action types registered in shared/reducer.js's HANDLERS table correctly,
+// with zero server route/service code changes. Business-logic edge cases for
+// these handlers are already covered exhaustively at the reducer-unit level
+// in tests/reducer.coldStorage.test.js (Task 3); these tests only need to
+// prove the generic HTTP dispatch pipeline reaches them.
+describe('POST /api/actions: Cold Storage', () => {
+  it('dispatches claimBlock through the existing generic action pipeline', async () => {
+    const user = makeUser();
+    const state = initialState();
+    // DEFAULT_CONFIG.batchQueue.blockDurationMs is 6h; starting the track 20h
+    // ago means floor(20/6) = 3 blocks (indices 0-2) have arrived.
+    state.meta.coldStorage.trackStartedAt = Date.now() - 20 * 3600 * 1000;
+    putSave(user.id, state, Date.now());
+
+    const res = await request(app)
+      .post('/api/actions')
+      .set('Cookie', cookieFor(user))
+      .send({ actions: [{ _cid: 1, type: 'claimBlock', index: 0 }] });
+
+    expect(res.status).toBe(200);
+    expect(res.body.results[0]).toMatchObject({ _cid: 1, ok: true });
+    expect(res.body.state.meta.coldStorage.blocksClaimed[0]).toBe(true);
+  });
+
+  it('dispatches claimAllBlocks, resetTrack, startJob, and cancelJob in one batch', async () => {
+    const user = makeUser();
+    const state = initialState();
+    state.meta.coldStorage.trackStartedAt = Date.now() - 200 * 3600 * 1000; // all 16 blocks arrived
+    putSave(user.id, state, Date.now());
+
+    const res = await request(app)
+      .post('/api/actions')
+      .set('Cookie', cookieFor(user))
+      .send({
+        actions: [
+          { _cid: 1, type: 'claimAllBlocks' },
+          { _cid: 2, type: 'resetTrack' },
+          { _cid: 3, type: 'startJob', jobType: 'defrag' },
+          { _cid: 4, type: 'cancelJob' },
+        ],
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.results).toHaveLength(4);
+    expect(res.body.results[0]).toMatchObject({ _cid: 1, ok: true, claimedCount: 16 });
+    expect(res.body.results[1]).toMatchObject({ _cid: 2, ok: true });
+    expect(res.body.results[2]).toMatchObject({ _cid: 3, ok: true });
+    expect(res.body.results[3]).toMatchObject({ _cid: 4, ok: true });
+    expect(res.body.state.meta.coldStorage.trackCycle).toBe(1);
+    expect(res.body.state.meta.coldStorage.job).toBeNull();
+  });
+
+  // buyTapeUpgrade's `id` field is semantic (the upgrade identifier -
+  // shared/reducer.js's handler destructures `action.id`, exactly like the
+  // pre-existing buyUpgrade/buyShardUpgrade buyFromDefs() handlers already
+  // do) and is completely independent from `_cid`, the action queue's own
+  // correlation id (see client/game/api.js and server/stateService.js's
+  // applyActions - a prior bug conflated the two into a single `id` field,
+  // which silently broke this and four other action types end-to-end; see
+  // the hotfix that split them). A real client sends both fields at once;
+  // this test includes `_cid` too to prove the split doesn't disturb the
+  // semantic `id` the reducer actually keys off of.
+  it('rejects buyTapeUpgrade at max level via the existing config-driven check', async () => {
+    const user = makeUser();
+    const state = initialState();
+    state.meta.coldStorage.upgrades.headstart = 5; // DEFAULT_CONFIG.upgrades.maxLevels.headstart
+    state.meta.coldStorage.tapes = 1e9; // plenty of tapes - proves this is max_level, not insufficient_credits
+    putSave(user.id, state, Date.now());
+
+    const res = await request(app)
+      .post('/api/actions')
+      .set('Cookie', cookieFor(user))
+      .send({ actions: [{ _cid: 1, type: 'buyTapeUpgrade', id: 'headstart' }] });
+
+    expect(res.status).toBe(200);
+    expect(res.body.results[0]).toMatchObject({ _cid: 1, ok: false, error: 'max_level' });
+    expect(res.body.state.meta.coldStorage.upgrades.headstart).toBe(5); // unchanged
   });
 });
 

@@ -18,6 +18,9 @@ export const GOAL_DEFS = [
   { id: 'g14', desc: 'Unlock the Quantum Foam Harvester', xp: 80, wafers: 30, progress: (ctx) => [ctx.unlockedUpTo >= 13 ? 1 : 0, 1] },
   { id: 'g15', desc: 'Recruit your first Overclock node', xp: 25, wafers: 8, progress: (ctx) => [ctx.run.overclock.reduce((s, o) => s + o.owned, 0) >= 1 ? 1 : 0, 1] },
   { id: 'g16', desc: 'Trigger your first Singularity', xp: 100, wafers: 40, progress: (ctx) => [ctx.meta.stats.singularities >= 1 ? 1 : 0, 1] },
+  { id: 'g17', desc: 'Claim the block-16 jackpot in Cold Storage', xp: 60, wafers: 20, progress: (ctx) => [ctx.meta.coldStorage.blocksClaimed[15] ? 1 : 0, 1] },
+  { id: 'g18', desc: 'Complete a Deep Archive Scrub', xp: 80, wafers: 25, progress: (ctx) => [(ctx.meta.stats.deepJobsCompletedLifetime || 0) >= 1 ? 1 : 0, 1] },
+  { id: 'g19', desc: 'Reach tape-tree level 3 in any upgrade', xp: 50, wafers: 15, progress: (ctx) => [Math.min(3, Math.max(0, ...Object.values(ctx.meta.coldStorage.upgrades || {}), 0)), 3] },
 ];
 
 export const REPEATABLE_DEFS = [
@@ -27,6 +30,8 @@ export const REPEATABLE_DEFS = [
   { id: 'r_overclock', desc: (n) => `Own ${n} total Overclock nodes`, target: (lvl) => Math.round(5 * Math.pow(1.7, lvl)), xp: (lvl) => 14 + lvl * 7, wafers: (lvl) => 4 + lvl * 2, metric: (ctx) => ctx.run.overclock.reduce((s, o) => s + o.owned, 0) },
   { id: 'r_migrate', desc: (n) => `Complete ${n} total Migrates`, target: (lvl) => lvl + 1, xp: (lvl) => 20 + lvl * 10, wafers: (lvl) => 6 + lvl * 3, metric: (ctx) => ctx.meta.stats.migrates },
   { id: 'r_wafers', desc: (n) => `Earn ${fmt(n)} Wafers lifetime`, target: (lvl) => Math.round(20 * Math.pow(2.2, lvl)), xp: (lvl) => 15 + lvl * 8, wafers: (lvl) => 5 + lvl * 3, metric: (ctx) => ctx.meta.stats.totalWafersEarned },
+  { id: 'r_blocks', desc: (n) => `Claim ${n} Cold Storage blocks lifetime`, target: (lvl) => Math.round(10 * Math.pow(1.6, lvl)), xp: (lvl) => 12 + lvl * 6, wafers: (lvl) => 3 + lvl * 2, metric: (ctx) => ctx.meta.stats.blocksClaimedLifetime || 0 },
+  { id: 'r_jobs', desc: (n) => `Complete ${n} total Cold Storage jobs`, target: (lvl) => lvl + 1, xp: (lvl) => 20 + lvl * 10, wafers: (lvl) => 6 + lvl * 3, metric: (ctx) => ctx.meta.stats.jobsCompletedLifetime || 0 },
 ];
 
 /**

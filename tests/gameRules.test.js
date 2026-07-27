@@ -30,6 +30,17 @@ describe('gameRules', () => {
     const m = computeMults(meta0, cfg, 1);
     expect(m.gridMult).toBeCloseTo(m.racksMult * 2);
   });
+  it('computeMults folds in coldFusionMult from coldStorage upgrades (regression: was only applied in evaluate(), understating every displayed rate)', () => {
+    const baseline = computeMults(meta0, DEFAULT_CONFIG, 1);
+    const withColdFusion = computeMults(
+      { ...meta0, coldStorage: { upgrades: { coldfusion: 15 } } }, // +2%/level * 15 = +30%
+      DEFAULT_CONFIG,
+      1,
+    );
+    expect(withColdFusion.racksMult).toBeCloseTo(baseline.racksMult * 1.3);
+    expect(withColdFusion.gridMult).toBeCloseTo(baseline.gridMult * 1.3);
+    expect(withColdFusion.overclockMult).toBeCloseTo(baseline.overclockMult * 1.3);
+  });
   it('xp and migrate math', () => {
     expect(xpForLevel(0)).toBe(50);
     expect(migrateGain(1e6, 1)).toBe(1);

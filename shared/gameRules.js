@@ -1,4 +1,5 @@
 import { GROWTH, MILESTONES } from './gameData.js';
+import { computeColdStorageEffects } from './coldStorage.js';
 
 export function costAt(def, owned) {
   return def.baseCost * Math.pow(GROWTH, owned);
@@ -73,12 +74,19 @@ export function computeMults(meta, config, boostMult = 1) {
   const thresholds = MILESTONES.map((t) => Math.max(1, Math.round(t * eff.milestoneDiscount)));
   const base = (1 + (meta.legacyCores || 0) * 0.05) * eff.firmwareMult * eff.engineMult
     * eff.levelBonusMult * boostMult * config.production.globalMult;
+  // coldFusionMult folded in here (not applied ad-hoc by each caller) so
+  // every consumer of computeMults - evaluate()'s online/offline branches,
+  // goalCtx (goals/repeatables/anomaly rewards/block FLOPS bonus), and the
+  // client's render-time computeMults call for displayed rates - inherits
+  // the Cold Fusion tape-upgrade bonus automatically from this single
+  // source, instead of some call sites applying it and others silently not.
+  const coldFusionMult = computeColdStorageEffects(meta, config).coldFusionMult;
   return {
     eff,
     thresholds,
-    racksMult: base * config.production.racksMult,
-    gridMult: base * eff.gridExtraMult * config.production.gridMult,
-    overclockMult: base * eff.overclockExtraMult * config.production.overclockMult,
+    racksMult: base * config.production.racksMult * coldFusionMult,
+    gridMult: base * eff.gridExtraMult * config.production.gridMult * coldFusionMult,
+    overclockMult: base * eff.overclockExtraMult * config.production.overclockMult * coldFusionMult,
   };
 }
 

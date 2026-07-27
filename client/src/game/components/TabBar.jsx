@@ -1,10 +1,10 @@
 import { amber, textDim } from '../theme.js';
 
-export default function TabBar({ tabs, activeTab, setActiveTab, gridUnlocked, overclockUnlocked, singularityUnlocked }) {
+export default function TabBar({ tabs, activeTab, setActiveTab, gridUnlocked, overclockUnlocked, singularityUnlocked, coldStorageUnlocked }) {
   return (
     <div className="mt-3 flex gap-1 -mx-4 px-4 overflow-x-auto">
       {tabs.map((tab) => {
-        const locked = (tab.id === 'grid' && !gridUnlocked) || (tab.id === 'overclock' && !overclockUnlocked) || (tab.id === 'singularity' && !singularityUnlocked);
+        const locked = (tab.id === 'grid' && !gridUnlocked) || (tab.id === 'overclock' && !overclockUnlocked) || (tab.id === 'singularity' && !singularityUnlocked) || (tab.id === 'coldstorage' && !coldStorageUnlocked);
         const active = activeTab === tab.id;
         const TabIcon = tab.Icon;
         return (

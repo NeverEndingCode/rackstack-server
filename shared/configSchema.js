@@ -16,7 +16,22 @@ export const DEFAULT_CONFIG = {
     firmware: 20, psu: 10, uptime: 8, signal: 10, gridamp: 15, legacy: 10,
     thermal: 8, autovent: 8, occlock: 15, lucky: 10, deepcache: 10,
     bootstrap: 5, temporal: 5, engine: 8, heatsink: 4, infiniteloop: 5, echocores: 10,
+    compression: 10, robotarm: 20, priorityspinup: 10, headstart: 5, coldfusion: 15, heatsinktapes: 10, deepuptime: 10,
   } },
+  batchQueue: {
+    blockDurationMs: 21600000,        // 6h
+    blockBaseTapes: 5,
+    blockCycleBonusPct: 0.05,
+    blockFlopsIntervalBlocks: 4,      // every 4th block (indices 3,7,11,15) also grants a FLOPS bonus
+    blockFlopsSeconds: 120,
+    jackpotMultiplier: 5,             // block 16 (index 15) tapes *= this
+    jobBaseTapes: 20,
+    jobIndexMultiplier: 10,
+    jobDeepMultiplier: 36,
+    jobDurationDefragMs: 3600000,     // 1h
+    jobDurationIndexMs: 28800000,     // 8h
+    jobDurationDeepMs: 86400000,      // 24h
+  },
 };
 
 export const TUNABLES = [
@@ -80,6 +95,27 @@ export const TUNABLES = [
   { path: 'upgrades.maxLevels.heatsink', label: 'Max level: Heat Sink Mastery', min: 1, max: 99, integer: true },
   { path: 'upgrades.maxLevels.infiniteloop', label: 'Max level: Infinite Loop', min: 1, max: 99, integer: true },
   { path: 'upgrades.maxLevels.echocores', label: 'Max level: Echo Cores', min: 1, max: 99, integer: true },
+
+  { path: 'upgrades.maxLevels.compression', label: 'Max level: Compression Codecs', min: 1, max: 99, integer: true },
+  { path: 'upgrades.maxLevels.robotarm', label: 'Max level: Robot Arm', min: 1, max: 99, integer: true },
+  { path: 'upgrades.maxLevels.priorityspinup', label: 'Max level: Priority Spin-up', min: 1, max: 99, integer: true },
+  { path: 'upgrades.maxLevels.headstart', label: 'Max level: Head Start', min: 1, max: 99, integer: true },
+  { path: 'upgrades.maxLevels.coldfusion', label: 'Max level: Cold Fusion', min: 1, max: 99, integer: true },
+  { path: 'upgrades.maxLevels.heatsinktapes', label: 'Max level: Heat-Sink Tapes', min: 1, max: 99, integer: true },
+  { path: 'upgrades.maxLevels.deepuptime', label: 'Max level: Deep Uptime', min: 1, max: 99, integer: true },
+
+  { path: 'batchQueue.blockDurationMs', label: 'Block duration (ms)', min: 60000, max: 86400000, integer: true },
+  { path: 'batchQueue.blockBaseTapes', label: 'Block base tapes', min: 1, max: 10000, integer: true },
+  { path: 'batchQueue.blockCycleBonusPct', label: 'Block cycle bonus (%)', min: 0, max: 5, integer: false },
+  { path: 'batchQueue.blockFlopsIntervalBlocks', label: 'Block FLOPS bonus interval', min: 1, max: 16, integer: true },
+  { path: 'batchQueue.blockFlopsSeconds', label: 'Block FLOPS bonus (seconds of output)', min: 0, max: 3600, integer: true },
+  { path: 'batchQueue.jackpotMultiplier', label: 'Jackpot (final block) multiplier', min: 1, max: 100, integer: false },
+  { path: 'batchQueue.jobBaseTapes', label: 'Job base tapes (1h)', min: 1, max: 100000, integer: true },
+  { path: 'batchQueue.jobIndexMultiplier', label: 'Job multiplier (8h)', min: 1, max: 1000, integer: false },
+  { path: 'batchQueue.jobDeepMultiplier', label: 'Job multiplier (24h)', min: 1, max: 1000, integer: false },
+  { path: 'batchQueue.jobDurationDefragMs', label: 'Job duration: Defrag Run (ms)', min: 60000, max: 604800000, integer: true },
+  { path: 'batchQueue.jobDurationIndexMs', label: 'Job duration: Index Rebuild (ms)', min: 60000, max: 604800000, integer: true },
+  { path: 'batchQueue.jobDurationDeepMs', label: 'Job duration: Deep Archive Scrub (ms)', min: 60000, max: 604800000, integer: true },
 ];
 
 export function getAtPath(obj, path) {

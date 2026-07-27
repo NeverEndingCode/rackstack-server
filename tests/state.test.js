@@ -68,3 +68,103 @@ describe('evaluate', () => {
     expect(s3.server.overheated).toBeFalsy();
   });
 });
+
+describe('coldStorage state wiring', () => {
+  it('initialState includes coldStorage with a track already running', () => {
+    const s = initialState();
+    expect(s.meta.coldStorage.blocksClaimed).toHaveLength(16);
+    expect(s.meta.coldStorage.blocksClaimed.every((b) => b === false)).toBe(true);
+    expect(s.meta.coldStorage.job).toBeNull();
+    expect(s.meta.stats.blocksClaimedLifetime).toBe(0);
+  });
+
+  it('migrateSave pads a pre-v1.3 save with a fresh coldStorage block', () => {
+    const preV13 = { run: { credits: 5 }, meta: { wafers: 3 } }; // no coldStorage key at all
+    const s = migrateSave(preV13);
+    expect(s.meta.coldStorage.blocksClaimed).toHaveLength(16);
+    expect(s.meta.coldStorage.tapes).toBe(0);
+    expect(s.meta.coldStorage.job).toBeNull();
+  });
+
+  it('migrateSave is idempotent on a save that already has coldStorage progress', () => {
+    const s = initialState();
+    s.meta.coldStorage.tapes = 42;
+    s.meta.coldStorage.blocksClaimed[0] = true;
+    s.meta.coldStorage.job = { type: 'index', accruedOfflineSec: 100, startedAt: 1000 };
+    const migrated = migrateSave(s);
+    expect(migrated.meta.coldStorage.tapes).toBe(42);
+    expect(migrated.meta.coldStorage.blocksClaimed[0]).toBe(true);
+    expect(migrated.meta.coldStorage.job).toEqual({ type: 'index', accruedOfflineSec: 100, startedAt: 1000 });
+  });
+
+  it('heatsinktapes tape upgrade raises the effective overheat threshold', () => {
+    const cfg = structuredClone(DEFAULT_CONFIG);
+    cfg.heat.capacity = 100;
+    const s = initialState();
+    s.meta.coldStorage.upgrades.heatsinktapes = 5; // +500 capacity -> effective 600
+    s.run.overclock[4] = { id: 4, owned: 400 }; // 220 heat/s, would overheat a bare cap of 100 in <1s
+    const t0 = 1_000_000;
+    const { state: s2 } = evaluate(s, cfg, t0, t0 + 2000);
+    expect(s2.run.heat).toBeGreaterThan(0); // did NOT overheat, thanks to the heatsinktapes bonus
+    expect(s2.run.heatCooldownUntil).toBeNull();
+  });
+
+  it('offline job accrues only during an offline gap, using raw elapsed seconds', () => {
+    const s = initialState();
+    s.meta.coldStorage.job = { type: 'defrag', accruedOfflineSec: 0, startedAt: 1_000_000 }; // 1h = 3600s
+    const t0 = 1_000_000;
+    const { state: s2 } = evaluate(s, DEFAULT_CONFIG, t0, t0 + 30 * 60 * 1000); // 30 min offline gap
+    expect(s2.meta.coldStorage.job.accruedOfflineSec).toBeCloseTo(1800, 0);
+    const { state: s3 } = evaluate(s2, DEFAULT_CONFIG, t0 + 30 * 60 * 1000, t0 + 30 * 60 * 1000 + 30_000); // 30s ONLINE gap
+    expect(s3.meta.coldStorage.job.accruedOfflineSec).toBeCloseTo(1800, 0); // unchanged - online time doesn't count
+  });
+
+  it('offline job accrual is capped at the job duration, never overruns', () => {
+    const s = initialState();
+    s.meta.coldStorage.job = { type: 'defrag', accruedOfflineSec: 0, startedAt: 1_000_000 };
+    const t0 = 1_000_000;
+    const { state: s2 } = evaluate(s, DEFAULT_CONFIG, t0, t0 + 10 * 3600 * 1000); // 10h offline, job is only 1h
+    expect(s2.meta.coldStorage.job.accruedOfflineSec).toBe(3600);
+  });
+
+  it('evaluate() does not throw on a state missing meta.coldStorage entirely (defensive - production always goes through migrateSave first, but evaluate() is exported and previously tolerated any {run, meta, server} shape)', () => {
+    const s = initialState();
+    s.run.tiers[0] = { id: 0, owned: 10, manager: false, ready: 0 };
+    delete s.meta.coldStorage;
+    const t0 = 1_000_000;
+    expect(() => evaluate(s, DEFAULT_CONFIG, t0, t0 + 10 * 3600 * 1000)).not.toThrow(); // 10h offline gap
+    const { state: s2 } = evaluate(s, DEFAULT_CONFIG, t0, t0 + 10 * 3600 * 1000);
+    expect(s2.run.tiers[0].ready).toBeGreaterThan(0); // job accrual was simply skipped, production still ran
+  });
+
+  it('priorityspinup tape upgrade speeds up offline job accrual', () => {
+    const s = initialState();
+    s.meta.coldStorage.upgrades.priorityspinup = 10; // +100% -> 2x rate
+    s.meta.coldStorage.job = { type: 'index', accruedOfflineSec: 0, startedAt: 1_000_000 }; // 8h job
+    const t0 = 1_000_000;
+    const { state: s2 } = evaluate(s, DEFAULT_CONFIG, t0, t0 + 4 * 3600 * 1000); // 4h real offline time
+    expect(s2.meta.coldStorage.job.accruedOfflineSec).toBeCloseTo(8 * 3600, 0); // completes in half the real time
+  });
+
+  it('coldfusion tape upgrade multiplies production', () => {
+    const s = initialState();
+    s.run.tiers[0] = { id: 0, owned: 10, manager: true, ready: 0 };
+    s.meta.coldStorage.upgrades.coldfusion = 15; // +30%
+    const t0 = 1_000_000;
+    const { state: s2 } = evaluate(s, DEFAULT_CONFIG, t0, t0 + 30_000); // 30s online
+    const baseline = initialState();
+    baseline.run.tiers[0] = { id: 0, owned: 10, manager: true, ready: 0 };
+    const { state: sBaseline } = evaluate(baseline, DEFAULT_CONFIG, t0, t0 + 30_000);
+    expect(s2.run.credits).toBeGreaterThan(sBaseline.run.credits);
+    expect(s2.run.credits - 10).toBeCloseTo((sBaseline.run.credits - 10) * 1.3, 1);
+  });
+
+  it('deepuptime tape upgrade extends the offline production cap', () => {
+    const s = initialState();
+    s.run.tiers[0] = { id: 0, owned: 10, manager: false, ready: 0 };
+    s.meta.coldStorage.upgrades.deepuptime = 10; // +5h -> cap becomes 9h (base 4h + 5h)
+    const t0 = 1_000_000;
+    const { state: s2 } = evaluate(s, DEFAULT_CONFIG, t0, t0 + 20 * 3600 * 1000); // 20h offline
+    expect(s2.run.tiers[0].ready).toBeCloseTo(10 * 0.5 * 9 * 3600, 0); // capped at 9h, not the base 4h
+  });
+});

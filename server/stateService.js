@@ -61,7 +61,12 @@ export function loadAndEvaluate(userId, now = Date.now()) {
  * Loads + evaluates once, then applies each action in `actions` in order
  * against that single in-memory state, persisting only once at the end.
  * Never throws: applyAction() itself never throws, and each result carries
- * back the client-supplied `id` so the caller can reconcile.
+ * back the client-supplied `_cid` (the action queue's own correlation id -
+ * see client/game/api.js) so the caller can reconcile. This is deliberately
+ * separate from any semantic `id` field an action itself carries (e.g.
+ * buyUpgrade/buyShardUpgrade/claimGoal/claimRepeatable/buyTapeUpgrade all
+ * pass `{ type, id: <string identifier> }`) - echoing back `action.id`
+ * here instead used to silently clobber those actions' own id client-side.
  */
 export function applyActions(userId, actions, now = Date.now()) {
   const { state: loaded, config } = loadEvaluateAndSchedule(userId, now);
@@ -71,7 +76,7 @@ export function applyActions(userId, actions, now = Date.now()) {
   for (const action of actions) {
     const { state: nextState, result } = applyAction(state, action, config, now, Math.random);
     state = nextState;
-    results.push({ ...result, id: action && action.id });
+    results.push({ ...result, _cid: action && action._cid });
   }
 
   putSave(userId, state, now);

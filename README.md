@@ -4,6 +4,12 @@ Self-hosted version of the game: Discord/GitHub OAuth login, SQLite for
 persistence, and a server-authoritative economy (hard-capped at 72 hours of
 offline progress regardless of upgrades).
 
+As of v1.3, a Cold Storage tab unlocks at the Server Room tier: a 16-block
+passive reward track that refills on a timer, one offline-only archival job
+(pick a duration, collect when it finishes while you're away), and a 7-upgrade
+Tapes tree paid for with the tab's own currency - all of it, including
+progress and purchased upgrades, survives Migrate and Singularity resets.
+
 ## Architecture
 
 - `shared/` - a package used by both server and client (via a `@shared` Vite
