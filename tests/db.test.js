@@ -97,6 +97,45 @@ describe('upsertUser', () => {
     expect(relogged.username).toBe('second');
     expect(getUserById(u.id).username).toBe('second');
   });
+
+  it('a returning user whose provider-supplied name now collides with a DIFFERENT user does not get locked out', () => {
+    // User A registers as Neo. User B registers as bob. B later renames
+    // their OAuth display name to "neo" on the provider and logs in again -
+    // upsertUser's UPDATE path must not throw SQLITE_CONSTRAINT_UNIQUE, and
+    // B must come away with some available username, not be permanently
+    // locked out of login.
+    upsertUser({ provider: 'discord', providerId: 'lockout-a', username: 'Neo', avatarUrl: null });
+    const b = upsertUser({ provider: 'discord', providerId: 'lockout-b', username: 'bob', avatarUrl: null });
+
+    let relogged;
+    expect(() => {
+      relogged = upsertUser({ provider: 'discord', providerId: 'lockout-b', username: 'neo', avatarUrl: 'new-avatar' });
+    }).not.toThrow();
+
+    expect(relogged.username).not.toBe('Neo');
+    expect(relogged.username.toLowerCase()).not.toBe('neo');
+    expect(relogged.avatar_url).toBe('new-avatar');
+    expect(getUserById(b.id).username).toBe(relogged.username);
+
+    // And login keeps working on subsequent attempts too (not a one-shot fix).
+    expect(() => {
+      upsertUser({ provider: 'discord', providerId: 'lockout-b', username: 'neo', avatarUrl: 'newer-avatar' });
+    }).not.toThrow();
+  });
+
+  it('a user with custom_username set is unaffected by provider-name changes (no collision risk from that path)', () => {
+    const a = upsertUser({ provider: 'discord', providerId: 'custom-a', username: 'agent-smith', avatarUrl: null });
+    setUsername(a.id, 'Architect');
+
+    // Someone else's provider now supplies the exact custom name as their
+    // OAuth display name - since A's username is custom, upsertUser must
+    // never even attempt to write "architect" for A, so there's nothing to
+    // collide and A's stored username never changes on re-login.
+    const relogged = upsertUser({ provider: 'discord', providerId: 'custom-a', username: 'totally-different-oauth-name', avatarUrl: 'fresh' });
+    expect(relogged.username).toBe('Architect');
+    expect(getUserById(a.id).username).toBe('Architect');
+    expect(getUserById(a.id).custom_username).toBe(1);
+  });
 });
 
 describe('upsertUser username collisions on first login', () => {

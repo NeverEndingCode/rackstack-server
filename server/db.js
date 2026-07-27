@@ -119,6 +119,14 @@ function isUsernameTakenInDb(name) {
   return !!db.prepare('SELECT id FROM users WHERE username = ? COLLATE NOCASE').get(name);
 }
 
+// Same check as isUsernameTakenInDb, but excludes the given user's own row -
+// used by upsertUser's UPDATE (returning-user) path, where the row being
+// updated already "has" the old username and must not be treated as its own
+// collision.
+function isUsernameTakenByOtherUser(name, excludeId) {
+  return !!db.prepare('SELECT id FROM users WHERE username = ? COLLATE NOCASE AND id != ?').get(name, excludeId);
+}
+
 const insertUserStmt = db.prepare(`
   INSERT INTO users (id, provider, provider_id, username, avatar_url, created_at)
   VALUES (@id, @provider, @provider_id, @username, @avatar_url, @created_at)
@@ -130,8 +138,23 @@ export function upsertUser({ provider, providerId, username, avatarUrl }) {
   if (existing) {
     // A user who has set a custom username keeps it on re-login; only the
     // avatar (which the user doesn't control) is refreshed from the profile.
-    const nextUsername = existing.custom_username ? existing.username : username;
-    db.prepare('UPDATE users SET username = ?, avatar_url = ? WHERE id = ?').run(nextUsername, avatarUrl, id);
+    const desiredUsername = existing.custom_username ? existing.username : username;
+    let nextUsername = desiredUsername;
+    try {
+      db.prepare('UPDATE users SET username = ?, avatar_url = ? WHERE id = ?').run(nextUsername, avatarUrl, id);
+    } catch (e) {
+      // The provider-supplied name can change between logins (e.g. the user
+      // renamed their display name on the OAuth provider) and collide
+      // case-insensitively with a DIFFERENT user's username. Without this
+      // catch, that error would propagate to a 500 and - since upsertUser
+      // runs on every login - permanently lock the account out until the
+      // provider-side name changed back. Same suffixing convention/helper as
+      // the INSERT path, excluding this user's own row from the collision
+      // check (their old value isn't a collision against their new one).
+      if (e.code !== 'SQLITE_CONSTRAINT_UNIQUE' && e.code !== 'SQLITE_CONSTRAINT') throw e;
+      nextUsername = findAvailableUsername(desiredUsername, (name) => isUsernameTakenByOtherUser(name, id));
+      db.prepare('UPDATE users SET username = ?, avatar_url = ? WHERE id = ?').run(nextUsername, avatarUrl, id);
+    }
     return { ...existing, username: nextUsername, avatar_url: avatarUrl };
   }
 
