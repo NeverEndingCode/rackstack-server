@@ -3,10 +3,16 @@ import { applyAction, scheduleAnomaly } from '../shared/reducer.js';
 import { getSave, putSave } from './db.js';
 import { getConfig } from './configService.js';
 
-function safeParse(text) {
+function safeParse(text, userId) {
   try {
     return JSON.parse(text);
   } catch (e) {
+    // Falling through to null here means the caller treats this as "no save
+    // existed" - a fresh initialState() - and the next persist overwrites
+    // this row with that fresh state, discarding whatever was recoverable
+    // in it. That's silent data loss with no way for an operator to notice
+    // unless it's logged here.
+    console.error(`[stateService] corrupt save JSON for user ${userId}; falling back to a fresh state`, e);
     return null;
   }
 }
@@ -25,7 +31,7 @@ function safeParse(text) {
 export function loadEvaluateAndSchedule(userId, now) {
   const config = getConfig().data;
   const row = getSave(userId);
-  const raw = row ? safeParse(row.data) : null;
+  const raw = row ? safeParse(row.data, userId) : null;
   const lastEvaluatedAt = row ? row.last_save : now;
 
   const migrated = migrateSave(raw);

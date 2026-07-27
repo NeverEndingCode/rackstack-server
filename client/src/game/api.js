@@ -27,12 +27,6 @@
 // the retry/backoff/onQueueError contract.
 
 import { ACTION_FLUSH_MS, ACTION_RETRY_MAX_MS } from './constants.js';
-import { fmt } from '@shared/gameRules.js';
-
-// Re-exported for convenience so UI code that already imports from
-// game/api.js doesn't need a second import for the shared number
-// formatter (still fine to import '@shared/gameRules.js' directly too).
-export { fmt };
 
 async function request(path, opts) {
   let res;

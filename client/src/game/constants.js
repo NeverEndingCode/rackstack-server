@@ -1,14 +1,9 @@
-export const GROWTH = 1.14;
 export const TICK_MS = 250;
-export const MILESTONES = [25, 50, 100, 200, 500, 1000];
 
 // Anomaly (formerly "event") timing is now server/config-authoritative
-// (server.nextAnomalyAt/anomalyExpiresAt, config.anomaly.*) - these survive
-// only as the client-side flavor-text pool plus legacy fallback numbers, no
-// longer used to actually schedule anything.
-export const ANOMALY_WINDOW = 15000;
-export const ANOMALY_MIN_DELAY = 70000;
-export const ANOMALY_MAX_DELAY = 150000;
+// (server.nextAnomalyAt/anomalyExpiresAt, config.anomaly.*) - this survives
+// only as the client-side flavor-text pool, no longer used to actually
+// schedule anything.
 export const ANOMALY_LABELS = [
   'Anomalous compute spike detected',
   'Unscheduled maintenance window open',
