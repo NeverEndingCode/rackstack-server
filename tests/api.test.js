@@ -81,7 +81,7 @@ describe('POST /api/actions', () => {
 
   it('400s when actions has more than 100 entries', async () => {
     const user = makeUser();
-    const actions = Array.from({ length: 101 }, (_, i) => ({ id: i, type: 'collectAll' }));
+    const actions = Array.from({ length: 101 }, (_, i) => ({ _cid: i, type: 'collectAll' }));
     const res = await request(app)
       .post('/api/actions')
       .set('Cookie', cookieFor(user))
@@ -97,15 +97,15 @@ describe('POST /api/actions', () => {
       .set('Cookie', cookieFor(user))
       .send({
         actions: [
-          { id: 'a1', type: 'buy', lane: 'tiers', index: 0, mode: 'max' },
-          { id: 'a2', type: 'buy', lane: 'tiers', index: 0, mode: 'max' },
+          { _cid: 'a1', type: 'buy', lane: 'tiers', index: 0, mode: 'max' },
+          { _cid: 'a2', type: 'buy', lane: 'tiers', index: 0, mode: 'max' },
         ],
       });
 
     expect(res.status).toBe(200);
     expect(res.body.results).toHaveLength(2);
-    expect(res.body.results[0]).toMatchObject({ id: 'a1', ok: true });
-    expect(res.body.results[1]).toMatchObject({ id: 'a2', ok: false, error: 'insufficient_credits' });
+    expect(res.body.results[0]).toMatchObject({ _cid: 'a1', ok: true });
+    expect(res.body.results[1]).toMatchObject({ _cid: 'a2', ok: false, error: 'insufficient_credits' });
     // the first buy's effect stuck: tier 0 owned went up, credits dropped from 10.
     expect(res.body.state.run.tiers[0].owned).toBeGreaterThan(0);
     expect(res.body.state.run.credits).toBeLessThan(10);
@@ -119,15 +119,15 @@ describe('POST /api/actions', () => {
       .set('Cookie', cookieFor(user))
       .send({
         actions: [
-          { id: 'm1', type: 'buy', lane: 'tiers', index: 'push', mode: 1 },
-          { id: 'm2', type: 'buy', lane: 'tiers', index: 'length', mode: 1 },
+          { _cid: 'm1', type: 'buy', lane: 'tiers', index: 'push', mode: 1 },
+          { _cid: 'm2', type: 'buy', lane: 'tiers', index: 'length', mode: 1 },
         ],
       });
 
     expect(res.status).toBe(200);
     expect(res.body.results).toHaveLength(2);
-    expect(res.body.results[0]).toEqual({ id: 'm1', ok: false, error: 'invalid_target' });
-    expect(res.body.results[1]).toEqual({ id: 'm2', ok: false, error: 'invalid_target' });
+    expect(res.body.results[0]).toEqual({ _cid: 'm1', ok: false, error: 'invalid_target' });
+    expect(res.body.results[1]).toEqual({ _cid: 'm2', ok: false, error: 'invalid_target' });
     expect(res.body.state.run.credits).toBe(10); // unchanged, not NaN
   });
 
@@ -138,12 +138,12 @@ describe('POST /api/actions', () => {
       .post('/api/actions')
       .set('Cookie', cookieFor(user))
       .send({
-        actions: [{ id: 'p1', type: '__proto__' }],
+        actions: [{ _cid: 'p1', type: '__proto__' }],
       });
 
     expect(res.status).toBe(200);
     expect(res.body.results).toHaveLength(1);
-    expect(res.body.results[0]).toEqual({ id: 'p1', ok: false, error: 'unknown_action' });
+    expect(res.body.results[0]).toEqual({ _cid: 'p1', ok: false, error: 'unknown_action' });
   });
 });
 
@@ -166,10 +166,10 @@ describe('POST /api/actions: Cold Storage', () => {
     const res = await request(app)
       .post('/api/actions')
       .set('Cookie', cookieFor(user))
-      .send({ actions: [{ id: 1, type: 'claimBlock', index: 0 }] });
+      .send({ actions: [{ _cid: 1, type: 'claimBlock', index: 0 }] });
 
     expect(res.status).toBe(200);
-    expect(res.body.results[0]).toMatchObject({ id: 1, ok: true });
+    expect(res.body.results[0]).toMatchObject({ _cid: 1, ok: true });
     expect(res.body.state.meta.coldStorage.blocksClaimed[0]).toBe(true);
   });
 
@@ -184,32 +184,33 @@ describe('POST /api/actions: Cold Storage', () => {
       .set('Cookie', cookieFor(user))
       .send({
         actions: [
-          { id: 1, type: 'claimAllBlocks' },
-          { id: 2, type: 'resetTrack' },
-          { id: 3, type: 'startJob', jobType: 'defrag' },
-          { id: 4, type: 'cancelJob' },
+          { _cid: 1, type: 'claimAllBlocks' },
+          { _cid: 2, type: 'resetTrack' },
+          { _cid: 3, type: 'startJob', jobType: 'defrag' },
+          { _cid: 4, type: 'cancelJob' },
         ],
       });
 
     expect(res.status).toBe(200);
     expect(res.body.results).toHaveLength(4);
-    expect(res.body.results[0]).toMatchObject({ id: 1, ok: true, claimedCount: 16 });
-    expect(res.body.results[1]).toMatchObject({ id: 2, ok: true });
-    expect(res.body.results[2]).toMatchObject({ id: 3, ok: true });
-    expect(res.body.results[3]).toMatchObject({ id: 4, ok: true });
+    expect(res.body.results[0]).toMatchObject({ _cid: 1, ok: true, claimedCount: 16 });
+    expect(res.body.results[1]).toMatchObject({ _cid: 2, ok: true });
+    expect(res.body.results[2]).toMatchObject({ _cid: 3, ok: true });
+    expect(res.body.results[3]).toMatchObject({ _cid: 4, ok: true });
     expect(res.body.state.meta.coldStorage.trackCycle).toBe(1);
     expect(res.body.state.meta.coldStorage.job).toBeNull();
   });
 
-  // The brief's sketch payload `{ id: 1, type: 'buyTapeUpgrade', id: 'headstart' }`
-  // has a literal duplicate `id` key - impossible in a JS object literal (the
-  // second silently wins, so the client-correlation id `1` is lost, not sent).
-  // shared/reducer.js's buyTapeUpgrade handler destructures `action.id` as the
-  // upgrade identifier - exactly like the pre-existing buyUpgrade/buyShardUpgrade
-  // buyFromDefs() handlers already do - and applyActions() (server/stateService.js)
-  // separately echoes `action.id` back as the per-result correlation id. So for
-  // this action type (like buyUpgrade/buyShardUpgrade before it) the single `id`
-  // field necessarily serves both purposes; there is no second field to invent.
+  // buyTapeUpgrade's `id` field is semantic (the upgrade identifier -
+  // shared/reducer.js's handler destructures `action.id`, exactly like the
+  // pre-existing buyUpgrade/buyShardUpgrade buyFromDefs() handlers already
+  // do) and is completely independent from `_cid`, the action queue's own
+  // correlation id (see client/game/api.js and server/stateService.js's
+  // applyActions - a prior bug conflated the two into a single `id` field,
+  // which silently broke this and four other action types end-to-end; see
+  // the hotfix that split them). A real client sends both fields at once;
+  // this test includes `_cid` too to prove the split doesn't disturb the
+  // semantic `id` the reducer actually keys off of.
   it('rejects buyTapeUpgrade at max level via the existing config-driven check', async () => {
     const user = makeUser();
     const state = initialState();
@@ -220,10 +221,10 @@ describe('POST /api/actions: Cold Storage', () => {
     const res = await request(app)
       .post('/api/actions')
       .set('Cookie', cookieFor(user))
-      .send({ actions: [{ type: 'buyTapeUpgrade', id: 'headstart' }] });
+      .send({ actions: [{ _cid: 1, type: 'buyTapeUpgrade', id: 'headstart' }] });
 
     expect(res.status).toBe(200);
-    expect(res.body.results[0]).toMatchObject({ id: 'headstart', ok: false, error: 'max_level' });
+    expect(res.body.results[0]).toMatchObject({ _cid: 1, ok: false, error: 'max_level' });
     expect(res.body.state.meta.coldStorage.upgrades.headstart).toBe(5); // unchanged
   });
 });

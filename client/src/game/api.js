@@ -150,8 +150,12 @@ const IMMEDIATE = new Set([
 
 // makeActionQueue({ onReconcile, onReject, onQueueError }) -> { dispatch, flush, pending }
 //
-// - dispatch(action): assigns action.id (incrementing), enqueues it, and
-//   (for IMMEDIATE types) kicks off an immediate flush().
+// - dispatch(action): assigns action._cid (an incrementing correlation id,
+//   kept separate from any semantic `id` field the action itself carries -
+//   e.g. buyUpgrade/buyShardUpgrade/claimGoal/claimRepeatable/buyTapeUpgrade
+//   all pass `{ type, id: <string identifier> }`, and clobbering that with
+//   this queue's own tracking id would silently break them), enqueues it,
+//   and (for IMMEDIATE types) kicks off an immediate flush().
 // - flush(): POSTs the queued batch to /api/actions. Only one flush is ever
 //   in flight at a time - if one is already running, this is a no-op (and
 //   anything dispatched meanwhile just accumulates for the next flush).
@@ -204,10 +208,10 @@ export function makeActionQueue({ onReconcile, onReject, onQueueError, onBeaconF
   let intervalId = null;
 
   function dispatch(action) {
-    const withId = { ...action, id: nextId++ };
+    const withId = { ...action, _cid: nextId++ };
     queue.push(withId);
     if (IMMEDIATE.has(action.type)) flush();
-    return withId.id;
+    return withId._cid;
   }
 
   async function flush() {
@@ -259,7 +263,7 @@ export function makeActionQueue({ onReconcile, onReject, onQueueError, onBeaconF
     if (queue.length === 0 || typeof navigator === 'undefined' || !navigator.sendBeacon) return;
     const blob = new Blob([JSON.stringify({ actions: queue })], { type: 'application/json' });
     navigator.sendBeacon('/api/actions', blob);
-    if (onBeaconFlush) onBeaconFlush(queue.map((a) => a.id));
+    if (onBeaconFlush) onBeaconFlush(queue.map((a) => a._cid));
     queue = [];
   }
 

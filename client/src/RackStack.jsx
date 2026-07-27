@@ -131,11 +131,11 @@ export default function RackStack({ user }) {
 
   function dispatchAction(action) {
     const now = Date.now();
-    const id = queueRef.current.dispatch(action);
-    const stamped = { ...action, id };
+    const cid = queueRef.current.dispatch(action);
+    const stamped = { ...action, _cid: cid };
     const result = applyLocal(stamped, now);
     pendingActionsRef.current.push(stamped);
-    return { ...result, id };
+    return { ...result, _cid: cid };
   }
 
   // claimAnomaly's reward (credits-vs-boost, and the amount) is rolled by
@@ -155,12 +155,12 @@ export default function RackStack({ user }) {
   }
 
   function handleReconcile(serverState, results) {
-    const resultIds = new Set((results || []).map((r) => r.id));
-    pendingActionsRef.current = pendingActionsRef.current.filter((a) => !resultIds.has(a.id));
+    const resultCids = new Set((results || []).map((r) => r._cid));
+    pendingActionsRef.current = pendingActionsRef.current.filter((a) => !resultCids.has(a._cid));
 
     for (const result of results || []) {
-      if (!pendingAnomalyIdsRef.current.has(result.id)) continue;
-      pendingAnomalyIdsRef.current.delete(result.id);
+      if (!pendingAnomalyIdsRef.current.has(result._cid)) continue;
+      pendingAnomalyIdsRef.current.delete(result._cid);
       if (result.ok && result.reward) openAnomalyRewardModal(result.reward);
     }
 
@@ -221,7 +221,7 @@ export default function RackStack({ user }) {
   // for in the meantime.
   function handleBeaconFlush(ids) {
     const idSet = new Set(ids);
-    pendingActionsRef.current = pendingActionsRef.current.filter((a) => !idSet.has(a.id));
+    pendingActionsRef.current = pendingActionsRef.current.filter((a) => !idSet.has(a._cid));
     // A claimAnomaly normally leaves the api.js queue instantly (it's
     // IMMEDIATE, see api.js), but a prior network outage can leave one
     // re-queued for retry - if a beacon flush sweeps it up here, its result
@@ -399,7 +399,7 @@ export default function RackStack({ user }) {
     // IMMEDIATE set, so the server round-trip (and thus the modal) follows
     // within one request, not up to the full 1s auto-flush window.
     const result = dispatchAction({ type: 'claimAnomaly' });
-    if (result.ok) pendingAnomalyIdsRef.current.add(result.id);
+    if (result.ok) pendingAnomalyIdsRef.current.add(result._cid);
   }
 
   // ---------------------------------------------------------------------
