@@ -1,5 +1,7 @@
 import { TIER_DEFS, GRID_DEFS, OVERCLOCK_DEFS } from './gameData.js';
 import { computeMults, tierRate } from './gameRules.js';
+import { TOTAL_BLOCKS } from './coldStorageData.js';
+import { computeColdStorageEffects, jobDurationSec } from './coldStorage.js';
 
 function freshTiers() {
   return TIER_DEFS.map((t) => ({ id: t.id, owned: 0, manager: false, ready: 0 }));
@@ -26,7 +28,18 @@ export function initialState() {
       legacyCores: 0, wafers: 0, level: 0, xp: 0,
       goalsCompleted: {}, upgrades: {}, shardUpgrades: {}, repeatable: {},
       singularityShards: 0,
-      stats: { migrates: 0, minigamesWon: 0, singularities: 0, totalWafersEarned: 0, lifetimeFlopsAllTime: 0 },
+      stats: {
+        migrates: 0, minigamesWon: 0, singularities: 0, totalWafersEarned: 0, lifetimeFlopsAllTime: 0,
+        blocksClaimedLifetime: 0, jobsCompletedLifetime: 0, deepJobsCompletedLifetime: 0,
+      },
+      coldStorage: {
+        trackStartedAt: Date.now(),
+        blocksClaimed: Array(TOTAL_BLOCKS).fill(false),
+        trackCycle: 0,
+        tapes: 0,
+        upgrades: {},
+        job: null,
+      },
     },
     server: {
       nextAnomalyAt: 0,
@@ -79,6 +92,19 @@ export function migrateSave(raw) {
     stats: { ...base.meta.stats, ...(srcMeta.stats || {}) },
   };
 
+  const srcCS = srcMeta.coldStorage || {};
+  const padBoolArray = (arr, len, fill) => {
+    const list = Array.isArray(arr) ? arr.slice(0, len) : [];
+    while (list.length < len) list.push(fill);
+    return list;
+  };
+  meta.coldStorage = {
+    ...base.meta.coldStorage,
+    ...srcCS,
+    blocksClaimed: padBoolArray(srcCS.blocksClaimed, TOTAL_BLOCKS, false),
+    upgrades: { ...base.meta.coldStorage.upgrades, ...(srcCS.upgrades || {}) },
+  };
+
   const server = {
     ...base.server,
     ...srcServer,
@@ -111,7 +137,11 @@ export function evaluate(state, config, lastEvaluatedAt, now) {
     if (s.server.boost && now < s.server.boost.until) {
       boostMult = s.server.boost.mult;
     }
-    const { eff, thresholds, racksMult, gridMult, overclockMult } = computeMults(s.meta, config, boostMult);
+    const { eff, thresholds, racksMult: baseRacksMult, gridMult: baseGridMult, overclockMult: baseOverclockMult } = computeMults(s.meta, config, boostMult);
+    const csEff = computeColdStorageEffects(s.meta, config);
+    let racksMult = baseRacksMult * csEff.coldFusionMult;
+    let gridMult = baseGridMult * csEff.coldFusionMult;
+    let overclockMult = baseOverclockMult * csEff.coldFusionMult;
 
     let creditsGain = 0;
     let lifetimeGain = 0;
@@ -156,7 +186,7 @@ export function evaluate(state, config, lastEvaluatedAt, now) {
       }, 0) * eff.heatDiscount;
       const netHeat = heatGain - eff.autoVentPerSec;
       let newHeat = Math.max(0, s.run.heat + netHeat * elapsedSec);
-      if (newHeat >= config.heat.capacity) {
+      if (newHeat >= config.heat.capacity + csEff.heatCapacityBonus) {
         s.run.heat = 0;
         s.run.heatCooldownUntil = now + config.heat.overheatCooldownMs;
         s.server.overheated = true;
@@ -172,9 +202,21 @@ export function evaluate(state, config, lastEvaluatedAt, now) {
     // Offline gap: production capped, heat untouched (v1.1
     // applyOfflineProgress semantics — unmanaged tiers accrue into `ready`,
     // managed tiers + grid + overclock lanes auto-land in credits).
-    const { eff, thresholds, racksMult, gridMult, overclockMult } = computeMults(s.meta, config, 1);
-    const cappedHours = Math.min(eff.offlineCapHours, config.offline.hardCapHours);
+    const { eff, thresholds, racksMult: baseRacksMult, gridMult: baseGridMult, overclockMult: baseOverclockMult } = computeMults(s.meta, config, 1);
+    const csEff = computeColdStorageEffects(s.meta, config);
+    let racksMult = baseRacksMult * csEff.coldFusionMult;
+    let gridMult = baseGridMult * csEff.coldFusionMult;
+    let overclockMult = baseOverclockMult * csEff.coldFusionMult;
+    const cappedHours = Math.min(eff.offlineCapHours + csEff.offlineCapHoursBonus, config.offline.hardCapHours);
     const cappedSec = Math.min(elapsedSec, cappedHours * 3600);
+
+    if (s.meta.coldStorage.job) {
+      const durationSec = jobDurationSec(s.meta.coldStorage.job.type, config);
+      s.meta.coldStorage.job.accruedOfflineSec = Math.min(
+        durationSec,
+        s.meta.coldStorage.job.accruedOfflineSec + elapsedSec * csEff.offlineJobRateMult,
+      );
+    }
 
     let offlineCredits = 0;
     let offlineLifetime = 0;
