@@ -1,4 +1,4 @@
-import { Layers, Network, Flame, ShoppingBag, Sparkles, ListChecks, Gamepad2 } from 'lucide-react';
+import { Layers, Network, Flame, ShoppingBag, Sparkles, ListChecks, Gamepad2, Archive } from 'lucide-react';
 
 export const TABS = [
   { id: 'racks', label: 'Racks', Icon: Layers },
@@ -8,4 +8,5 @@ export const TABS = [
   { id: 'singularity', label: 'Singularity', Icon: Sparkles },
   { id: 'goals', label: 'Goals', Icon: ListChecks },
   { id: 'games', label: 'Games', Icon: Gamepad2 },
+  { id: 'coldstorage', label: 'Cold Storage', Icon: Archive },
 ];

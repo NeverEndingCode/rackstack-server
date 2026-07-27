@@ -20,6 +20,7 @@ import UpgradesPanel from './game/components/UpgradesPanel.jsx';
 import SingularityPanel from './game/components/SingularityPanel.jsx';
 import GoalsPanel from './game/components/GoalsPanel.jsx';
 import GamesPanel from './game/components/GamesPanel.jsx';
+import ColdStoragePanel from './game/components/ColdStoragePanel.jsx';
 import AnomalyToast from './game/components/AnomalyToast.jsx';
 import RushOverlay from './game/components/minigames/RushOverlay.jsx';
 import DebugOverlay from './game/components/minigames/DebugOverlay.jsx';
@@ -186,6 +187,7 @@ export default function RackStack({ user }) {
     not_met: 'Not completed yet',
     session_open: 'Game already in progress',
     gone: 'Session expired',
+    max_level: 'Already at max level',
   };
   function showToast(text) {
     setRejectToast({ id: Date.now() + Math.random(), text });
@@ -336,6 +338,13 @@ export default function RackStack({ user }) {
   function ventHeat() { dispatchAction({ type: 'vent' }); }
   function buyUpgrade(u) { dispatchAction({ type: 'buyUpgrade', id: u.id }); }
   function buyShardUpgrade(u) { dispatchAction({ type: 'buyShardUpgrade', id: u.id }); }
+  function claimBlock(index) { dispatchAction({ type: 'claimBlock', index }); }
+  function claimAllBlocks() { dispatchAction({ type: 'claimAllBlocks' }); }
+  function resetTrack() { dispatchAction({ type: 'resetTrack' }); }
+  function startJob(jobType) { dispatchAction({ type: 'startJob', jobType }); }
+  function cancelJob() { dispatchAction({ type: 'cancelJob' }); }
+  function claimJob() { dispatchAction({ type: 'claimJob' }); }
+  function buyTapeUpgrade(u) { dispatchAction({ type: 'buyTapeUpgrade', id: u.id }); }
 
   function doMigrate() {
     const result = dispatchAction({ type: 'migrate' });
@@ -640,6 +649,7 @@ export default function RackStack({ user }) {
   const gridUnlocked = state.run.tiers[2].owned >= 1;
   const overclockUnlocked = state.run.tiers[3].owned >= 1;
   const singularityUnlocked = state.meta.legacyCores >= 50 || state.meta.stats.singularities > 0 || state.meta.singularityShards > 0;
+  const coldStorageUnlocked = state.run.tiers[4].owned >= 1; // Server Room
   const anyReady = state.run.tiers.some((ts) => !ts.manager && ts.ready > 0.01);
   const anyManualOwned = state.run.tiers.some((ts) => ts.owned > 0 && !ts.manager);
 
@@ -675,7 +685,7 @@ export default function RackStack({ user }) {
           <HeaderBar user={user} displayName={displayName} level={state.meta.level} onOpenProfile={() => setProfileOpen(true)} />
           <StatsRow run={state.run} meta={state.meta} totalOutputPerSec={ctx.totalOutputPerSec} xpNeeded={xpNeeded} boost={boost} boostMultNow={boostMultNow} />
           <MigrateBar gain={gain} showCollectAll={anyManualOwned} collectDisabled={!anyReady} onMigrate={() => setModal({ type: 'migrate' })} onCollectAll={collectAll} />
-          <TabBar tabs={TABS} activeTab={activeTab} setActiveTab={setActiveTab} gridUnlocked={gridUnlocked} overclockUnlocked={overclockUnlocked} singularityUnlocked={singularityUnlocked} />
+          <TabBar tabs={TABS} activeTab={activeTab} setActiveTab={setActiveTab} gridUnlocked={gridUnlocked} overclockUnlocked={overclockUnlocked} singularityUnlocked={singularityUnlocked} coldStorageUnlocked={coldStorageUnlocked} />
         </div>
       </div>
 
@@ -719,6 +729,21 @@ export default function RackStack({ user }) {
           onStartBalance={startBalanceGame}
           cooldowns={state.server.gameCooldowns}
           minigamesConfig={config.data.minigames}
+        />
+      )}
+
+      {activeTab === 'coldstorage' && (
+        <ColdStoragePanel
+          meta={state.meta}
+          config={config.data}
+          totalOutputPerSec={ctx.totalOutputPerSec}
+          onClaimBlock={claimBlock}
+          onClaimAllBlocks={claimAllBlocks}
+          onResetTrack={resetTrack}
+          onStartJob={startJob}
+          onCancelJob={cancelJob}
+          onClaimJob={claimJob}
+          onBuyTapeUpgrade={buyTapeUpgrade}
         />
       )}
 
