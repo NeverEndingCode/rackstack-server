@@ -137,11 +137,10 @@ export function evaluate(state, config, lastEvaluatedAt, now) {
     if (s.server.boost && now < s.server.boost.until) {
       boostMult = s.server.boost.mult;
     }
-    const { eff, thresholds, racksMult: baseRacksMult, gridMult: baseGridMult, overclockMult: baseOverclockMult } = computeMults(s.meta, config, boostMult);
+    // computeMults() already folds coldFusionMult into racksMult/gridMult/
+    // overclockMult - do not re-multiply it in here (see gameRules.js).
+    const { eff, thresholds, racksMult, gridMult, overclockMult } = computeMults(s.meta, config, boostMult);
     const csEff = computeColdStorageEffects(s.meta, config);
-    let racksMult = baseRacksMult * csEff.coldFusionMult;
-    let gridMult = baseGridMult * csEff.coldFusionMult;
-    let overclockMult = baseOverclockMult * csEff.coldFusionMult;
 
     let creditsGain = 0;
     let lifetimeGain = 0;
@@ -202,20 +201,24 @@ export function evaluate(state, config, lastEvaluatedAt, now) {
     // Offline gap: production capped, heat untouched (v1.1
     // applyOfflineProgress semantics — unmanaged tiers accrue into `ready`,
     // managed tiers + grid + overclock lanes auto-land in credits).
-    const { eff, thresholds, racksMult: baseRacksMult, gridMult: baseGridMult, overclockMult: baseOverclockMult } = computeMults(s.meta, config, 1);
+    // computeMults() already folds coldFusionMult into racksMult/gridMult/
+    // overclockMult - do not re-multiply it in here (see gameRules.js).
+    const { eff, thresholds, racksMult, gridMult, overclockMult } = computeMults(s.meta, config, 1);
     const csEff = computeColdStorageEffects(s.meta, config);
-    let racksMult = baseRacksMult * csEff.coldFusionMult;
-    let gridMult = baseGridMult * csEff.coldFusionMult;
-    let overclockMult = baseOverclockMult * csEff.coldFusionMult;
     const cappedHours = Math.min(eff.offlineCapHours + csEff.offlineCapHoursBonus, config.offline.hardCapHours);
     const cappedSec = Math.min(elapsedSec, cappedHours * 3600);
 
-    if (s.meta.coldStorage.job) {
+    if (s.meta.coldStorage && s.meta.coldStorage.job) {
       const durationSec = jobDurationSec(s.meta.coldStorage.job.type, config);
-      s.meta.coldStorage.job.accruedOfflineSec = Math.min(
-        durationSec,
-        s.meta.coldStorage.job.accruedOfflineSec + elapsedSec * csEff.offlineJobRateMult,
-      );
+      // durationSec is null for an unrecognized job.type (see coldStorage.js)
+      // - skip accrual rather than let Math.min coerce null to 0 and zero
+      // out progress on every gap.
+      if (durationSec != null) {
+        s.meta.coldStorage.job.accruedOfflineSec = Math.min(
+          durationSec,
+          s.meta.coldStorage.job.accruedOfflineSec + elapsedSec * csEff.offlineJobRateMult,
+        );
+      }
     }
 
     let offlineCredits = 0;

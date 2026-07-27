@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { DEFAULT_CONFIG } from '../shared/configSchema.js';
-import { initialState } from '../shared/state.js';
+import { initialState, evaluate } from '../shared/state.js';
 import { goalCtx, GOAL_DEFS, REPEATABLE_DEFS } from '../shared/goals.js';
 import { TIER_DEFS, GRID_DEFS, OVERCLOCK_DEFS } from '../shared/gameData.js';
 import { computeMults, tierRate } from '../shared/gameRules.js';
@@ -100,6 +100,20 @@ describe('goalCtx', () => {
     expect(REPEATABLE_DEFS.find((r) => r.id === 'r_migrate').metric(ctx)).toBe(1);
   });
 
+  it('totalOutputPerSec matches evaluate()\'s real production with Cold Fusion purchased (regression: goalCtx used to understate by up to 30% because coldFusionMult was only applied inside evaluate(), never in computeMults())', () => {
+    const s = initialState();
+    s.run.tiers[0] = { id: 0, owned: 100, manager: true, ready: 0 }; // 100 owned -> milestoneMult x8
+    s.meta.coldStorage.upgrades.coldfusion = 15; // +30%
+
+    const ctx = goalCtx(s, DEFAULT_CONFIG, NOW);
+    const { state: s2 } = evaluate(s, DEFAULT_CONFIG, NOW, NOW + 1000); // 1s online gap
+    const actualPerSec = s2.run.credits - s.run.credits;
+
+    // Reviewer's verified repro: actual production 520.000 credits/sec vs
+    // goalCtx reporting 400.000 before this fix.
+    expect(ctx.totalOutputPerSec).toBeCloseTo(520, 6);
+    expect(ctx.totalOutputPerSec).toBeCloseTo(actualPerSec, 6);
+  });
   it('g17 tracks the block-16 jackpot', () => {
     const g17 = GOAL_DEFS.find((g) => g.id === 'g17');
     const ctx = { meta: { coldStorage: { blocksClaimed: Array(16).fill(false) } } };

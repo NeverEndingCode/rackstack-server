@@ -127,6 +127,16 @@ describe('coldStorage state wiring', () => {
     expect(s2.meta.coldStorage.job.accruedOfflineSec).toBe(3600);
   });
 
+  it('evaluate() does not throw on a state missing meta.coldStorage entirely (defensive - production always goes through migrateSave first, but evaluate() is exported and previously tolerated any {run, meta, server} shape)', () => {
+    const s = initialState();
+    s.run.tiers[0] = { id: 0, owned: 10, manager: false, ready: 0 };
+    delete s.meta.coldStorage;
+    const t0 = 1_000_000;
+    expect(() => evaluate(s, DEFAULT_CONFIG, t0, t0 + 10 * 3600 * 1000)).not.toThrow(); // 10h offline gap
+    const { state: s2 } = evaluate(s, DEFAULT_CONFIG, t0, t0 + 10 * 3600 * 1000);
+    expect(s2.run.tiers[0].ready).toBeGreaterThan(0); // job accrual was simply skipped, production still ran
+  });
+
   it('priorityspinup tape upgrade speeds up offline job accrual', () => {
     const s = initialState();
     s.meta.coldStorage.upgrades.priorityspinup = 10; // +100% -> 2x rate
