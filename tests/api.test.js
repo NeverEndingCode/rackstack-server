@@ -129,6 +129,21 @@ describe('POST /api/actions', () => {
     expect(res.body.results[1]).toEqual({ id: 'm2', ok: false, error: 'invalid_target' });
     expect(res.body.state.run.credits).toBe(10); // unchanged, not NaN
   });
+
+  it('rejects a prototype-key action type (__proto__) with a normal ok:false result, not a 500', async () => {
+    const user = makeUser();
+
+    const res = await request(app)
+      .post('/api/actions')
+      .set('Cookie', cookieFor(user))
+      .send({
+        actions: [{ id: 'p1', type: '__proto__' }],
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.results).toHaveLength(1);
+    expect(res.body.results[0]).toEqual({ id: 'p1', ok: false, error: 'unknown_action' });
+  });
 });
 
 describe('config: admin gating and owner bump', () => {

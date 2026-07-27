@@ -15,6 +15,31 @@ describe('reducer: unknown action', () => {
     expect(state).toEqual(s);
     expect(s.run.credits).toBe(10);
   });
+
+  describe('prototype-key action.type (prototype-pollution-via-lookup regression)', () => {
+    // {type: '__proto__'} used to resolve HANDLERS['__proto__'] to
+    // Object.prototype's own accessor rather than undefined (since HANDLERS
+    // was a plain object literal, inheriting from Object.prototype) -
+    // applyAction called that as a function without checking it was actually
+    // one of the registered handlers, throwing "handler is not a function".
+    // {type: 'toString'} / {type: 'constructor'} / {type: 'hasOwnProperty'}
+    // similarly resolved to real inherited functions/objects instead of
+    // failing the lookup. All of these must return unknown_action, never
+    // throw, and never mutate state.
+    const badTypes = ['__proto__', 'toString', 'constructor', 'hasOwnProperty'];
+    for (const type of badTypes) {
+      it(`type: ${JSON.stringify(type)} -> unknown_action, state unchanged, no throw`, () => {
+        const s = initialState();
+        let out;
+        expect(() => {
+          out = applyAction(s, { type }, DEFAULT_CONFIG, NOW);
+        }).not.toThrow();
+        expect(out.result).toEqual({ ok: false, error: 'unknown_action' });
+        expect(out.state).toEqual(s);
+        expect(s.run.credits).toBe(10);
+      });
+    }
+  });
 });
 
 describe('reducer: buy (tiers)', () => {

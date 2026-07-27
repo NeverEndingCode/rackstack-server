@@ -250,11 +250,23 @@ function hardReset(s, action, config, now, rng) {
   return { ok: true };
 }
 
-const HANDLERS = {
+// Object.create(null): a plain `{}` object literal inherits from
+// Object.prototype, so a lookup like HANDLERS['__proto__'] doesn't resolve
+// to `undefined` (the intended "unregistered action" signal) - it resolves
+// Object.prototype's own __proto__ accessor, and HANDLERS['toString'] /
+// HANDLERS['constructor'] / HANDLERS['hasOwnProperty'] similarly resolve to
+// real inherited functions/objects. `applyAction` calls the lookup result as
+// a function without checking it's one of the handlers registered below, so
+// any of those action.type values crashed with "handler is not a function"
+// (or, for 'constructor', called Object() and leaked part of internal
+// state). A null-prototype object has no inherited properties at all, so
+// every lookup that isn't one of the names below - including these - comes
+// back `undefined` and falls through to the normal unknown_action path.
+const HANDLERS = Object.assign(Object.create(null), {
   buy, collect, collectAll, hireManager, vent,
   migrate, singularity, buyUpgrade, buyShardUpgrade,
   claimGoal, claimRepeatable, claimAnomaly, hardReset,
-};
+});
 
 export function applyAction(state, action, config, now, rng = Math.random) {
   const handler = action && HANDLERS[action.type];
