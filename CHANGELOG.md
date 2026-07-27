@@ -1,5 +1,27 @@
 # Changelog
 
+## v1.3.0
+
+Cold Storage: a new tab, unlocked at the Server Room tier, built around a
+currency ("tapes") and progress track that survive Migrate and Singularity.
+
+- Passive reward track: 16 blocks that refill on a timer and can be claimed
+  individually or all at once, with a bonus on the final block of each cycle.
+- Offline-only archival job queue: start one of three job durations, then
+  collect the payout once it finishes while you're away - progress only
+  advances offline, so there's nothing to babysit.
+- Tapes upgrade tree: 7 upgrades bought with tapes that boost the track and
+  job queue, permanent across resets.
+- New goals and repeatable objectives tied to Cold Storage progress.
+- Admin dashboard: the live-tunable Balancing tab picked up a new
+  `batchQueue` section (block/job durations, rewards, and bonus curves) and
+  7 new upgrade max-level tunables, editable the same as every other stat.
+
+Fixes:
+- Fixed wafer/shard upgrade purchases and goal/repeatable claims sometimes
+  silently failing ("Action failed") due to a queued action's tracking id
+  clobbering the action's own semantic id before it reached the server.
+
 ## v1.2.0
 
 Server-authoritative rewrite: the client no longer computes or persists the
