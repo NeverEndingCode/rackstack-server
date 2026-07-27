@@ -42,4 +42,11 @@ describe('configSchema', () => {
     expect(up.heat.capacity).toBe(3000);            // preserved
     expect(up.minigames.balance.pointsRisk).toBe(5); // filled
   });
+  it('has the v1.3 batchQueue defaults and every leaf is a TUNABLES row', () => {
+    expect(DEFAULT_CONFIG.batchQueue.blockDurationMs).toBe(21600000);
+    expect(DEFAULT_CONFIG.batchQueue.jobDurationDeepMs).toBe(86400000);
+    expect(DEFAULT_CONFIG.upgrades.maxLevels.coldfusion).toBe(15);
+    const v = validateConfig(DEFAULT_CONFIG);
+    expect(v.ok).toBe(true);
+  });
 });
