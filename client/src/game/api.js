@@ -146,6 +146,14 @@ export async function fetchChangelog() {
 const IMMEDIATE = new Set([
   'migrate', 'singularity', 'hardReset', 'buyUpgrade', 'buyShardUpgrade',
   'claimGoal', 'claimRepeatable', 'claimAnomaly',
+  // Cold Storage's direct analogs of the above: buyTapeUpgrade is an
+  // upgrade-tree purchase (~buyUpgrade/buyShardUpgrade), claimBlock/
+  // claimAllBlocks/claimJob are reward claims (~claimGoal/claimRepeatable/
+  // claimAnomaly), and resetTrack is a reset action (~hardReset).
+  // startJob/cancelJob deliberately excluded - starting/cancelling isn't a
+  // claim or reset, so the normal batched flush is fine for those (same as
+  // e.g. buy/collect/vent).
+  'buyTapeUpgrade', 'claimBlock', 'claimAllBlocks', 'claimJob', 'resetTrack',
 ]);
 
 // makeActionQueue({ onReconcile, onReject, onQueueError }) -> { dispatch, flush, pending }
