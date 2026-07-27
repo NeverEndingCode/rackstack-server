@@ -2,6 +2,8 @@ import { TIER_DEFS, GRID_DEFS, OVERCLOCK_DEFS, UPGRADE_DEFS, SINGULARITY_DEFS } 
 import { costForN, maxAffordable, computeEffects, migrateGain, xpForLevel } from './gameRules.js';
 import { initialState } from './state.js';
 import { goalCtx, GOAL_DEFS, REPEATABLE_DEFS } from './goals.js';
+import { TOTAL_BLOCKS, JOB_TYPES, TAPE_UPGRADE_DEFS } from './coldStorageData.js';
+import { computeColdStorageEffects, blockReward, jobDurationSec, jobReward } from './coldStorage.js';
 
 const LANE_DEFS = { tiers: TIER_DEFS, grid: GRID_DEFS, overclock: OVERCLOCK_DEFS };
 
@@ -157,6 +159,144 @@ function buyFromDefs(defs, levelsBag, currencyKey) {
 const buyUpgrade = buyFromDefs(UPGRADE_DEFS, 'upgrades', 'wafers');
 const buyShardUpgrade = buyFromDefs(SINGULARITY_DEFS, 'shardUpgrades', 'singularityShards');
 
+// Cold Storage: batch-queue blocks, track resets, offline jobs, and the
+// tape-upgrade shop. Tapes/upgrades live nested at s.meta.coldStorage.* -
+// unlike buyFromDefs' flat s.meta[currencyKey] access - so buyTapeUpgrade is
+// its own standalone handler rather than a buyFromDefs() instantiation.
+
+function claimBlock(s, action, config, now) {
+  const { index } = action;
+  if (!validIndex(index, TOTAL_BLOCKS)) return err('invalid_target');
+  const cs = s.meta.coldStorage;
+  if (cs.blocksClaimed[index]) return err('invalid_target');
+
+  const csEff = computeColdStorageEffects(s.meta, config);
+  const arrivedCount = Math.floor((now - cs.trackStartedAt) / csEff.blockDurationMs);
+  if (index >= arrivedCount) return err('not_met');
+
+  const ctx = goalCtx(s, config, now);
+  const { tapes, flops } = blockReward(index, cs.trackCycle, config, csEff, ctx.totalOutputPerSec);
+
+  cs.blocksClaimed[index] = true;
+  cs.tapes += tapes;
+  if (flops > 0) {
+    s.run.credits += flops;
+    s.run.lifetimeRun += flops;
+  }
+  s.meta.stats.blocksClaimedLifetime = (s.meta.stats.blocksClaimedLifetime || 0) + 1;
+  return { ok: true, tapes, flops };
+}
+
+function claimAllBlocks(s, action, config, now) {
+  const cs = s.meta.coldStorage;
+  const csEff = computeColdStorageEffects(s.meta, config);
+  const arrivedCount = Math.floor((now - cs.trackStartedAt) / csEff.blockDurationMs);
+  const ctx = goalCtx(s, config, now);
+
+  let tapes = 0;
+  let flops = 0;
+  let claimedCount = 0;
+  for (let i = 0; i < TOTAL_BLOCKS && i < arrivedCount; i++) {
+    if (cs.blocksClaimed[i]) continue;
+    const reward = blockReward(i, cs.trackCycle, config, csEff, ctx.totalOutputPerSec);
+    cs.blocksClaimed[i] = true;
+    tapes += reward.tapes;
+    flops += reward.flops;
+    claimedCount++;
+  }
+  if (claimedCount === 0) return err('invalid_target');
+
+  cs.tapes += tapes;
+  if (flops > 0) {
+    s.run.credits += flops;
+    s.run.lifetimeRun += flops;
+  }
+  s.meta.stats.blocksClaimedLifetime = (s.meta.stats.blocksClaimedLifetime || 0) + claimedCount;
+  return { ok: true, tapes, flops, claimedCount };
+}
+
+function resetTrack(s, action, config, now) {
+  const cs = s.meta.coldStorage;
+  if (!cs.blocksClaimed.every(Boolean)) return err('not_met');
+
+  const csEff = computeColdStorageEffects(s.meta, config);
+  cs.trackCycle += 1;
+  cs.trackStartedAt = now;
+  cs.blocksClaimed = Array(TOTAL_BLOCKS).fill(false);
+
+  const headStart = Math.min(csEff.headStartBlocks, TOTAL_BLOCKS);
+  if (headStart > 0) {
+    const ctx = goalCtx(s, config, now);
+    let tapes = 0;
+    let flops = 0;
+    for (let i = 0; i < headStart; i++) {
+      cs.blocksClaimed[i] = true;
+      const reward = blockReward(i, cs.trackCycle, config, csEff, ctx.totalOutputPerSec);
+      tapes += reward.tapes;
+      flops += reward.flops;
+    }
+    cs.tapes += tapes;
+    if (flops > 0) {
+      s.run.credits += flops;
+      s.run.lifetimeRun += flops;
+    }
+    s.meta.stats.blocksClaimedLifetime = (s.meta.stats.blocksClaimedLifetime || 0) + headStart;
+  }
+  return { ok: true };
+}
+
+function startJob(s, action, config, now) {
+  const { jobType } = action;
+  if (!JOB_TYPES.includes(jobType)) return err('invalid_target');
+  if (s.meta.coldStorage.job) return err('invalid_target');
+
+  s.meta.coldStorage.job = { type: jobType, accruedOfflineSec: 0, startedAt: now };
+  return { ok: true };
+}
+
+function cancelJob(s) {
+  if (!s.meta.coldStorage.job) return err('invalid_target');
+  s.meta.coldStorage.job = null;
+  return { ok: true };
+}
+
+function claimJob(s, action, config) {
+  const job = s.meta.coldStorage.job;
+  if (!job) return err('invalid_target');
+
+  const durationSec = jobDurationSec(job.type, config);
+  if (job.accruedOfflineSec < durationSec) return err('not_met');
+
+  const csEff = computeColdStorageEffects(s.meta, config);
+  const tapes = Math.round(jobReward(job.type, config) * csEff.tapeRewardMult);
+
+  s.meta.coldStorage.tapes += tapes;
+  s.meta.coldStorage.job = null;
+  s.meta.stats.jobsCompletedLifetime = (s.meta.stats.jobsCompletedLifetime || 0) + 1;
+  if (job.type === 'deep') {
+    s.meta.stats.deepJobsCompletedLifetime = (s.meta.stats.deepJobsCompletedLifetime || 0) + 1;
+  }
+  return { ok: true, tapes };
+}
+
+function buyTapeUpgrade(s, action, config) {
+  const { id } = action;
+  const def = TAPE_UPGRADE_DEFS.find((u) => u.id === id);
+  if (!def) return err('invalid_target');
+
+  const cs = s.meta.coldStorage;
+  const level = cs.upgrades[id] || 0;
+  const maxLevel = config.upgrades.maxLevels[id];
+  if (maxLevel == null || level >= maxLevel) return err('max_level');
+
+  const cost = Math.ceil(def.baseCost * Math.pow(def.costMult, level));
+  if (cs.tapes < cost) return err('insufficient_credits');
+
+  cs.tapes -= cost;
+  cs.upgrades[id] = level + 1;
+  return { ok: true };
+}
+
 function applyLevelUps(meta, xpGain) {
   let xp = meta.xp + xpGain;
   let level = meta.level;
@@ -266,6 +406,7 @@ const HANDLERS = Object.assign(Object.create(null), {
   buy, collect, collectAll, hireManager, vent,
   migrate, singularity, buyUpgrade, buyShardUpgrade,
   claimGoal, claimRepeatable, claimAnomaly, hardReset,
+  claimBlock, claimAllBlocks, resetTrack, startJob, cancelJob, claimJob, buyTapeUpgrade,
 });
 
 export function applyAction(state, action, config, now, rng = Math.random) {
