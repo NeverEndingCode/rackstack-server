@@ -52,6 +52,40 @@ describe('reducer: buy (tiers)', () => {
     const { result } = applyAction(s, { type: 'buy', lane: 'bogus', index: 0, mode: 1 }, DEFAULT_CONFIG, NOW);
     expect(result).toEqual({ ok: false, error: 'invalid_target' });
   });
+
+  describe('malicious/non-numeric index (prototype-poisoning regression)', () => {
+    // {index: 'push'} used to resolve run.tiers['push'] to
+    // Array.prototype.push (an own-array-method lookup, since a plain
+    // string is used as a property key rather than validated as a numeric
+    // index) - a truthy "laneState", so the handler proceeded and corrupted
+    // state instead of rejecting. {index: 'length'} threw outright, which
+    // applyAction's contract documents as never happening. All of these
+    // must return invalid_target, never throw, and never mutate state.
+    const badIndexes = ['push', 'length', -1, 1.5, 999, '__proto__', 'toString', NaN, null, undefined, {}, []];
+    for (const index of badIndexes) {
+      it(`index: ${JSON.stringify(index)} -> invalid_target, state unchanged, no throw`, () => {
+        const s = initialState();
+        let out;
+        expect(() => {
+          out = applyAction(s, { type: 'buy', lane: 'tiers', index, mode: 1 }, DEFAULT_CONFIG, NOW);
+        }).not.toThrow();
+        expect(out.result).toEqual({ ok: false, error: 'invalid_target' });
+        expect(out.state).toEqual(s); // structuredClone contract: no mutation leaked back
+        expect(s.run.credits).toBe(10);
+        expect(Number.isNaN(out.state.run.credits)).toBe(false);
+      });
+    }
+
+    it('a malicious buy does not corrupt credits into NaN for a subsequent action in the same batch', () => {
+      const s = initialState();
+      const step1 = applyAction(s, { type: 'buy', lane: 'tiers', index: 'push', mode: 1 }, DEFAULT_CONFIG, NOW);
+      expect(step1.result).toEqual({ ok: false, error: 'invalid_target' });
+      expect(Number.isNaN(step1.state.run.credits)).toBe(false);
+      // A follow-up buy the player couldn't otherwise afford must still be rejected.
+      const step2 = applyAction(step1.state, { type: 'buy', lane: 'tiers', index: 5, mode: 1 }, DEFAULT_CONFIG, NOW);
+      expect(step2.result).toEqual({ ok: false, error: 'insufficient_credits' });
+    });
+  });
 });
 
 describe('reducer: buy (grid)', () => {
@@ -113,6 +147,13 @@ describe('reducer: collect', () => {
     const { result } = applyAction(s, { type: 'collect', index: 999 }, DEFAULT_CONFIG, NOW);
     expect(result).toEqual({ ok: false, error: 'invalid_target' });
   });
+  it.each(['push', 'length', -1, 1.5])('collect rejects non-numeric/out-of-range index %j without throwing', (index) => {
+    const s = initialState();
+    let out;
+    expect(() => { out = applyAction(s, { type: 'collect', index }, DEFAULT_CONFIG, NOW); }).not.toThrow();
+    expect(out.result).toEqual({ ok: false, error: 'invalid_target' });
+    expect(Number.isNaN(out.state.run.credits)).toBe(false);
+  });
 });
 
 describe('reducer: collectAll', () => {
@@ -170,6 +211,13 @@ describe('reducer: hireManager', () => {
     const s = initialState();
     const { result } = applyAction(s, { type: 'hireManager', index: 999 }, DEFAULT_CONFIG, NOW);
     expect(result).toEqual({ ok: false, error: 'invalid_target' });
+  });
+  it.each(['push', 'length', -1, 1.5])('rejects non-numeric/out-of-range index %j without throwing', (index) => {
+    const s = initialState();
+    let out;
+    expect(() => { out = applyAction(s, { type: 'hireManager', index }, DEFAULT_CONFIG, NOW); }).not.toThrow();
+    expect(out.result).toEqual({ ok: false, error: 'invalid_target' });
+    expect(Number.isNaN(out.state.run.credits)).toBe(false);
   });
 });
 

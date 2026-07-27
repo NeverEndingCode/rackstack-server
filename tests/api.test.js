@@ -109,6 +109,26 @@ describe('POST /api/actions', () => {
     expect(res.body.state.run.tiers[0].owned).toBeGreaterThan(0);
     expect(res.body.state.run.credits).toBeLessThan(10);
   });
+
+  it('rejects a malicious non-numeric index payload with a normal ok:false result, not a 500', async () => {
+    const user = makeUser(); // fresh state: credits = 10
+
+    const res = await request(app)
+      .post('/api/actions')
+      .set('Cookie', cookieFor(user))
+      .send({
+        actions: [
+          { id: 'm1', type: 'buy', lane: 'tiers', index: 'push', mode: 1 },
+          { id: 'm2', type: 'buy', lane: 'tiers', index: 'length', mode: 1 },
+        ],
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.results).toHaveLength(2);
+    expect(res.body.results[0]).toEqual({ id: 'm1', ok: false, error: 'invalid_target' });
+    expect(res.body.results[1]).toEqual({ id: 'm2', ok: false, error: 'invalid_target' });
+    expect(res.body.state.run.credits).toBe(10); // unchanged, not NaN
+  });
 });
 
 describe('config: admin gating and owner bump', () => {

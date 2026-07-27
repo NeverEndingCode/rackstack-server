@@ -9,6 +9,21 @@ function err(error) {
   return { ok: false, error };
 }
 
+// Every handler below that indexes into a defs array (TIER_DEFS/GRID_DEFS/
+// OVERCLOCK_DEFS) or the matching run.* array using an action-supplied
+// `index` must run this check BEFORE any property access on those arrays.
+// Without it, a non-numeric `index` (e.g. 'push', 'length', '__proto__')
+// is used directly as a property key - `arr['push']` resolves to
+// Array.prototype.push (a function, so truthy "def"/"laneState" checks
+// pass), and assigning through it corrupts state (observed: credits
+// becoming NaN, which makes every later `cost > credits` affordability
+// check evaluate false and lets subsequent actions in the same batch buy
+// for free). A payload like `index: 'length'` throws outright, which
+// applyAction's contract documents as never happening.
+function validIndex(index, length) {
+  return Number.isInteger(index) && index >= 0 && index < length;
+}
+
 function resolveBuyCount(mode, def, owned, credits) {
   if (mode === 'max') return maxAffordable(def, owned, credits);
   if (typeof mode === 'number' && Number.isInteger(mode) && mode > 0) return mode;
@@ -18,7 +33,12 @@ function resolveBuyCount(mode, def, owned, credits) {
 function buy(s, action, config, now) {
   const { lane, index, mode } = action;
   const defs = LANE_DEFS[lane];
-  if (!defs) return err('invalid_target');
+  // Array.isArray (not just truthiness) - `lane` is a user-supplied string
+  // used as a property key against a plain object, so a value like
+  // '__proto__' or 'toString' would otherwise resolve to an inherited
+  // Object.prototype value instead of failing the lookup.
+  if (!Array.isArray(defs)) return err('invalid_target');
+  if (!validIndex(index, defs.length)) return err('invalid_target');
   const def = defs[index];
   const laneState = s.run[lane] && s.run[lane][index];
   if (!def || !laneState) return err('invalid_target');
@@ -41,6 +61,7 @@ function buy(s, action, config, now) {
 
 function collect(s, action) {
   const { index } = action;
+  if (!validIndex(index, s.run.tiers.length)) return err('invalid_target');
   const ts = s.run.tiers[index];
   if (!ts) return err('invalid_target');
   if (ts.ready <= 0) return err('invalid_target');
@@ -64,6 +85,7 @@ function collectAll(s) {
 
 function hireManager(s, action, config) {
   const { index } = action;
+  if (!validIndex(index, TIER_DEFS.length)) return err('invalid_target');
   const def = TIER_DEFS[index];
   const ts = s.run.tiers[index];
   if (!def || !ts) return err('invalid_target');
