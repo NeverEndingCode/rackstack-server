@@ -99,4 +99,30 @@ describe('goalCtx', () => {
     expect(REPEATABLE_DEFS.find((r) => r.id === 'r_overclock').metric(ctx)).toBe(1);
     expect(REPEATABLE_DEFS.find((r) => r.id === 'r_migrate').metric(ctx)).toBe(1);
   });
+
+  it('g17 tracks the block-16 jackpot', () => {
+    const g17 = GOAL_DEFS.find((g) => g.id === 'g17');
+    const ctx = { meta: { coldStorage: { blocksClaimed: Array(16).fill(false) } } };
+    expect(g17.progress(ctx)).toEqual([0, 1]);
+    ctx.meta.coldStorage.blocksClaimed[15] = true;
+    expect(g17.progress(ctx)).toEqual([1, 1]);
+  });
+  it('g18 tracks completing a Deep Archive Scrub', () => {
+    const g18 = GOAL_DEFS.find((g) => g.id === 'g18');
+    expect(g18.progress({ meta: { stats: { deepJobsCompletedLifetime: 0 } } })).toEqual([0, 1]);
+    expect(g18.progress({ meta: { stats: { deepJobsCompletedLifetime: 2 } } })).toEqual([1, 1]);
+  });
+  it('g19 tracks reaching tape-tree level 3 in any upgrade', () => {
+    const g19 = GOAL_DEFS.find((g) => g.id === 'g19');
+    expect(g19.progress({ meta: { coldStorage: { upgrades: { compression: 1, robotarm: 2 } } } })).toEqual([2, 3]);
+    expect(g19.progress({ meta: { coldStorage: { upgrades: { compression: 3 } } } })).toEqual([3, 3]);
+  });
+  it('r_blocks and r_jobs repeatables scale off lifetime counters', () => {
+    const r_blocks = REPEATABLE_DEFS.find((r) => r.id === 'r_blocks');
+    const r_jobs = REPEATABLE_DEFS.find((r) => r.id === 'r_jobs');
+    expect(r_blocks.metric({ meta: { stats: { blocksClaimedLifetime: 7 } } })).toBe(7);
+    expect(r_jobs.metric({ meta: { stats: { jobsCompletedLifetime: 2 } } })).toBe(2);
+    expect(r_blocks.target(0)).toBeGreaterThan(0);
+    expect(r_jobs.target(0)).toBeGreaterThan(0);
+  });
 });
