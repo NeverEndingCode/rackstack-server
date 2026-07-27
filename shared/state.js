@@ -31,7 +31,9 @@ export function initialState() {
       stats: {
         migrates: 0, minigamesWon: 0, singularities: 0, totalWafersEarned: 0, lifetimeFlopsAllTime: 0,
         blocksClaimedLifetime: 0, jobsCompletedLifetime: 0, deepJobsCompletedLifetime: 0,
+        tapesEarnedLifetime: 0,
       },
+      eventProgress: null,
       coldStorage: {
         trackStartedAt: Date.now(),
         blocksClaimed: Array(TOTAL_BLOCKS).fill(false),

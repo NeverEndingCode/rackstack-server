@@ -179,6 +179,7 @@ function claimBlock(s, action, config, now) {
 
   cs.blocksClaimed[index] = true;
   cs.tapes += tapes;
+  s.meta.stats.tapesEarnedLifetime = (s.meta.stats.tapesEarnedLifetime || 0) + tapes;
   if (flops > 0) {
     s.run.credits += flops;
     s.run.lifetimeRun += flops;
@@ -207,6 +208,7 @@ function claimAllBlocks(s, action, config, now) {
   if (claimedCount === 0) return err('invalid_target');
 
   cs.tapes += tapes;
+  s.meta.stats.tapesEarnedLifetime = (s.meta.stats.tapesEarnedLifetime || 0) + tapes;
   if (flops > 0) {
     s.run.credits += flops;
     s.run.lifetimeRun += flops;
@@ -242,6 +244,7 @@ function resetTrack(s, action, config, now) {
       flops += reward.flops;
     }
     cs.tapes += tapes;
+    s.meta.stats.tapesEarnedLifetime = (s.meta.stats.tapesEarnedLifetime || 0) + tapes;
     if (flops > 0) {
       s.run.credits += flops;
       s.run.lifetimeRun += flops;
@@ -282,6 +285,7 @@ function claimJob(s, action, config) {
   const tapes = Math.round(jobReward(job.type, config) * csEff.tapeRewardMult);
 
   s.meta.coldStorage.tapes += tapes;
+  s.meta.stats.tapesEarnedLifetime = (s.meta.stats.tapesEarnedLifetime || 0) + tapes;
   s.meta.coldStorage.job = null;
   s.meta.stats.jobsCompletedLifetime = (s.meta.stats.jobsCompletedLifetime || 0) + 1;
   if (job.type === 'deep') {
