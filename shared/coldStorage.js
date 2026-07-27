@@ -34,7 +34,16 @@ export function blockReward(index, trackCycle, config, csEff, totalOutputPerSec)
   return { tapes, flops };
 }
 
+// Returns null for any jobType outside JOB_TYPES (defense-in-depth: startJob
+// already validates against JOB_TYPES, so a bad type shouldn't reach here in
+// practice, but this is the one lookup in the file that indexed a config key
+// off caller-supplied input without checking it first). An unguarded lookup
+// of an unknown type yields `undefined / 1000` -> NaN, and `x < NaN` is
+// always false, so callers comparing accrued time against this value would
+// treat the job as already complete. Callers MUST treat a null return as
+// "invalid job type", not fall through to jobReward().
 export function jobDurationSec(jobType, config) {
+  if (!JOB_TYPES.includes(jobType)) return null;
   return config.batchQueue[JOB_DURATION_CONFIG_KEY[jobType]] / 1000;
 }
 

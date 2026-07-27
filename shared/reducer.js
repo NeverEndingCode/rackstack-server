@@ -224,7 +224,13 @@ function resetTrack(s, action, config, now) {
   cs.trackStartedAt = now;
   cs.blocksClaimed = Array(TOTAL_BLOCKS).fill(false);
 
-  const headStart = Math.min(csEff.headStartBlocks, TOTAL_BLOCKS);
+  // TOTAL_BLOCKS - 1, not TOTAL_BLOCKS: a headstart that could pre-claim
+  // every block would immediately re-satisfy this function's own
+  // `blocksClaimed.every(Boolean)` gate above, so a reset could pay itself
+  // out forever with zero wall-clock time between resets. Reserving the
+  // final block guarantees at least one block must actually arrive
+  // (blockDurationMs of real time) before the track can be reset again.
+  const headStart = Math.min(csEff.headStartBlocks, TOTAL_BLOCKS - 1);
   if (headStart > 0) {
     const ctx = goalCtx(s, config, now);
     let tapes = 0;
@@ -265,6 +271,11 @@ function claimJob(s, action, config) {
   if (!job) return err('invalid_target');
 
   const durationSec = jobDurationSec(job.type, config);
+  // null means job.type isn't a recognized JOB_TYPES entry - fail closed
+  // rather than falling through to jobReward()'s if/if/else chain, which
+  // defaults to the 'deep' branch (the largest payout) for anything it
+  // doesn't recognize.
+  if (durationSec == null) return err('invalid_target');
   if (job.accruedOfflineSec < durationSec) return err('not_met');
 
   const csEff = computeColdStorageEffects(s.meta, config);

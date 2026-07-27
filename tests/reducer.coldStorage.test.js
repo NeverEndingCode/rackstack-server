@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { DEFAULT_CONFIG } from '../shared/configSchema.js';
 import { initialState } from '../shared/state.js';
 import { applyAction } from '../shared/reducer.js';
+import { TOTAL_BLOCKS } from '../shared/coldStorageData.js';
 
 const NOW = 1_000_000;
 const SIX_HOURS = 6 * 3600 * 1000;
@@ -68,6 +69,30 @@ describe('coldStorage actions', () => {
     expect(state.meta.coldStorage.blocksClaimed[3]).toBe(false);
     expect(state.meta.coldStorage.tapes).toBeGreaterThan(0);
   });
+  it('resetTrack cannot self-loop when headstart maxLevel is raised to 16 (regression: unbounded reward loop)', () => {
+    // shared/configSchema.js allows upgrades.maxLevels.headstart up to 99 via
+    // a live admin tunable; raising it to >= 16 previously let a single
+    // headstart pre-claim ALL 16 blocks, which immediately re-satisfied
+    // resetTrack's own `blocksClaimed.every(Boolean)` gate and let a reset
+    // pay itself out forever with zero wall-clock time between resets.
+    const cfg = structuredClone(DEFAULT_CONFIG);
+    cfg.upgrades.maxLevels.headstart = TOTAL_BLOCKS;
+    const s = stateWithTrackStarted(200); // way more than 96h - all 16 "arrived"
+    s.meta.coldStorage.blocksClaimed = Array(TOTAL_BLOCKS).fill(true);
+    s.meta.coldStorage.upgrades.headstart = TOTAL_BLOCKS;
+
+    const first = applyAction(s, { type: 'resetTrack' }, cfg, NOW);
+    expect(first.result.ok).toBe(true);
+    // headStart is clamped to TOTAL_BLOCKS - 1 (15): blocks 0-14 pre-claimed,
+    // block 15 must still arrive on wall-clock time.
+    expect(first.state.meta.coldStorage.blocksClaimed.slice(0, TOTAL_BLOCKS - 1).every(Boolean)).toBe(true);
+    expect(first.state.meta.coldStorage.blocksClaimed[TOTAL_BLOCKS - 1]).toBe(false);
+
+    // Immediately reset again - no wall-clock time has passed, so block 15
+    // hasn't arrived. This must be rejected, closing the self-satisfying loop.
+    const second = applyAction(first.state, { type: 'resetTrack' }, cfg, NOW);
+    expect(second.result).toEqual({ ok: false, error: 'not_met' });
+  });
   it('startJob opens a job, rejects a second concurrent job, rejects bad type', () => {
     const s = initialState();
     const a = applyAction(s, { type: 'startJob', jobType: 'index' }, DEFAULT_CONFIG, NOW);
@@ -102,6 +127,21 @@ describe('coldStorage actions', () => {
     s.meta.coldStorage.job = { type: 'deep', accruedOfflineSec: 86400, startedAt: NOW };
     const { state } = applyAction(s, { type: 'claimJob' }, DEFAULT_CONFIG, NOW);
     expect(state.meta.stats.deepJobsCompletedLifetime).toBe(1);
+  });
+  it('claimJob fails closed on an unrecognized job.type instead of paying the max reward', () => {
+    const s = initialState();
+    s.meta.coldStorage.job = { type: 'evil', accruedOfflineSec: 0, startedAt: NOW };
+    const before = structuredClone(s);
+    const { state, result } = applyAction(s, { type: 'claimJob' }, DEFAULT_CONFIG, NOW);
+    expect(result).toEqual({ ok: false, error: 'invalid_target' });
+    expect(state).toEqual(before);
+
+    const s2 = initialState();
+    s2.meta.coldStorage.job = { type: '__proto__', accruedOfflineSec: 0, startedAt: NOW };
+    const before2 = structuredClone(s2);
+    const { state: state2, result: result2 } = applyAction(s2, { type: 'claimJob' }, DEFAULT_CONFIG, NOW);
+    expect(result2).toEqual({ ok: false, error: 'invalid_target' });
+    expect(state2).toEqual(before2);
   });
   it('buyTapeUpgrade: happy path, max level, insufficient tapes, bad id', () => {
     const s = initialState();
