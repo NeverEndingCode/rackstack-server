@@ -1,7 +1,8 @@
 import { migrateSave, evaluate } from '../shared/state.js';
 import { applyAction, scheduleAnomaly } from '../shared/reducer.js';
 import { getSave, putSave } from './db.js';
-import { getConfig } from './configService.js';
+import { getEffectiveConfig } from './configService.js';
+import { joinEventIfEligible } from './eventService.js';
 
 function safeParse(text, userId) {
   try {
@@ -29,7 +30,12 @@ function safeParse(text, userId) {
  * putSave, the same one-write pattern applyActions uses.
  */
 export function loadEvaluateAndSchedule(userId, now) {
-  const config = getConfig().data;
+  // getEffectiveConfig() (server/configService.js) is getConfig()'s admin
+  // baseline with the currently active live event's modifiers merged on
+  // top (Task 4) - never the other way around. This is the ONLY read of
+  // config in the evaluate/applyAction path, so both loadAndEvaluate and
+  // applyActions below get event-aware balancing "for free".
+  const config = getEffectiveConfig().data;
   const row = getSave(userId);
   const raw = row ? safeParse(row.data, userId) : null;
   const lastEvaluatedAt = row ? row.last_save : now;
@@ -47,14 +53,21 @@ export function loadEvaluateAndSchedule(userId, now) {
     scheduleAnomaly(state.server, config, now, Math.random);
   }
 
-  return { state, gained, config };
+  // Join-on-login (spec §5.3): if a live event is active and this user
+  // hasn't joined it yet, snapshot their baselines and start their personal
+  // window; if their in-flight progress belongs to a now-superseded event,
+  // clear it. Mutates state.meta.eventProgress in place, same convention as
+  // scheduleAnomaly above.
+  const activeEvent = joinEventIfEligible(userId, state, now);
+
+  return { state, gained, config, activeEvent };
 }
 
-/** Loads, evaluates, persists, and returns { state, gained } for GET /api/state. */
+/** Loads, evaluates, persists, and returns { state, gained, activeEvent } for GET /api/state. */
 export function loadAndEvaluate(userId, now = Date.now()) {
-  const { state, gained } = loadEvaluateAndSchedule(userId, now);
+  const { state, gained, activeEvent } = loadEvaluateAndSchedule(userId, now);
   putSave(userId, state, now);
-  return { state, gained };
+  return { state, gained, activeEvent };
 }
 
 /**

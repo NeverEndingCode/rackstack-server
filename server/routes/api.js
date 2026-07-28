@@ -72,7 +72,7 @@ router.get('/api/me', requireAuth, (req, res) => {
 
 router.get('/api/state', requireAuth, (req, res) => {
   const now = Date.now();
-  const { state, gained } = loadAndEvaluate(req.user.sub, now);
+  const { state, gained, activeEvent } = loadAndEvaluate(req.user.sub, now);
   const { version } = getConfig();
   res.json({
     run: state.run,
@@ -81,6 +81,22 @@ router.get('/api/state', requireAuth, (req, res) => {
     offlineGain: gained,
     configVersion: version,
     serverTime: now,
+    // Live Events (v1.4): a client-friendly view of the currently active
+    // event (null when none) and this user's own progress against it -
+    // eventProgress is also nested at state.meta.eventProgress (it's part
+    // of canonical state), duplicated at the top level here purely for
+    // client convenience (Task 7 reads both `activeEvent` and
+    // `eventProgress` directly off this response).
+    activeEvent: activeEvent ? {
+      id: activeEvent.id,
+      name: activeEvent.name,
+      description: activeEvent.description,
+      theme: activeEvent.theme,
+      ladder: activeEvent.ladder,
+      startsAt: activeEvent.starts_at,
+      endsAt: activeEvent.ends_at,
+    } : null,
+    eventProgress: state.meta.eventProgress,
   });
 });
 
