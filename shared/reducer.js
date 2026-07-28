@@ -4,6 +4,7 @@ import { initialState } from './state.js';
 import { goalCtx, GOAL_DEFS, REPEATABLE_DEFS } from './goals.js';
 import { TOTAL_BLOCKS, JOB_TYPES, TAPE_UPGRADE_DEFS } from './coldStorageData.js';
 import { computeColdStorageEffects, blockReward, jobDurationSec, jobReward } from './coldStorage.js';
+import { rungProgress } from './events.js';
 
 const LANE_DEFS = { tiers: TIER_DEFS, grid: GRID_DEFS, overclock: OVERCLOCK_DEFS };
 
@@ -405,6 +406,64 @@ function hardReset(s, action, config, now, rng) {
   return { ok: true };
 }
 
+// The 48h post-event grace period during which players can still claim
+// rungs they already qualified for after the event itself ends.
+const EVENT_CLAIM_GRACE_MS = 48 * 3600 * 1000;
+
+// The ladder for the active Live Event isn't part of `state` - it lives in
+// the DB (events table) and reaches here via `config.__activeEvent =
+// { id, ladder, endsAt }`, attached by getEffectiveConfig() (server/
+// configService.js) AFTER validateConfig runs, so validateConfig never sees
+// it and it must never be written back to the persisted config. If no event
+// is active, config.__activeEvent is simply absent.
+function claimEventRung(s, action, config, now) {
+  const activeEvent = config.__activeEvent;
+  const ep = s.meta.eventProgress;
+  if (!ep || !activeEvent || ep.eventId !== activeEvent.id) return err('invalid_target');
+
+  const { index } = action;
+  const ladder = activeEvent.ladder;
+  if (!validIndex(index, ladder.length)) return err('invalid_target');
+  if (ep.rungsClaimed.includes(index)) return err('invalid_target');
+
+  if (now > ep.endsAt + EVENT_CLAIM_GRACE_MS) return err('cooldown_active');
+
+  const rung = ladder[index];
+  const progress = rungProgress(rung, s.meta, ep.baseline);
+  if (!progress.met) return err('not_met');
+
+  const reward = rung.reward || {};
+  // Match existing reward-crediting precedent exactly: FLOPS go to BOTH
+  // run.credits and run.lifetimeRun (see claimAnomaly's credits branch and
+  // claimBlock's FLOPS bonus); tapes go to BOTH coldStorage.tapes and
+  // stats.tapesEarnedLifetime; wafers go to meta.wafers and
+  // stats.totalWafersEarned (see claimGoal).
+  if (typeof reward.wafers === 'number') {
+    s.meta.wafers += reward.wafers;
+    s.meta.stats.totalWafersEarned = (s.meta.stats.totalWafersEarned || 0) + reward.wafers;
+  }
+  if (typeof reward.tapes === 'number') {
+    s.meta.coldStorage.tapes += reward.tapes;
+    s.meta.stats.tapesEarnedLifetime = (s.meta.stats.tapesEarnedLifetime || 0) + reward.tapes;
+  }
+  if (typeof reward.flops === 'number') {
+    s.run.credits += reward.flops;
+    s.run.lifetimeRun += reward.flops;
+  }
+
+  ep.rungsClaimed.push(index);
+  return { ok: true, reward, rungIndex: index };
+}
+
+// Boolean-validated client display preference; the route layer (Task 6)
+// mirrors this to the `users` column. The reducer only records it in `meta`.
+function setLeaderboardOptOut(s, action) {
+  const { optOut } = action;
+  if (typeof optOut !== 'boolean') return err('invalid_target');
+  s.meta.leaderboardOptOut = optOut;
+  return { ok: true };
+}
+
 // Object.create(null): a plain `{}` object literal inherits from
 // Object.prototype, so a lookup like HANDLERS['__proto__'] doesn't resolve
 // to `undefined` (the intended "unregistered action" signal) - it resolves
@@ -422,6 +481,7 @@ const HANDLERS = Object.assign(Object.create(null), {
   migrate, singularity, buyUpgrade, buyShardUpgrade,
   claimGoal, claimRepeatable, claimAnomaly, hardReset,
   claimBlock, claimAllBlocks, resetTrack, startJob, cancelJob, claimJob, buyTapeUpgrade,
+  claimEventRung, setLeaderboardOptOut,
 });
 
 export function applyAction(state, action, config, now, rng = Math.random) {
