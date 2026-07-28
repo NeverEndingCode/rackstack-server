@@ -502,6 +502,31 @@ export function setLeaderboardOptOut(userId, optOut) {
   db.prepare('UPDATE users SET leaderboard_opt_out = ? WHERE id = ?').run(optOut ? 1 : 0, userId);
 }
 
+/**
+ * Leaderboard rows for `eventId`, same ranking as listParticipation (most
+ * rungs claimed first, ties broken by earliest last_progress_at), but -
+ * unlike listParticipation - LEFT JOINed against `users` and filtered on
+ * the LIVE `users.leaderboard_opt_out`, not the value snapshotted into
+ * `event_participation.opted_out` at join time. That snapshot is written
+ * once by joinEventIfEligible and never updated again, so a user who opts
+ * out AFTER joining would otherwise keep appearing here (Task 6 review
+ * carry-forward, hard requirement 1). PUT /api/me/leaderboard-opt-out
+ * writes straight to `users.leaderboard_opt_out`, so this query picks up
+ * that change immediately on the very next read - no re-sync step needed.
+ * Capped at `limit` rows (default 50, per the route's leaderboard contract).
+ */
+export function listLeaderboard(eventId, limit = 50) {
+  return db.prepare(`
+    SELECT ep.user_id AS userId, u.username AS username,
+           ep.rungs_claimed AS rungsClaimed, ep.last_progress_at AS lastProgressAt
+    FROM event_participation ep
+    LEFT JOIN users u ON u.id = ep.user_id
+    WHERE ep.event_id = ? AND COALESCE(u.leaderboard_opt_out, 0) = 0
+    ORDER BY ep.rungs_claimed DESC, ep.last_progress_at ASC
+    LIMIT ?
+  `).all(eventId, limit);
+}
+
 const seedEventStmt = db.prepare(`
   INSERT OR IGNORE INTO live_events (id, name, description, theme, modifiers, ladder, status, starts_at, ends_at, recurrence, created_at, created_by)
   VALUES (@id, @name, @description, @theme, @modifiers, @ladder, 'draft', NULL, NULL, @recurrence, @created_at, NULL)

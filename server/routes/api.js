@@ -11,11 +11,15 @@ import {
   getUserById, getAllUsersWithSaves, getRoles, setRoles, setUsername,
   createMinigameSession, getMinigameSession, getOpenMinigameSession,
   finishMinigameSession, putSave,
+  listEvents, getEvent, getActiveEvent, putEvent, setEventStatus, deleteEvent,
+  listParticipation, listLeaderboard, setLeaderboardOptOut,
 } from '../db.js';
-import { getConfig, updateConfig, rollbackConfig, getHistory } from '../configService.js';
+import { getConfig, updateConfig, rollbackConfig, getHistory, invalidateEffectiveConfig } from '../configService.js';
+import { activateEvent, endEvent } from '../eventService.js';
 import { loadAndEvaluate, loadEvaluateAndSchedule, applyActions } from '../stateService.js';
 import { minigameWafers } from '../../shared/gameRules.js';
 import { USERNAME_RE } from '../../shared/validation.js';
+import { validateModifiers, validateLadder, rungProgress } from '../../shared/events.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const router = express.Router();
@@ -28,6 +32,14 @@ const COOKIE_OPTS = {
 };
 
 const MINIGAMES = ['rush', 'debug', 'match', 'balance'];
+
+// Event ids are coordinator-authored slugs (matches the seeded seasonal
+// events' style, e.g. 'summer-surge') - lowercase alphanumerics, hyphen-
+// separated, no leading/trailing/doubled hyphens.
+const EVENT_SLUG_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+function isValidEventSlug(id) {
+  return typeof id === 'string' && id.length >= 3 && id.length <= 60 && EVENT_SLUG_RE.test(id);
+}
 
 function finishLogin(req, res) {
   const token = issueToken(req.user);
@@ -281,6 +293,238 @@ router.post('/api/minigame/finish', requireAuth, (req, res) => {
     return res.status(429).json({ error: 'cooldown_active' });
   }
   res.json({ state, wafers });
+});
+
+// ---------------------------------------------------------------------------
+// Live Events (v1.4)
+// ---------------------------------------------------------------------------
+
+// Player-facing view of the currently active event (null if none), this
+// user's own progress against it, and the (opt-out-filtered) leaderboard.
+// Reuses loadAndEvaluate - same join-on-login path GET /api/state drives -
+// so hitting this route on its own is enough to join a freshly-activated
+// event, exactly like GET /api/state.
+router.get('/api/event', requireAuth, (req, res) => {
+  const now = Date.now();
+  const { state, activeEvent } = loadAndEvaluate(req.user.sub, now);
+
+  if (!activeEvent) {
+    return res.json({ event: null, progress: null, leaderboard: [] });
+  }
+
+  const eventProgress = state.meta.eventProgress;
+  const progress = eventProgress && eventProgress.eventId === activeEvent.id
+    ? {
+      joinedAt: eventProgress.joinedAt,
+      endsAt: eventProgress.endsAt,
+      rungsClaimed: eventProgress.rungsClaimed,
+      rungs: activeEvent.ladder.map((rung, i) => ({
+        ...rungProgress(rung, state.meta, eventProgress.baseline),
+        claimed: eventProgress.rungsClaimed.includes(i),
+      })),
+    }
+    : null;
+
+  res.json({
+    event: {
+      id: activeEvent.id,
+      name: activeEvent.name,
+      description: activeEvent.description,
+      theme: activeEvent.theme,
+      ladder: activeEvent.ladder,
+    },
+    progress,
+    // Hard requirement 1 (Task 4 review carry-forward): listLeaderboard
+    // live-joins users.leaderboard_opt_out rather than trusting
+    // event_participation.opted_out's join-time snapshot, so a user who
+    // opts out after joining disappears from this list immediately.
+    leaderboard: listLeaderboard(activeEvent.id, 50),
+  });
+});
+
+// Mirrors the opt-out to the durable users.leaderboard_opt_out column (the
+// column listLeaderboard above actually filters on - hard requirement 1),
+// and also replays it through the normal action path so
+// meta.leaderboardOptOut (client-display-only, shared/reducer.js) stays in
+// sync without a second client round trip.
+router.put('/api/me/leaderboard-opt-out', requireAuth, (req, res) => {
+  const { optOut } = req.body || {};
+  if (typeof optOut !== 'boolean') return res.status(400).json({ error: 'invalid_request' });
+
+  setLeaderboardOptOut(req.user.sub, optOut);
+  applyActions(req.user.sub, [{ type: 'setLeaderboardOptOut', optOut }], Date.now());
+
+  res.json({ ok: true, optOut });
+});
+
+// --- Coordinator CRUD (requireRole('event_coordinator') - 'admin' implies
+// it via getEffectiveRoles, owners hold every role) -------------------------
+
+router.get('/api/admin/events', requireAuth, requireRole('event_coordinator'), (req, res) => {
+  const events = listEvents().map((event) => ({
+    ...event,
+    participationCount: listParticipation(event.id).length,
+  }));
+  res.json({ events });
+});
+
+router.post('/api/admin/events', requireAuth, requireRole('event_coordinator'), (req, res) => {
+  const {
+    id, name, description, theme, modifiers = [], ladder, recurrence,
+  } = req.body || {};
+
+  if (!isValidEventSlug(id)) {
+    return res.status(400).json({ errors: ['id must be a 3-60 char lowercase, hyphen-separated slug'] });
+  }
+  if (getEvent(id)) return res.status(409).json({ error: 'id_taken' });
+  if (typeof name !== 'string' || !name.trim()) {
+    return res.status(400).json({ errors: ['name is required'] });
+  }
+
+  const modResult = validateModifiers(modifiers);
+  if (!modResult.ok) return res.status(400).json({ errors: modResult.errors });
+  const ladderResult = validateLadder(ladder);
+  if (!ladderResult.ok) return res.status(400).json({ errors: ladderResult.errors });
+
+  const event = putEvent({
+    id,
+    name,
+    description: description ?? null,
+    theme: theme ?? null,
+    modifiers,
+    ladder,
+    status: 'draft',
+    recurrence: recurrence ?? null,
+    createdAt: Date.now(),
+    createdBy: req.user.sub,
+  });
+  res.status(201).json({ event });
+});
+
+// Name/description/theme/window edits are always allowed. ladder/modifiers
+// edits are rejected outright (409) while the event is active - mutating
+// either mid-run would invalidate every participant's already-claimed
+// rungsClaimed indices (ladder) or silently reshape the effective config
+// underneath an in-progress run (modifiers). Drafts/scheduled/ended events
+// may have their ladder/modifiers freely edited.
+router.put('/api/admin/events/:id', requireAuth, requireRole('event_coordinator'), (req, res) => {
+  const existing = getEvent(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'not_found' });
+
+  const body = req.body || {};
+  const touchesLadderOrModifiers = Object.prototype.hasOwnProperty.call(body, 'ladder')
+    || Object.prototype.hasOwnProperty.call(body, 'modifiers');
+  if (existing.status === 'active' && touchesLadderOrModifiers) {
+    return res.status(409).json({ error: 'event_active' });
+  }
+
+  const next = {
+    ...existing,
+    name: body.name !== undefined ? body.name : existing.name,
+    description: body.description !== undefined ? body.description : existing.description,
+    theme: body.theme !== undefined ? body.theme : existing.theme,
+    modifiers: body.modifiers !== undefined ? body.modifiers : existing.modifiers,
+    ladder: body.ladder !== undefined ? body.ladder : existing.ladder,
+    startsAt: body.startsAt !== undefined ? body.startsAt : existing.starts_at,
+    endsAt: body.endsAt !== undefined ? body.endsAt : existing.ends_at,
+  };
+
+  if (typeof next.name !== 'string' || !next.name.trim()) {
+    return res.status(400).json({ errors: ['name is required'] });
+  }
+  const modResult = validateModifiers(next.modifiers);
+  if (!modResult.ok) return res.status(400).json({ errors: modResult.errors });
+  const ladderResult = validateLadder(next.ladder);
+  if (!ladderResult.ok) return res.status(400).json({ errors: ladderResult.errors });
+  if (typeof next.startsAt === 'number' && typeof next.endsAt === 'number' && next.endsAt <= next.startsAt) {
+    return res.status(400).json({ errors: ['endsAt must be after startsAt'] });
+  }
+
+  const saved = putEvent({ ...next, id: existing.id, status: existing.status });
+
+  // Hard requirement 3 (Task 4 review carry-forward): getEffectiveConfig()
+  // caches on (configVersion, activeEventId) - editing the CONTENTS of the
+  // currently-active event (window, name, ...) doesn't change that cache
+  // key, so without an explicit invalidation the cached
+  // config.__activeEvent.endsAt (read by claimEventRung's 48h grace math)
+  // would go stale. Called on every successful edit of an active event, not
+  // just window edits, in case a future field gets added to __activeEvent.
+  if (existing.status === 'active') {
+    invalidateEffectiveConfig();
+  }
+
+  res.json({ event: saved });
+});
+
+// Drafts only - a scheduled/active/ended event may already have
+// participation rows and/or client-visible history, so it's ended (or left
+// alone), never deleted.
+router.delete('/api/admin/events/:id', requireAuth, requireRole('event_coordinator'), (req, res) => {
+  const event = getEvent(req.params.id);
+  if (!event) return res.status(404).json({ error: 'not_found' });
+  if (event.status !== 'draft') return res.status(409).json({ error: 'not_draft' });
+  deleteEvent(event.id);
+  res.json({ ok: true });
+});
+
+router.post('/api/admin/events/:id/schedule', requireAuth, requireRole('event_coordinator'), (req, res) => {
+  const event = getEvent(req.params.id);
+  if (!event) return res.status(404).json({ error: 'not_found' });
+  if (event.status === 'active') return res.status(409).json({ error: 'event_active' });
+
+  const { startsAt, endsAt } = req.body || {};
+  if (typeof startsAt !== 'number' || typeof endsAt !== 'number' || endsAt <= startsAt) {
+    return res.status(400).json({ error: 'invalid_request' });
+  }
+
+  setEventStatus(event.id, 'scheduled', { startsAt, endsAt });
+  res.json({ event: getEvent(event.id) });
+});
+
+router.post('/api/admin/events/:id/activate', requireAuth, requireRole('event_coordinator'), (req, res) => {
+  const event = getEvent(req.params.id);
+  if (!event) return res.status(404).json({ error: 'not_found' });
+
+  // Per spec: activating while a DIFFERENT event is already active must be
+  // rejected outright - the coordinator has to explicitly end it first.
+  // (eventService.activateEvent itself does NOT enforce this - it happily
+  // ends every other active row, because the scheduler also calls it and
+  // needs that behavior. This UX/permission check is this route's job.)
+  const active = getActiveEvent();
+  if (active && active.id !== event.id) {
+    return res.status(409).json({ error: 'event_active' });
+  }
+
+  if (event.ends_at == null) return res.status(400).json({ error: 'not_scheduled' });
+
+  // Hard requirement 2 (Task 4 review carry-forward): activating an event
+  // whose stored window has already fully passed would hand
+  // joinEventIfEligible's `endsAt = min(now + duration, ends_at + 24h)` math
+  // a value before `now`, silently giving a new joiner an already-expired
+  // personal window. Chosen fix: reject outright rather than shifting the
+  // window forward - the coordinator-authored dates stay authoritative and
+  // are never silently rewritten by an activate call; to proceed they
+  // re-schedule (POST .../schedule) with a fresh window, then activate.
+  const now = Date.now();
+  if (event.ends_at <= now) return res.status(400).json({ error: 'invalid_target' });
+
+  const result = activateEvent(event.id, now);
+  if (!result.ok) return res.status(400).json({ error: result.error });
+  res.json({ event: getEvent(event.id) });
+});
+
+router.post('/api/admin/events/:id/end', requireAuth, requireRole('event_coordinator'), (req, res) => {
+  const event = getEvent(req.params.id);
+  if (!event) return res.status(404).json({ error: 'not_found' });
+  const result = endEvent(event.id, Date.now());
+  if (!result.ok) return res.status(400).json({ error: result.error });
+  res.json({ event: getEvent(event.id) });
+});
+
+router.get('/api/admin/events/:id/participation', requireAuth, requireRole('event_coordinator'), (req, res) => {
+  const event = getEvent(req.params.id);
+  if (!event) return res.status(404).json({ error: 'not_found' });
+  res.json({ participation: listParticipation(event.id) });
 });
 
 // ---------------------------------------------------------------------------
