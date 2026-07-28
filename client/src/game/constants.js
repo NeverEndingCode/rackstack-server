@@ -25,3 +25,12 @@ export const ANOMALY_LABELS = [
 // its exponential backoff after consecutive batch-send failures.
 export const ACTION_FLUSH_MS = 1000;
 export const ACTION_RETRY_MAX_MS = 30000;
+
+// Live Events (v1.4): how often RackStack.jsx's refreshEventData() (the
+// event identity/ladder + leaderboard fetch, GET /api/event) is allowed to
+// piggyback on a reconcile - eventProgress itself (rungs claimed, baseline)
+// is part of canonical state and updates for free on every reconcile; this
+// throttle only bounds the *extra* GET /api/event call for the leaderboard/
+// identity, so a burst of IMMEDIATE actions doesn't turn into a request per
+// reconcile.
+export const EVENT_REFRESH_THROTTLE_MS = 8000;

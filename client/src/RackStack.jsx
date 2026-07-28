@@ -1,16 +1,20 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 
-import { TICK_MS, ANOMALY_LABELS } from './game/constants.js';
+import { TICK_MS, ANOMALY_LABELS, EVENT_REFRESH_THROTTLE_MS } from './game/constants.js';
 import { cardBorder, textDim, teal, amber, danger, inset } from './game/theme.js';
 import { TABS } from './game/data/tabs.js';
-import { fetchState, fetchConfig, makeActionQueue, startMinigame, finishMinigame } from './game/api.js';
+import {
+  fetchState, fetchConfig, makeActionQueue, startMinigame, finishMinigame,
+  fetchEvent, setLeaderboardOptOut,
+} from './game/api.js';
 import { evaluate } from '@shared/state.js';
-import { applyAction } from '@shared/reducer.js';
+import { applyAction, EVENT_CLAIM_GRACE_MS } from '@shared/reducer.js';
 import { computeMults, migrateGain, xpForLevel } from '@shared/gameRules.js';
 import { goalCtx } from '@shared/goals.js';
 
 import HeaderBar from './game/components/HeaderBar.jsx';
 import StatsRow from './game/components/StatsRow.jsx';
+import EventBanner from './game/components/EventBanner.jsx';
 import MigrateBar from './game/components/MigrateBar.jsx';
 import TabBar from './game/components/TabBar.jsx';
 import RacksPanel from './game/components/RacksPanel.jsx';
@@ -21,6 +25,7 @@ import SingularityPanel from './game/components/SingularityPanel.jsx';
 import GoalsPanel from './game/components/GoalsPanel.jsx';
 import GamesPanel from './game/components/GamesPanel.jsx';
 import ColdStoragePanel from './game/components/ColdStoragePanel.jsx';
+import EventPanel from './game/components/EventPanel.jsx';
 import AnomalyToast from './game/components/AnomalyToast.jsx';
 import RushOverlay from './game/components/minigames/RushOverlay.jsx';
 import DebugOverlay from './game/components/minigames/DebugOverlay.jsx';
@@ -46,6 +51,20 @@ import ProfileView from './game/components/profile/ProfileView.jsx';
   client-only state.
 */
 
+// Live Events (v1.4): whether the player's PERSONAL window
+// (state.meta.eventProgress) is currently live, and whether the event tab
+// should render at all (live, OR within the 48h post-end grace period
+// during which claimEventRung still accepts already-qualified rungs - see
+// shared/reducer.js's EVENT_CLAIM_GRACE_MS). Pulled out as module-scope
+// helpers rather than inlined at each call site so the render body and the
+// activeTab-reset effect below can't drift apart on the definition.
+function isEventLive(eventProgress, now) {
+  return !!(eventProgress && now <= eventProgress.endsAt);
+}
+function isEventTabVisible(eventProgress, now) {
+  return !!(eventProgress && now <= eventProgress.endsAt + EVENT_CLAIM_GRACE_MS);
+}
+
 export default function RackStack({ user }) {
   // config: { version, data } from GET /api/config. state: canonical
   // {run, meta, server}, either fetched from GET /api/state or the result of
@@ -59,6 +78,15 @@ export default function RackStack({ user }) {
   const [activeTab, setActiveTab] = useState('racks');
   const [minigame, setMinigame] = useState(null);
   const [profileOpen, setProfileOpen] = useState(false);
+  // Live Events (v1.4): the currently (or most-recently, through grace -
+  // see refreshEventData below) active event's identity/ladder, and the
+  // opt-out-filtered leaderboard for it. Neither is part of canonical
+  // `state` - eventProgress (rungs claimed, baseline) is, and updates for
+  // free on every reconcile, but the event's own name/description/theme/
+  // ladder and the leaderboard are fetched separately via GET /api/event
+  // (see refreshEventData).
+  const [activeEvent, setActiveEvent] = useState(null);
+  const [eventLeaderboard, setEventLeaderboard] = useState([]);
   // Local mirror of the display name so a successful username change (see
   // ProfileSettings) reflects in the header/profile immediately, without a
   // page reload or waiting on the next /api/me fetch (App.jsx's `user`
@@ -86,6 +114,11 @@ export default function RackStack({ user }) {
   // matching block in handleReconcile for why (the server rolls its own
   // reward independently of the client's optimistic prediction).
   const pendingAnomalyIdsRef = useRef(new Set());
+  // Throttle gate for refreshEventData() (see its doc comment below) -
+  // last Date.now() a GET /api/event fetch was kicked off from
+  // handleReconcile, so a burst of reconciles (e.g. rapid IMMEDIATE claims)
+  // doesn't turn into a request per reconcile.
+  const lastEventFetchAtRef = useRef(0);
   // minigameRef mirrors `minigame` synchronously - like configRef/stateRef,
   // never via a plain useEffect (which would lag a render behind). Every
   // mutation of the minigame state goes through setMinigameSynced (below,
@@ -179,7 +212,48 @@ export default function RackStack({ user }) {
     setState(next);
 
     if (serverState.server.overheated) setModal({ type: 'meltdown' });
+
+    // Live Events (v1.4): activeEvent/eventLeaderboard aren't part of
+    // canonical state (see refreshEventData's own doc comment) - piggyback
+    // their refresh on the cadence reconciles already happen at, throttled,
+    // rather than adding a dedicated poll timer. Gated on "this player has
+    // ever touched a Live Event" (either a cached identity already loaded,
+    // or a live/in-grace eventProgress just landed in `next`) so a player
+    // who's never interacted with one never triggers an extra request here.
+    if ((activeEvent || next.meta.eventProgress)
+      && now - lastEventFetchAtRef.current > EVENT_REFRESH_THROTTLE_MS) {
+      lastEventFetchAtRef.current = now;
+      refreshEventData();
+    }
   }
+
+  // GET /api/event -> the active event's identity/ladder + the (opt-out-
+  // filtered, capped-at-50) leaderboard. Only ever applies a NON-null
+  // `event` onto `activeEvent` - the route reports `event: null` the moment
+  // the event's global status flips to 'ended' (server/routes/api.js has no
+  // "recently ended" notion), but a player's own claim window can still be
+  // open for up to EVENT_CLAIM_GRACE_MS past that, and losing the ladder
+  // definition mid-grace would strand their Claim buttons with nothing to
+  // render against. The leaderboard is applied unconditionally either way -
+  // an empty list during grace (once the server stops returning one) reads
+  // as "no leaderboard data", which is honest.
+  async function refreshEventData() {
+    const res = await fetchEvent();
+    if (!res || res.error) return;
+    if (res.event) setActiveEvent(res.event);
+    setEventLeaderboard(res.leaderboard || []);
+  }
+
+  // If the event tab is open when the personal window + grace period both
+  // lapse (player left the tab open across the boundary), fall back to
+  // Racks rather than leaving them stranded on a tab TabBar is about to stop
+  // rendering entirely (see the TABS filtering in the render body below).
+  useEffect(() => {
+    if (!state) return;
+    if (activeTab === 'event' && !isEventTabVisible(state.meta.eventProgress, Date.now())) {
+      setActiveTab('racks');
+    }
+  }, [state, activeTab]);
 
   const REJECT_MESSAGES = {
     insufficient_credits: 'Not enough FLOPS',
@@ -188,6 +262,19 @@ export default function RackStack({ user }) {
     session_open: 'Game already in progress',
     gone: 'Session expired',
     max_level: 'Already at max level',
+    // claimEventRung's documented 48h grace period is meant to surface as
+    // cooldown_active once past it (shared/reducer.js's EVENT_CLAIM_GRACE_MS
+    // check) - but this task's own runtime verification found that
+    // server/configService.js's getEffectiveConfig() only attaches
+    // config.__activeEvent while the event's DB status is still 'active',
+    // so claimEventRung's FIRST guard (`!activeEvent`) actually fires
+    // invalid_target the moment the event ends globally, before the grace
+    // check is ever reached - even for a player well within their own
+    // still-open personal window. That's a server-side gap outside this
+    // task's file list (see task-7-report.md), not something fixable here;
+    // this mapping just keeps the toast from reading as an opaque generic
+    // failure in the meantime.
+    invalid_target: 'Event unavailable',
   };
   function showToast(text) {
     setRejectToast({ id: Date.now() + Math.random(), text });
@@ -271,6 +358,17 @@ export default function RackStack({ user }) {
       } else if (initial.server.overheated) {
         setModal({ type: 'meltdown' });
       }
+      // Live Events (v1.4): GET /api/state already carries the active
+      // event's identity (Task 4) - seed activeEvent from it directly so
+      // the banner/tab don't have to wait on a second round trip. If
+      // there's an event (or a lingering grace-period eventProgress) to
+      // show, also kick a refreshEventData() for the leaderboard, which
+      // /api/state doesn't carry.
+      if (stateRes.activeEvent) setActiveEvent(stateRes.activeEvent);
+      if (stateRes.activeEvent || stateRes.eventProgress) {
+        lastEventFetchAtRef.current = Date.now();
+        refreshEventData();
+      }
       setLoaded(true);
     })();
     return () => { cancelled = true; };
@@ -345,6 +443,64 @@ export default function RackStack({ user }) {
   function cancelJob() { dispatchAction({ type: 'cancelJob' }); }
   function claimJob() { dispatchAction({ type: 'claimJob' }); }
   function buyTapeUpgrade(u) { dispatchAction({ type: 'buyTapeUpgrade', id: u.id }); }
+
+  // claimEventRung is IMMEDIATE (see api.js) so the server round-trip lands
+  // within one request rather than the full 1s auto-flush window - relevant
+  // right at the edge of the 48h grace period, not just for snappy feedback.
+  // Reuses the 'eventClaim' modal type claimAnomaly already opened below -
+  // both are a one-line "here's what you got" toast.
+  function claimEventRung(index) {
+    const result = dispatchAction({ type: 'claimEventRung', index });
+    if (result.ok) {
+      const reward = result.reward || {};
+      const parts = [];
+      if (reward.wafers) parts.push(`+${Math.round(reward.wafers)} wafers`);
+      if (reward.tapes) parts.push(`+${Math.round(reward.tapes)} tapes`);
+      if (reward.flops) parts.push(`+${Math.round(reward.flops)} FLOPS`);
+      setModal({ type: 'eventClaim', text: parts.join(' · ') || 'Reward claimed' });
+      // Same rationale as toggleLeaderboardOptOut below: a claim is exactly
+      // the moment a player wants to see their own leaderboard standing
+      // move, not wait out the reconcile-piggyback throttle.
+      lastEventFetchAtRef.current = Date.now();
+      refreshEventData();
+    }
+  }
+
+  // The opt-out toggle needs BOTH calls, not either alone: the route (PUT
+  // /api/me/leaderboard-opt-out) is what's actually authoritative - it
+  // writes users.leaderboard_opt_out, the column server/db.js's
+  // listLeaderboard filters on - while the reducer action only mirrors the
+  // flag into meta.leaderboardOptOut for the toggle's own display. See
+  // api.js's setLeaderboardOptOut doc comment for the server-side half.
+  //
+  // dispatchAction runs FIRST, synchronously (same optimistic-first order
+  // every other action in this file uses) - the checkbox is a controlled
+  // input bound to meta.leaderboardOptOut, and awaiting the network call
+  // before flipping local state left a window where an unrelated re-render
+  // (e.g. the 250ms production tick) would snap the checkbox back to
+  // unchecked between the native click and the fetch resolving, a real
+  // race caught during this task's own runtime verification (Playwright's
+  // `.check()` failed with "did not change its state"). On a route failure,
+  // the optimistic flip is reverted - the reducer action is purely for
+  // display, so it must not keep claiming an opt-out that didn't actually
+  // persist server-side.
+  function toggleLeaderboardOptOut(next) {
+    dispatchAction({ type: 'setLeaderboardOptOut', optOut: next });
+    (async () => {
+      const res = await setLeaderboardOptOut(next);
+      if (res && !res.error) {
+        // Bypass the reconcile-piggyback throttle here (see
+        // handleReconcile) - this is a deliberate, low-frequency user
+        // action, and the whole point of the toggle is seeing yourself
+        // (dis)appear from the leaderboard without an up-to-8s wait for the
+        // next unrelated reconcile to refresh it.
+        lastEventFetchAtRef.current = Date.now();
+        refreshEventData();
+      } else {
+        dispatchAction({ type: 'setLeaderboardOptOut', optOut: !next });
+      }
+    })();
+  }
 
   function doMigrate() {
     const result = dispatchAction({ type: 'migrate' });
@@ -657,6 +813,21 @@ export default function RackStack({ user }) {
   const anomalyActive = state.server.nextAnomalyAt <= now && now <= state.server.anomalyExpiresAt;
   const anomalyState = anomalyActive ? { label: anomalyLabel, expiresAt: state.server.anomalyExpiresAt } : null;
 
+  // Live Events (v1.4): eventLive drives the banner + tab icon pulse;
+  // eventTabVisible additionally covers the 48h post-end grace period
+  // (isEventLive/isEventTabVisible are the module-scope helpers above the
+  // component, shared with the activeTab-reset effect so this can't drift
+  // from that check).
+  const eventProgress = state.meta.eventProgress;
+  const eventLive = isEventLive(eventProgress, now);
+  const eventTabVisible = isEventTabVisible(eventProgress, now);
+  const eventGraceActive = eventTabVisible && !eventLive;
+  // Unlike grid/overclock/singularity/coldstorage (always rendered, just
+  // disabled until unlocked - see TabBar.jsx), the event tab is absent from
+  // the bar entirely outside its window: "no event running" isn't a
+  // progression state a player unlocks their way past.
+  const visibleTabs = eventTabVisible ? TABS : TABS.filter((t) => t.id !== 'event');
+
   return (
     <div
       style={{
@@ -684,8 +855,11 @@ export default function RackStack({ user }) {
         <div className="max-w-2xl mx-auto px-4 pt-3">
           <HeaderBar user={user} displayName={displayName} level={state.meta.level} onOpenProfile={() => setProfileOpen(true)} />
           <StatsRow run={state.run} meta={state.meta} totalOutputPerSec={ctx.totalOutputPerSec} xpNeeded={xpNeeded} boost={boost} boostMultNow={boostMultNow} />
+          {eventLive && activeEvent && (
+            <EventBanner event={activeEvent} endsAt={eventProgress.endsAt} onOpen={() => setActiveTab('event')} />
+          )}
           <MigrateBar gain={gain} showCollectAll={anyManualOwned} collectDisabled={!anyReady} onMigrate={() => setModal({ type: 'migrate' })} onCollectAll={collectAll} />
-          <TabBar tabs={TABS} activeTab={activeTab} setActiveTab={setActiveTab} gridUnlocked={gridUnlocked} overclockUnlocked={overclockUnlocked} singularityUnlocked={singularityUnlocked} coldStorageUnlocked={coldStorageUnlocked} />
+          <TabBar tabs={visibleTabs} activeTab={activeTab} setActiveTab={setActiveTab} gridUnlocked={gridUnlocked} overclockUnlocked={overclockUnlocked} singularityUnlocked={singularityUnlocked} coldStorageUnlocked={coldStorageUnlocked} eventLive={eventLive} />
         </div>
       </div>
 
@@ -744,6 +918,20 @@ export default function RackStack({ user }) {
           onCancelJob={cancelJob}
           onClaimJob={claimJob}
           onBuyTapeUpgrade={buyTapeUpgrade}
+        />
+      )}
+
+      {activeTab === 'event' && eventTabVisible && (
+        <EventPanel
+          event={activeEvent}
+          eventProgress={eventProgress}
+          meta={state.meta}
+          leaderboard={eventLeaderboard}
+          userId={user && user.id}
+          optOut={state.meta.leaderboardOptOut}
+          graceActive={eventGraceActive}
+          onClaimRung={claimEventRung}
+          onToggleOptOut={toggleLeaderboardOptOut}
         />
       )}
 

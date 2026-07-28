@@ -407,8 +407,12 @@ function hardReset(s, action, config, now, rng) {
 }
 
 // The 48h post-event grace period during which players can still claim
-// rungs they already qualified for after the event itself ends.
-const EVENT_CLAIM_GRACE_MS = 48 * 3600 * 1000;
+// rungs they already qualified for after the event itself ends. Exported so
+// the client (Task 7's RackStack.jsx/EventPanel.jsx) can gate the event
+// tab's visibility and grace-period messaging on the exact same window the
+// server enforces here, rather than duplicating the constant and risking
+// drift.
+export const EVENT_CLAIM_GRACE_MS = 48 * 3600 * 1000;
 
 // The ladder for the active Live Event isn't part of `state` - it lives in
 // the DB (events table) and reaches here via `config.__activeEvent =

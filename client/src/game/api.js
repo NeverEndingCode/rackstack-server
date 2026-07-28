@@ -123,6 +123,89 @@ export function postRoleChange(userId, role, op) {
   return postJSON('/api/admin/roles', { userId, role, op });
 }
 
+// ---------------------------------------------------------------------------
+// Live Events (v1.4)
+// ---------------------------------------------------------------------------
+
+// GET /api/event -> { event: {id,name,description,theme,ladder}|null,
+//   progress: {joinedAt,endsAt,rungsClaimed,rungs}|null, leaderboard }
+// `event` is null whenever no event is currently active - notably including
+// the 48h post-end grace period (the route has no notion of "recently
+// ended", see server/routes/api.js) - callers that need the ladder to stay
+// reachable through grace (RackStack.jsx's activeEvent) must hang onto the
+// last non-null value themselves. `leaderboard` is already capped at 50 and
+// opt-out-filtered server-side.
+export function fetchEvent() {
+  return request('/api/event');
+}
+
+// PUT /api/me/leaderboard-opt-out { optOut } -> { ok, optOut }
+//   | 400 { error: 'invalid_request' }
+// This is the AUTHORITATIVE write - it's what flips users.leaderboard_opt_out,
+// the column server-side leaderboard filtering actually reads. The reducer
+// action of the same name only mirrors the flag into meta.leaderboardOptOut
+// for client display; RackStack.jsx's toggle handler calls both (see its
+// doc comment) rather than treating either alone as sufficient.
+export function setLeaderboardOptOut(optOut) {
+  return postJSON('/api/me/leaderboard-opt-out', { optOut }, 'PUT');
+}
+
+// ---------------------------------------------------------------------------
+// Event coordinator admin (role-gated server-side; Task 8 builds the UI that
+// consumes these - included here since api.js is this task's one designated
+// home for network calls)
+// ---------------------------------------------------------------------------
+
+// GET /api/admin/events -> { events: [{...event row, participationCount}] }
+export function fetchAdminEvents() {
+  return request('/api/admin/events');
+}
+
+// POST /api/admin/events { id, name, description?, theme?, modifiers?, ladder, recurrence? }
+//   -> 201 { event } | 400 { errors: string[] } | 409 { error: 'id_taken' }
+export function createEvent(data) {
+  return postJSON('/api/admin/events', data);
+}
+
+// PUT /api/admin/events/:id { name?, description?, theme?, modifiers?, ladder?, startsAt?, endsAt? }
+//   -> { event } | 404 { error: 'not_found' } | 409 { error: 'event_active' }
+//   | 400 { errors: string[] }
+export function updateEvent(id, data) {
+  return postJSON(`/api/admin/events/${id}`, data, 'PUT');
+}
+
+// DELETE /api/admin/events/:id -> { ok: true }
+//   | 404 { error: 'not_found' } | 409 { error: 'not_draft' }
+// Drafts only (server-enforced) - no body to send, so this bypasses
+// postJSON and calls request() directly.
+export function deleteEvent(id) {
+  return request(`/api/admin/events/${id}`, { method: 'DELETE' });
+}
+
+// POST /api/admin/events/:id/schedule { startsAt, endsAt } -> { event }
+//   | 404 { error: 'not_found' } | 409 { error: 'event_active' }
+//   | 400 { error: 'invalid_request' }
+export function scheduleEvent(id, startsAt, endsAt) {
+  return postJSON(`/api/admin/events/${id}/schedule`, { startsAt, endsAt });
+}
+
+// POST /api/admin/events/:id/activate -> { event }
+//   | 404 { error: 'not_found' } | 409 { error: 'event_active' }
+//   | 400 { error: 'not_scheduled' | 'invalid_target' }
+export function activateEvent(id) {
+  return postJSON(`/api/admin/events/${id}/activate`, {});
+}
+
+// POST /api/admin/events/:id/end -> { event } | 404 { error: 'not_found' }
+export function endEvent(id) {
+  return postJSON(`/api/admin/events/${id}/end`, {});
+}
+
+// GET /api/admin/events/:id/participation -> { participation: [row, ...] }
+export function fetchEventParticipation(id) {
+  return request(`/api/admin/events/${id}/participation`);
+}
+
 // GET /api/changelog -> plain text on success, { status, error } on failure.
 export async function fetchChangelog() {
   let res;
@@ -154,6 +237,15 @@ const IMMEDIATE = new Set([
   // claim or reset, so the normal batched flush is fine for those (same as
   // e.g. buy/collect/vent).
   'buyTapeUpgrade', 'claimBlock', 'claimAllBlocks', 'claimJob', 'resetTrack',
+  // Live Events (v1.4): claimEventRung is a reward claim exactly like
+  // claimGoal/claimAnomaly/claimBlock above - and it's additionally
+  // time-boxed by the 48h grace period (shared/reducer.js's
+  // EVENT_CLAIM_GRACE_MS), so sitting queued for up to a second is more
+  // than "just a UX nicety" here, it's the difference between claimable and
+  // not right at the edge of that window. (v1.3 shipped without its Cold
+  // Storage analogs in this set and needed a follow-up fix round - see the
+  // block above - so this one goes in from the start.)
+  'claimEventRung',
 ]);
 
 // makeActionQueue({ onReconcile, onReject, onQueueError }) -> { dispatch, flush, pending }
