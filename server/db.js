@@ -487,6 +487,29 @@ export function getParticipation(userId, eventId) {
   return db.prepare('SELECT * FROM event_participation WHERE user_id = ? AND event_id = ?').get(userId, eventId);
 }
 
+const updateParticipationProgressStmt = db.prepare(`
+  UPDATE event_participation SET rungs_claimed = ?, last_progress_at = ?
+  WHERE user_id = ? AND event_id = ?
+`);
+
+/**
+ * Narrow, idempotent progress sync used by stateService.applyActions after a
+ * successful claimEventRung (hotfix for the "rungs_claimed frozen at 0" bug -
+ * upsertParticipation was only ever called once, at join time, from
+ * joinEventIfEligible). Deliberately NOT a call to upsertParticipation: that
+ * function's ON CONFLICT clause overwrites every column, including
+ * `opted_out` and `started_at`/`ends_at` - a caller here that doesn't have
+ * (or doesn't want to re-fetch) the user's current opt-out flag would
+ * silently un-opt-out them on every claim. A plain UPDATE touching only
+ * `rungs_claimed`/`last_progress_at` leaves every other column alone, and is
+ * a harmless no-op (0 rows affected, no throw) if the participation row
+ * doesn't exist for some reason (e.g. the event was deleted out from under
+ * an in-flight claim).
+ */
+export function updateParticipationProgress(userId, eventId, rungsClaimed, lastProgressAt) {
+  updateParticipationProgressStmt.run(rungsClaimed, lastProgressAt, userId, eventId);
+}
+
 /**
  * All participants in an event, ranked for the coordinator view / leaderboard:
  * most rungs claimed first, ties broken by whoever reached their current

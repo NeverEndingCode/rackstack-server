@@ -414,14 +414,27 @@ function hardReset(s, action, config, now, rng) {
 // drift.
 export const EVENT_CLAIM_GRACE_MS = 48 * 3600 * 1000;
 
-// The ladder for the active Live Event isn't part of `state` - it lives in
-// the DB (events table) and reaches here via `config.__activeEvent =
-// { id, ladder, endsAt }`, attached by getEffectiveConfig() (server/
-// configService.js) AFTER validateConfig runs, so validateConfig never sees
-// it and it must never be written back to the persisted config. If no event
-// is active, config.__activeEvent is simply absent.
+// The ladder for the event a player is actually mid-run on isn't part of
+// `state` - it lives in the DB (events table) and reaches here via
+// `config.__claimableEvent = { id, ladder, endsAt }`, attached by
+// server/stateService.js's loadEvaluateAndSchedule() (NOT
+// getEffectiveConfig()/config.__activeEvent - that field only reflects
+// whichever event is GLOBALLY `status: 'active'` right now, and disappears
+// the instant an event ends, which made this reducer's own grace-period
+// branch below unreachable end-to-end: the moment status flipped to
+// 'ended', __activeEvent vanished and the guard below rejected every claim
+// with invalid_target before now > ep.endsAt + EVENT_CLAIM_GRACE_MS was ever
+// checked - a real bug, found and fixed post-Task-7).
+// __claimableEvent is resolved per-user from `state.meta.eventProgress.
+// eventId` regardless of that event's current DB status, so a player's
+// claim window/grace period can outlive the event's global 'active' status
+// exactly as spec'd. It's attached to a per-request shallow copy of the
+// config object - never to configService's shared (version, eventId)-keyed
+// cache - so one user's claimable event can never leak into another user's
+// request. If no event is active AND the player has no lingering
+// eventProgress, config.__claimableEvent is simply absent.
 function claimEventRung(s, action, config, now) {
-  const activeEvent = config.__activeEvent;
+  const activeEvent = config.__claimableEvent;
   const ep = s.meta.eventProgress;
   if (!ep || !activeEvent || ep.eventId !== activeEvent.id) return err('invalid_target');
 

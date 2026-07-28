@@ -11,9 +11,19 @@ const LADDER = [
   { metric: 'flopsEarned', target: 200, reward: { wafers: 3, tapes: 5, flops: 20 } },
 ];
 
+// Hotfix: claimEventRung now reads config.__claimableEvent (attached
+// per-request by server/stateService.js, resolved by event id regardless of
+// that event's current DB status) rather than config.__activeEvent (which
+// getEffectiveConfig() only attaches while an event's DB status is still
+// 'active' - the source of the "48h grace period is unreachable" bug: see
+// shared/reducer.js's claimEventRung doc comment and
+// tests/stateService.events.test.js for the real end-to-end path). This
+// helper still hand-builds the config directly - these tests exercise
+// claimEventRung's own internal logic (error precedence, reward crediting,
+// grace-period math) in isolation from getEffectiveConfig/stateService.
 function activeConfig(ladder = LADDER, endsAt = NOW + 100000, id = 'ev1') {
   const cfg = structuredClone(DEFAULT_CONFIG);
-  cfg.__activeEvent = { id, ladder, endsAt };
+  cfg.__claimableEvent = { id, ladder, endsAt };
   return cfg;
 }
 
@@ -83,13 +93,13 @@ describe('reducer: claimEventRung', () => {
     expect(result).toEqual({ ok: false, error: 'invalid_target' });
   });
 
-  it('rejects invalid_target when config.__activeEvent is absent', () => {
+  it('rejects invalid_target when config.__claimableEvent is absent', () => {
     const s = joinedState({ flops: 500 });
     const { result } = applyAction(s, { type: 'claimEventRung', index: 0 }, DEFAULT_CONFIG, NOW);
     expect(result).toEqual({ ok: false, error: 'invalid_target' });
   });
 
-  it('rejects invalid_target when eventProgress.eventId does not match config.__activeEvent.id', () => {
+  it('rejects invalid_target when eventProgress.eventId does not match config.__claimableEvent.id', () => {
     const s = joinedState({ eventId: 'stale-event', flops: 500 });
     const cfg = activeConfig(LADDER, NOW + 100000, 'ev1');
     const { result } = applyAction(s, { type: 'claimEventRung', index: 0 }, cfg, NOW);

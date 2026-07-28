@@ -1,6 +1,8 @@
 import { migrateSave, evaluate } from '../shared/state.js';
 import { applyAction, scheduleAnomaly } from '../shared/reducer.js';
-import { getSave, putSave } from './db.js';
+import {
+  getSave, putSave, getEvent, updateParticipationProgress,
+} from './db.js';
 import { getEffectiveConfig } from './configService.js';
 import { joinEventIfEligible } from './eventService.js';
 
@@ -35,7 +37,22 @@ export function loadEvaluateAndSchedule(userId, now) {
   // top (Task 4) - never the other way around. This is the ONLY read of
   // config in the evaluate/applyAction path, so both loadAndEvaluate and
   // applyActions below get event-aware balancing "for free".
-  const config = getEffectiveConfig().data;
+  //
+  // `effectiveConfig.data` is a SHARED, cached object - either the admin
+  // baseline itself (no event active) or configService's own
+  // (version, eventId)-keyed effectiveCache.data (event active) - reused
+  // across every user's request until that cache key changes. Below, this
+  // function attaches a per-user `__claimableEvent` field (hotfix for the
+  // 48h grace-period bug: claimEventRung needs the ladder for whatever
+  // event the PLAYER is mid-run on, even after that event's DB status has
+  // left 'active', which config.__activeEvent alone can't provide - see
+  // shared/reducer.js's claimEventRung doc comment). That attachment MUST
+  // land on a per-request shallow copy, never on `effectiveConfig.data`
+  // itself - mutating the shared cached object would leak one user's
+  // claimable event onto every other user's request that hits the same
+  // cache before it next invalidates.
+  const effectiveConfig = getEffectiveConfig();
+  const config = { ...effectiveConfig.data };
   const row = getSave(userId);
   const raw = row ? safeParse(row.data, userId) : null;
   const lastEvaluatedAt = row ? row.last_save : now;
@@ -59,6 +76,24 @@ export function loadEvaluateAndSchedule(userId, now) {
   // clear it. Mutates state.meta.eventProgress in place, same convention as
   // scheduleAnomaly above.
   const activeEvent = joinEventIfEligible(userId, state, now);
+
+  // Resolve the per-user claimable event, if any, AFTER join-on-login has
+  // had a chance to settle state.meta.eventProgress (new join, superseded-
+  // event clear, or untouched lingering grace-period progress - see
+  // joinEventIfEligible's doc comment). Looked up by id via getEvent()
+  // directly - NOT getActiveEvent() - so this resolves regardless of
+  // whether that specific event is still `status: 'active'`, `'ended'`, or
+  // anything else. If eventProgress references an id that no longer exists
+  // in the DB at all (e.g. a deleted event), getEvent() returns undefined,
+  // __claimableEvent is simply never attached, and claimEventRung's own
+  // `!activeEvent` guard fails closed with invalid_target - never throws.
+  const eventProgress = state.meta.eventProgress;
+  if (eventProgress && eventProgress.eventId) {
+    const claimable = getEvent(eventProgress.eventId);
+    if (claimable) {
+      config.__claimableEvent = { id: claimable.id, ladder: claimable.ladder, endsAt: claimable.ends_at };
+    }
+  }
 
   return { state, gained, config, activeEvent };
 }
@@ -93,5 +128,25 @@ export function applyActions(userId, actions, now = Date.now()) {
   }
 
   putSave(userId, state, now);
+
+  // Hotfix: event_participation.rungs_claimed was previously only ever
+  // written once, at join time (joinEventIfEligible -> upsertParticipation,
+  // hardcoded rungsClaimed: 0) - nothing synced it again after a claim, so
+  // listLeaderboard/listParticipation's `ORDER BY rungs_claimed DESC` sort
+  // key was permanently 0 for every player. Re-derive from the final,
+  // authoritative state.meta.eventProgress.rungsClaimed.length rather than
+  // trusting the results array's ok/rungIndex flags directly - that's
+  // idempotent and self-healing (safe to call even if triggered
+  // redundantly, and correct even if a future action could somehow touch
+  // rungsClaimed by a path other than claimEventRung). The `results.some`
+  // check below is just the cheap gate for "was a claim even attempted this
+  // batch" so a normal action batch with no event activity doesn't pay for
+  // an extra DB write.
+  const claimedThisBatch = results.some((r) => r.ok && typeof r.rungIndex === 'number');
+  if (claimedThisBatch && state.meta.eventProgress) {
+    const { eventId, rungsClaimed } = state.meta.eventProgress;
+    updateParticipationProgress(userId, eventId, rungsClaimed.length, now);
+  }
+
   return { state, results };
 }
