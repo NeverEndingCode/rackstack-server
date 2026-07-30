@@ -312,6 +312,38 @@ async function main() {
     const activeBadge = coordPage.getByText('active', { exact: true });
     assert(await activeBadge.count() >= 1, 'expected an "active" status badge after activating');
 
+    // --- Edit an ACTIVE event's name/description only -------------------------
+    // The server's PUT gate is PRESENCE-based (hasOwnProperty on ladder/
+    // modifiers), not diff-based, so a payload that echoes the unchanged
+    // ladder/modifiers back 409s 'event_active' even for a pure name edit.
+    // handleSave must omit both keys while active, and the editors must be
+    // locked so the UI doesn't imply otherwise.
+    assert(await coordPage.getByTestId('modifiers-locked').count() === 1, 'expected the Modifiers section to show its locked notice while the event is active');
+    assert(await coordPage.getByTestId('ladder-locked').count() === 1, 'expected the Ladder section to show its locked notice while the event is active');
+    assert(await coordPage.getByTestId('add-modifier').count() === 0, 'expected the Add-modifier button to be hidden while the event is active');
+    assert(await coordPage.getByTestId('add-rung').count() === 0, 'expected the Add-rung button to be hidden while the event is active');
+    assert(await coordPage.getByTestId('rung-target-0').isDisabled(), 'expected existing rung inputs to be disabled while the event is active');
+    assert(await coordPage.getByTestId('rung-remove-0').count() === 0, 'expected the per-rung Remove button to be hidden while the event is active');
+
+    await coordPage.getByTestId('event-name').fill('E2E Surge Week (renamed live)');
+    const activeSaveBtn = coordPage.getByTestId('event-save');
+    assert(!(await activeSaveBtn.isDisabled()), 'expected Save to stay enabled for a name-only edit on an active event');
+    const [activeEditResp] = await Promise.all([
+      coordPage.waitForResponse((r) => r.url().endsWith(`/api/admin/events/${eventId}`) && r.request().method() === 'PUT'),
+      activeSaveBtn.click(),
+    ]);
+    assert(activeEditResp.status() === 200, `expected 200 renaming an ACTIVE event, got ${activeEditResp.status()}: ${JSON.stringify(await activeEditResp.json().catch(() => null))} - a 409 event_active here means handleSave is still sending ladder/modifiers keys`);
+    const activeEditBody = await activeEditResp.request().postDataJSON();
+    assert(!('modifiers' in activeEditBody) && !('ladder' in activeEditBody), `expected the active-event PUT body to omit modifiers/ladder entirely, got keys: ${Object.keys(activeEditBody).join(', ')}`);
+
+    // Restore the name so the second user's banner assertion below is unchanged.
+    await coordPage.getByTestId('event-name').fill('E2E Surge Week');
+    const [restoreResp] = await Promise.all([
+      coordPage.waitForResponse((r) => r.url().endsWith(`/api/admin/events/${eventId}`) && r.request().method() === 'PUT'),
+      coordPage.getByTestId('event-save').click(),
+    ]);
+    assert(restoreResp.status() === 200, `expected 200 restoring the active event's name, got ${restoreResp.status()}`);
+
     // --- Confirm visible to a SECOND, non-admin, non-coordinator user ------
     const playerContext = await browser.newContext();
     await playerContext.addCookies([cookieFor(player)]);

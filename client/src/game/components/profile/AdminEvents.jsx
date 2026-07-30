@@ -179,7 +179,7 @@ function ParticipationView({ eventId, onClose }) {
   );
 }
 
-function ModifierRow({ row, onChange, onRemove, testIndex }) {
+function ModifierRow({ row, onChange, onRemove, testIndex, locked }) {
   const tDef = TUNABLES.find((t) => t.path === row.path);
   const num = row.valueRaw === '' ? NaN : Number(row.valueRaw);
   const valid = tDef && row.valueRaw !== '' && !Number.isNaN(num)
@@ -190,9 +190,10 @@ function ModifierRow({ row, onChange, onRemove, testIndex }) {
         <select
           value={row.path}
           onChange={(e) => onChange({ ...row, path: e.target.value })}
+          disabled={locked}
           data-testid={`modifier-path-${testIndex}`}
           className="flex-1 min-w-0 rounded-md px-1.5 py-1 text-[11px]"
-          style={{ background: '#0E141B', border: `1px solid ${cardBorder}`, color: textMain }}
+          style={{ background: '#0E141B', border: `1px solid ${cardBorder}`, color: locked ? textDim : textMain }}
         >
           {TUNABLE_GROUPS.map(([group, rows]) => (
             <optgroup key={group} label={group}>
@@ -205,13 +206,20 @@ function ModifierRow({ row, onChange, onRemove, testIndex }) {
           value={row.valueRaw}
           onChange={(e) => onChange({ ...row, valueRaw: e.target.value })}
           step={tDef && tDef.integer ? 1 : 'any'}
+          disabled={locked}
           data-testid={`modifier-value-${testIndex}`}
           className="w-24 rounded-md px-2 py-1 text-[11px] font-mono text-right"
-          style={{ background: '#0E141B', border: `1px solid ${valid ? cardBorder : danger}`, color: valid ? textMain : danger }}
+          style={{
+            background: '#0E141B',
+            border: `1px solid ${locked || valid ? cardBorder : danger}`,
+            color: locked ? textDim : (valid ? textMain : danger),
+          }}
         />
-        <button onClick={onRemove} data-testid={`modifier-remove-${testIndex}`} style={{ color: danger }}>
-          <Trash2 size={13} />
-        </button>
+        {!locked && (
+          <button onClick={onRemove} data-testid={`modifier-remove-${testIndex}`} style={{ color: danger }}>
+            <Trash2 size={13} />
+          </button>
+        )}
       </div>
       {tDef && (
         <div className="text-[10px]" style={{ color: textDim }}>
@@ -222,16 +230,18 @@ function ModifierRow({ row, onChange, onRemove, testIndex }) {
   );
 }
 
-function LadderRow({ row, onChange, onRemove, testIndex }) {
+function LadderRow({ row, onChange, onRemove, testIndex, locked }) {
+  const fieldStyle = { background: '#0E141B', border: `1px solid ${cardBorder}`, color: locked ? textDim : textMain };
   return (
     <div className="flex flex-col gap-1 rounded-md p-1.5" style={{ background: '#0E141B', border: `1px solid ${cardBorder}` }}>
       <div className="flex items-center gap-1.5">
         <select
           value={row.metric}
           onChange={(e) => onChange({ ...row, metric: e.target.value })}
+          disabled={locked}
           data-testid={`rung-metric-${testIndex}`}
           className="flex-1 min-w-0 rounded-md px-1.5 py-1 text-[11px]"
-          style={{ background: '#0E141B', border: `1px solid ${cardBorder}`, color: textMain }}
+          style={fieldStyle}
         >
           {EVENT_METRIC_IDS.map((m) => <option key={m} value={m}>{METRIC_LABELS[m] || m}</option>)}
         </select>
@@ -240,36 +250,39 @@ function LadderRow({ row, onChange, onRemove, testIndex }) {
           value={row.targetRaw}
           onChange={(e) => onChange({ ...row, targetRaw: e.target.value })}
           placeholder="target"
+          disabled={locked}
           data-testid={`rung-target-${testIndex}`}
           className="w-20 rounded-md px-2 py-1 text-[11px] font-mono text-right"
-          style={{ background: '#0E141B', border: `1px solid ${cardBorder}`, color: textMain }}
+          style={fieldStyle}
         />
-        <button onClick={onRemove} data-testid={`rung-remove-${testIndex}`} style={{ color: danger }}>
-          <Trash2 size={13} />
-        </button>
+        {!locked && (
+          <button onClick={onRemove} data-testid={`rung-remove-${testIndex}`} style={{ color: danger }}>
+            <Trash2 size={13} />
+          </button>
+        )}
       </div>
       <div className="flex items-center gap-1.5 text-[10px]" style={{ color: textDim }}>
         reward:
         <input
-          type="number" value={row.wafersRaw} placeholder="wafers"
+          type="number" value={row.wafersRaw} placeholder="wafers" disabled={locked}
           onChange={(e) => onChange({ ...row, wafersRaw: e.target.value })}
           data-testid={`rung-wafers-${testIndex}`}
           className="w-16 rounded-md px-1.5 py-0.5 font-mono"
-          style={{ background: '#0E141B', border: `1px solid ${cardBorder}`, color: textMain }}
+          style={fieldStyle}
         />
         <input
-          type="number" value={row.tapesRaw} placeholder="tapes"
+          type="number" value={row.tapesRaw} placeholder="tapes" disabled={locked}
           onChange={(e) => onChange({ ...row, tapesRaw: e.target.value })}
           data-testid={`rung-tapes-${testIndex}`}
           className="w-16 rounded-md px-1.5 py-0.5 font-mono"
-          style={{ background: '#0E141B', border: `1px solid ${cardBorder}`, color: textMain }}
+          style={fieldStyle}
         />
         <input
-          type="number" value={row.flopsRaw} placeholder="flops"
+          type="number" value={row.flopsRaw} placeholder="flops" disabled={locked}
           onChange={(e) => onChange({ ...row, flopsRaw: e.target.value })}
           data-testid={`rung-flops-${testIndex}`}
           className="w-16 rounded-md px-1.5 py-0.5 font-mono"
-          style={{ background: '#0E141B', border: `1px solid ${cardBorder}`, color: textMain }}
+          style={fieldStyle}
         />
       </div>
     </div>
@@ -324,13 +337,27 @@ function EventEditor({ event, onSaved, onDeleted, onClose }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [event]);
 
+  // Server gate (server/routes/api.js's PUT route) is PRESENCE-based, not
+  // diff-based: it 409s with 'event_active' the moment the request body has
+  // a `ladder` or `modifiers` KEY at all, whether or not its content
+  // actually changed. So while the event is active, those two fields are
+  // locked out entirely - both the payload handleSave sends (below) and the
+  // editors below in the render must agree with that, or a coordinator
+  // fixing a typo in a live event's name gets wrongly told the whole save
+  // is blocked.
+  const isActive = !isNew && !!current && current.status === 'active';
+
   const modifiersPayload = buildModifiersPayload(form);
   const ladderPayload = buildLadderPayload(form);
   const modCheck = validateModifiers(modifiersPayload);
   const ladderCheck = validateLadder(ladderPayload);
   const slugValid = isNew ? isValidSlug(form.id) : true;
   const nameValid = form.name.trim().length > 0;
-  const canSave = slugValid && nameValid && modCheck.ok && ladderCheck.ok && !saving;
+  // Modifiers/ladder validity only gates Save while they're actually part of
+  // the payload - while active they're omitted outright (see handleSave), so
+  // stale/unrelated validation state in those (locked, non-editable) fields
+  // must never block a plain name/description/theme edit.
+  const canSave = slugValid && nameValid && (isActive || (modCheck.ok && ladderCheck.ok)) && !saving;
 
   function updateModifier(i, next) {
     setForm((f) => ({ ...f, modifiers: f.modifiers.map((m, idx) => (idx === i ? next : m)) }));
@@ -370,9 +397,14 @@ function EventEditor({ event, onSaved, onDeleted, onClose }) {
       theme: (form.themeIcon.trim() || form.themeColor.trim())
         ? { icon: form.themeIcon.trim() || undefined, color: form.themeColor.trim() || undefined }
         : null,
-      modifiers: modifiersPayload,
-      ladder: ladderPayload,
     };
+    // Omit these keys entirely while active - see the `isActive` comment
+    // above. Included unconditionally for a new/non-active event (the
+    // normal create/edit path, where the server's gate doesn't apply).
+    if (!isActive) {
+      payload.modifiers = modifiersPayload;
+      payload.ladder = ladderPayload;
+    }
     const res = isNew
       ? await createEvent({ ...payload, id: form.id.trim() })
       : await updateEvent(current.id, payload);
@@ -556,10 +588,17 @@ function EventEditor({ event, onSaved, onDeleted, onClose }) {
       <div className="rounded-md p-1.5" style={{ background: '#0E141B', border: `1px solid ${cardBorder}` }}>
         <div className="flex items-center justify-between mb-1.5">
           <div className="text-[11px] font-semibold" style={{ color: textMain }}>Modifiers</div>
-          <button onClick={addModifier} data-testid="add-modifier" className="flex items-center gap-1 text-[10px]" style={{ color: amber }}>
-            <Plus size={11} /> Add
-          </button>
+          {!isActive && (
+            <button onClick={addModifier} data-testid="add-modifier" className="flex items-center gap-1 text-[10px]" style={{ color: amber }}>
+              <Plus size={11} /> Add
+            </button>
+          )}
         </div>
+        {isActive && (
+          <div className="mb-1.5 text-[10px]" style={{ color: textDim }} data-testid="modifiers-locked">
+            Locked while the event is active - end it to edit.
+          </div>
+        )}
         {modErrors.length > 0 && (
           <div className="mb-1.5 text-[10px]" style={{ color: danger }}>
             {modErrors.map((e, i) => <div key={i}>{e}</div>)}
@@ -568,7 +607,7 @@ function EventEditor({ event, onSaved, onDeleted, onClose }) {
         {form.modifiers.length === 0 && <div className="text-[10px]" style={{ color: textDim }}>No modifiers - event runs on the live config unchanged.</div>}
         <div className="flex flex-col gap-1.5">
           {form.modifiers.map((row, i) => (
-            <ModifierRow key={i} row={row} testIndex={i} onChange={(next) => updateModifier(i, next)} onRemove={() => removeModifier(i)} />
+            <ModifierRow key={i} row={row} testIndex={i} locked={isActive} onChange={(next) => updateModifier(i, next)} onRemove={() => removeModifier(i)} />
           ))}
         </div>
       </div>
@@ -576,10 +615,17 @@ function EventEditor({ event, onSaved, onDeleted, onClose }) {
       <div className="rounded-md p-1.5" style={{ background: '#0E141B', border: `1px solid ${cardBorder}` }}>
         <div className="flex items-center justify-between mb-1.5">
           <div className="text-[11px] font-semibold" style={{ color: textMain }}>Ladder (1-20 rungs)</div>
-          <button onClick={addRung} disabled={form.ladder.length >= 20} data-testid="add-rung" className="flex items-center gap-1 text-[10px]" style={{ color: form.ladder.length >= 20 ? textDim : amber }}>
-            <Plus size={11} /> Add rung
-          </button>
+          {!isActive && (
+            <button onClick={addRung} disabled={form.ladder.length >= 20} data-testid="add-rung" className="flex items-center gap-1 text-[10px]" style={{ color: form.ladder.length >= 20 ? textDim : amber }}>
+              <Plus size={11} /> Add rung
+            </button>
+          )}
         </div>
+        {isActive && (
+          <div className="mb-1.5 text-[10px]" style={{ color: textDim }} data-testid="ladder-locked">
+            Locked while the event is active - end it to edit.
+          </div>
+        )}
         {ladderErrors.length > 0 && (
           <div className="mb-1.5 text-[10px]" style={{ color: danger }}>
             {ladderErrors.map((e, i) => <div key={i}>{e}</div>)}
@@ -588,7 +634,7 @@ function EventEditor({ event, onSaved, onDeleted, onClose }) {
         {form.ladder.length === 0 && <div className="text-[10px]" style={{ color: danger }}>At least one rung is required.</div>}
         <div className="flex flex-col gap-1.5">
           {form.ladder.map((row, i) => (
-            <LadderRow key={i} row={row} testIndex={i} onChange={(next) => updateRung(i, next)} onRemove={() => removeRung(i)} />
+            <LadderRow key={i} row={row} testIndex={i} locked={isActive} onChange={(next) => updateRung(i, next)} onRemove={() => removeRung(i)} />
           ))}
         </div>
       </div>

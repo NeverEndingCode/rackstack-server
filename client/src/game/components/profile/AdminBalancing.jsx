@@ -32,6 +32,9 @@ const GROUP_LABELS = {
   offline: 'Offline',
   anomaly: 'Anomaly',
   upgrades: 'Upgrade max levels',
+  // v1.3 added 11 batchQueue.* tunables; without this they rendered under the
+  // raw key. Keep in sync with AdminEvents.jsx's copy of this map.
+  batchQueue: 'Cold Storage (batch queue)',
 };
 
 function buildGroups() {
