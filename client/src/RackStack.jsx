@@ -262,19 +262,14 @@ export default function RackStack({ user }) {
     session_open: 'Game already in progress',
     gone: 'Session expired',
     max_level: 'Already at max level',
-    // claimEventRung's documented 48h grace period is meant to surface as
-    // cooldown_active once past it (shared/reducer.js's EVENT_CLAIM_GRACE_MS
-    // check) - but this task's own runtime verification found that
-    // server/configService.js's getEffectiveConfig() only attaches
-    // config.__activeEvent while the event's DB status is still 'active',
-    // so claimEventRung's FIRST guard (`!activeEvent`) actually fires
-    // invalid_target the moment the event ends globally, before the grace
-    // check is ever reached - even for a player well within their own
-    // still-open personal window. That's a server-side gap outside this
-    // task's file list (see task-7-report.md), not something fixable here;
-    // this mapping just keeps the toast from reading as an opaque generic
-    // failure in the meantime.
-    invalid_target: 'Event unavailable',
+    // invalid_target is a generic rejection code returned by many reducer
+    // actions (buyUpgrade, migrate, singularity, claimBlock, cold-storage
+    // jobs, goals, claimEventRung, setLeaderboardOptOut, ...) for a range of
+    // "that target isn't valid right now" cases - bad/out-of-range index,
+    // already-claimed, wrong state, etc. It is NOT event-specific, so the
+    // message here has to stay generic too rather than naming any one
+    // action's failure mode.
+    invalid_target: 'Not available',
   };
   function showToast(text) {
     setRejectToast({ id: Date.now() + Math.random(), text });
