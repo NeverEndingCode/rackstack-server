@@ -22,7 +22,8 @@
 //      event_active until the first is explicitly ended.
 //   5. Opting out (via the real "Hide me" checkbox) removes the user from
 //      the event leaderboard immediately.
-//   6. A non-coordinator gets 403 on every admin event route.
+//   6. A non-coordinator gets 403 on every admin event route AND sees no
+//      ADMIN section / Events tab in the client.
 //
 // Boots a real `node server/index.js` against a scratch SQLite file, seeds
 // users/saves directly through server/db.js (same trick smoke-v12/13/
@@ -348,8 +349,24 @@ async function main() {
     bootAndGetState(plainPage),
   ]);
 
-  // --- Check: non-coordinator 403s on every admin event route -------------
-  await check('a non-coordinator gets 403 on every admin event route', async () => {
+  // --- Check: non-coordinator 403s on every admin event route, and sees
+  //     no Events tab (the client-side half of the same requirement - the
+  //     server gate above is authoritative, but a tab that renders and then
+  //     403s on every click is still a bug) --------------------------------
+  await check('a non-coordinator gets 403 on every admin event route and sees no Events tab', async () => {
+    await plainPage.getByTitle('View profile').click();
+    await plainPage.getByRole('button', { name: 'Settings', exact: true }).click();
+    // Positive control FIRST: without it, every assertion below would pass
+    // vacuously if the Settings pane simply failed to open. Username is the
+    // section heading every user sees on this pane, admin or not
+    // (ProfileSettings.jsx:42).
+    await plainPage.getByText('Username', { exact: true }).waitFor({ state: 'visible', timeout: 5000 });
+    // A plain player holds no admin/coordinator role at all, so the whole
+    // ADMIN section - Events included - must be absent, not merely empty.
+    assert(await plainPage.getByText('ADMIN', { exact: true }).count() === 0, 'expected NO ADMIN panel section for a plain non-coordinator player');
+    assert(await plainPage.getByRole('button', { name: 'Events', exact: true }).count() === 0, 'expected no Events tab for a plain non-coordinator player');
+    assert(await plainPage.getByTestId('events-new').count() === 0, 'expected no Events-tab authoring control for a plain non-coordinator player');
+
     const routes = [
       ['GET', '/api/admin/events'],
       ['POST', '/api/admin/events'],
