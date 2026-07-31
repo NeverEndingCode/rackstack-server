@@ -389,10 +389,18 @@ function progressView(event, progress, meta) {
     joinedAt: progress.joinedAt,
     endsAt: progress.endsAt,
     rungsClaimed: progress.rungsClaimed,
-    rungs: ladder.map((rung, i) => ({
-      ...rungProgress(rung, meta, progress.baseline),
-      claimed: progress.rungsClaimed.includes(i),
-    })),
+    // Superseded windows render their FROZEN set (see supersedeEventProgress),
+    // not a ladder still climbing against live meta - otherwise the UI offers
+    // Claim buttons the reducer will reject with not_met.
+    rungs: ladder.map((rung, i) => {
+      const live = rungProgress(rung, meta, progress.baseline);
+      const frozen = Array.isArray(progress.claimableRungs);
+      return {
+        ...live,
+        met: frozen ? progress.claimableRungs.includes(i) : live.met,
+        claimed: progress.rungsClaimed.includes(i),
+      };
+    }),
   };
 }
 

@@ -253,6 +253,63 @@ describe('joinEventIfEligible: superseding preserves the claim right', () => {
     endEvent(eventB.id, now);
   });
 
+  // The window is FORCE-ENDED, not merely preserved: a superseded ladder must
+  // stop climbing. Otherwise it keeps advancing against live meta alongside
+  // the new event's ladder and a single grind pays out BOTH - spec §5.3 keeps
+  // open only the rungs already qualified at the moment of the supersede.
+  it('freezes the superseded ladder: rungs met only AFTER the supersede are not claimable', () => {
+    quiesce();
+    const now = Date.now();
+    // Rung 0 is met at supersede time (500 lifetime FLOPS vs target 100);
+    // rung 1 is nowhere near it, and only becomes met from post-supersede
+    // earnings that belong entirely to the NEW event.
+    const eventA = makeEvent({
+      ladder: [
+        { metric: 'flopsEarned', target: 100, reward: { wafers: 20 } },
+        { metric: 'flopsEarned', target: 10000, reward: { wafers: 40 } },
+      ],
+    });
+    const eventB = makeEvent();
+    setEventStatus(eventA.id, 'ended', { startsAt: now - 3 * DAY_MS, endsAt: now - DAY_MS });
+    setEventStatus(eventB.id, 'scheduled', { startsAt: now - 1000, endsAt: now + DAY_MS });
+    activateEvent(eventB.id, now);
+
+    const user = makeUser();
+    const state = joinedState(eventA.id, now - 3600 * 1000);
+    joinEventIfEligible(user.id, state, now);
+
+    const record = state.meta.pendingEventClaims[0];
+    expect(record.claimableRungs).toEqual([0]);
+    // Force-ended means the personal end is NOW, so grace runs from here.
+    expect(record.endsAt).toBeLessThanOrEqual(now);
+
+    // Grind 20k FLOPS entirely under event B. Rung 1 is now met on live meta.
+    state.meta.stats.lifetimeFlopsAllTime += 20000;
+
+    const { current, pending } = resolvePlayerEvents(state);
+    const config = {
+      __claimableEvent: {
+        id: current.event.id, ladder: current.event.ladder, endsAt: current.event.ends_at,
+      },
+      __pendingClaimables: pending.map(({ event }) => ({
+        id: event.id, ladder: event.ladder, endsAt: event.ends_at,
+      })),
+    };
+
+    const late = applyAction(
+      state, { type: 'claimEventRung', index: 1, eventId: eventA.id }, config, now,
+    ).result;
+    expect(late).toEqual({ ok: false, error: 'not_met' });
+
+    // The rung that WAS qualified still pays, exactly once.
+    const early = applyAction(
+      state, { type: 'claimEventRung', index: 0, eventId: eventA.id }, config, now,
+    ).result;
+    expect(early).toMatchObject({ ok: true, rungIndex: 0, eventId: eventA.id });
+
+    endEvent(eventB.id, now);
+  });
+
   it('drops a superseded window whose own grace has already run out', () => {
     quiesce();
     const now = Date.now();

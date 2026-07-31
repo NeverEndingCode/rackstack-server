@@ -469,9 +469,19 @@ function claimEventRung(s, action, config, now) {
 
   if (now > ep.endsAt + EVENT_CLAIM_GRACE_MS) return err('cooldown_active');
 
+  // A superseded window (meta.pendingEventClaims) carries `claimableRungs`:
+  // the met-but-unclaimed set frozen at the instant it was force-ended. Its
+  // ladder must NOT be re-evaluated against live `meta`, or it keeps climbing
+  // in parallel with the new event's ladder and one grind pays out both -
+  // spec §5.3 keeps open only the rungs already qualified. A live window has
+  // no such field and is measured normally.
+  if (Array.isArray(ep.claimableRungs)) {
+    if (!ep.claimableRungs.includes(index)) return err('not_met');
+  } else if (!rungProgress(ladder[index], s.meta, ep.baseline).met) {
+    return err('not_met');
+  }
+
   const rung = ladder[index];
-  const progress = rungProgress(rung, s.meta, ep.baseline);
-  if (!progress.met) return err('not_met');
 
   const reward = rung.reward || {};
   // Match existing reward-crediting precedent exactly: FLOPS go to BOTH

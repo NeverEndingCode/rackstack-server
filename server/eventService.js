@@ -13,7 +13,9 @@ import {
   upsertParticipation, getUserById,
 } from './db.js';
 import { invalidateEffectiveConfig } from './configService.js';
-import { EVENT_METRIC_IDS, eventMetricValue, isValidRecurrence } from '../shared/events.js';
+import {
+  EVENT_METRIC_IDS, eventMetricValue, isValidRecurrence, rungProgress,
+} from '../shared/events.js';
 import { EVENT_CLAIM_GRACE_MS } from '../shared/reducer.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -247,7 +249,9 @@ export function joinEventIfEligible(userId, state, now = Date.now()) {
   const progress = state.meta.eventProgress;
 
   if (activeEvent && progress && progress.eventId !== activeEvent.id) {
-    supersedeEventProgress(state.meta, now);
+    // The OUTGOING event, not the incoming one - supersede needs its ladder to
+    // freeze the met-but-unclaimed rung set before the window is force-ended.
+    supersedeEventProgress(state.meta, now, getEvent(progress.eventId));
   }
 
   // Runs on every load, event active or not, so records age out of the save
@@ -341,16 +345,31 @@ export function inClaimGrace(progress, now) {
  * the live slot. A record whose grace has ALREADY run out is dropped rather
  * than stored - there's nothing left to claim on it.
  *
- * `endsAt` is deliberately NOT rewritten to `now`: the 48h grace is measured
- * from the personal end, and the whole point here is that the personal end
- * already happened (or is being forced). Truncating it would shorten the
- * grace a player was promised.
+ * The window is genuinely FORCE-ENDED here, which means two things:
+ *
+ *  - `endsAt` collapses to `now` when the window was still running. `now` IS
+ *    the personal end in that case, so the 48h grace runs from here. (A
+ *    window that already ended naturally keeps its own earlier `endsAt`, so
+ *    superseding can never EXTEND a grace that was already counting down.)
+ *  - The set of rungs that were met-but-unclaimed at this instant is frozen
+ *    onto the record as `claimableRungs`. Without it the superseded ladder
+ *    keeps climbing against live `meta` alongside the new event's ladder, and
+ *    a single grind pays out BOTH - spec §5.2 force-ends the window and §5.3
+ *    keeps open only the rungs "already qualified", not future ones.
  */
-function supersedeEventProgress(meta, now) {
+function supersedeEventProgress(meta, now, outgoingEvent) {
   const progress = meta.eventProgress;
   meta.eventProgress = null;
   if (!progress || typeof progress.eventId !== 'string') return;
   if (typeof progress.endsAt !== 'number' || now > progress.endsAt + EVENT_CLAIM_GRACE_MS) return;
+
+  const ladder = outgoingEvent && Array.isArray(outgoingEvent.ladder) ? outgoingEvent.ladder : [];
+  const claimed = Array.isArray(progress.rungsClaimed) ? progress.rungsClaimed : [];
+  progress.claimableRungs = ladder.reduce((acc, rung, i) => {
+    if (!claimed.includes(i) && rungProgress(rung, meta, progress.baseline).met) acc.push(i);
+    return acc;
+  }, []);
+  progress.endsAt = Math.min(progress.endsAt, now);
 
   const pending = Array.isArray(meta.pendingEventClaims) ? meta.pendingEventClaims : [];
   // Dedupe by eventId (`.find`-style filter, never a bare-key lookup) so a
