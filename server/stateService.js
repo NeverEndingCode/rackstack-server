@@ -1,7 +1,10 @@
 import { migrateSave, evaluate } from '../shared/state.js';
 import { applyAction, scheduleAnomaly } from '../shared/reducer.js';
-import { getSave, putSave } from './db.js';
-import { getConfig } from './configService.js';
+import {
+  getSave, putSave, updateParticipationProgress,
+} from './db.js';
+import { getEffectiveConfig } from './configService.js';
+import { joinEventIfEligible, resolvePlayerEvents } from './eventService.js';
 
 function safeParse(text, userId) {
   try {
@@ -29,7 +32,27 @@ function safeParse(text, userId) {
  * putSave, the same one-write pattern applyActions uses.
  */
 export function loadEvaluateAndSchedule(userId, now) {
-  const config = getConfig().data;
+  // getEffectiveConfig() (server/configService.js) is getConfig()'s admin
+  // baseline with the currently active live event's modifiers merged on
+  // top (Task 4) - never the other way around. This is the ONLY read of
+  // config in the evaluate/applyAction path, so both loadAndEvaluate and
+  // applyActions below get event-aware balancing "for free".
+  //
+  // `effectiveConfig.data` is a SHARED, cached object - either the admin
+  // baseline itself (no event active) or configService's own
+  // (version, eventId)-keyed effectiveCache.data (event active) - reused
+  // across every user's request until that cache key changes. Below, this
+  // function attaches a per-user `__claimableEvent` field (hotfix for the
+  // 48h grace-period bug: claimEventRung needs the ladder for whatever
+  // event the PLAYER is mid-run on, even after that event's DB status has
+  // left 'active', which config.__activeEvent alone can't provide - see
+  // shared/reducer.js's claimEventRung doc comment). That attachment MUST
+  // land on a per-request shallow copy, never on `effectiveConfig.data`
+  // itself - mutating the shared cached object would leak one user's
+  // claimable event onto every other user's request that hits the same
+  // cache before it next invalidates.
+  const effectiveConfig = getEffectiveConfig();
+  const config = { ...effectiveConfig.data };
   const row = getSave(userId);
   const raw = row ? safeParse(row.data, userId) : null;
   const lastEvaluatedAt = row ? row.last_save : now;
@@ -47,14 +70,44 @@ export function loadEvaluateAndSchedule(userId, now) {
     scheduleAnomaly(state.server, config, now, Math.random);
   }
 
-  return { state, gained, config };
+  // Join-on-login (spec §5.3): if a live event is active and this user
+  // hasn't joined it yet, snapshot their baselines and start their personal
+  // window; if their in-flight progress belongs to a now-superseded event,
+  // clear it. Mutates state.meta.eventProgress in place, same convention as
+  // scheduleAnomaly above.
+  const activeEvent = joinEventIfEligible(userId, state, now);
+
+  // Resolve the per-user claimable event(s), if any, AFTER join-on-login has
+  // had a chance to settle state.meta.eventProgress/pendingEventClaims (new
+  // join, supersede-into-pending, prune, or untouched lingering grace-period
+  // progress - see joinEventIfEligible's doc comment). resolvePlayerEvents
+  // looks rows up by id via getEvent() directly - NOT getActiveEvent() - so
+  // this resolves regardless of whether that specific event is still
+  // `status: 'active'`, `'ended'`, or anything else. If a record references
+  // an id that no longer exists in the DB at all (e.g. a deleted event),
+  // getEvent() returns undefined, the entry is simply dropped, and
+  // claimEventRung's own `!activeEvent` guard fails closed with
+  // invalid_target - never throws.
+  const { current, pending } = resolvePlayerEvents(state);
+  if (current) {
+    config.__claimableEvent = {
+      id: current.event.id, ladder: current.event.ladder, endsAt: current.event.ends_at,
+    };
+  }
+  if (pending.length > 0) {
+    config.__pendingClaimables = pending.map(({ event }) => ({
+      id: event.id, ladder: event.ladder, endsAt: event.ends_at,
+    }));
+  }
+
+  return { state, gained, config, activeEvent };
 }
 
-/** Loads, evaluates, persists, and returns { state, gained } for GET /api/state. */
+/** Loads, evaluates, persists, and returns { state, gained, activeEvent } for GET /api/state. */
 export function loadAndEvaluate(userId, now = Date.now()) {
-  const { state, gained } = loadEvaluateAndSchedule(userId, now);
+  const { state, gained, activeEvent } = loadEvaluateAndSchedule(userId, now);
   putSave(userId, state, now);
-  return { state, gained };
+  return { state, gained, activeEvent };
 }
 
 /**
@@ -80,5 +133,38 @@ export function applyActions(userId, actions, now = Date.now()) {
   }
 
   putSave(userId, state, now);
+
+  // Hotfix: event_participation.rungs_claimed was previously only ever
+  // written once, at join time (joinEventIfEligible -> upsertParticipation,
+  // hardcoded rungsClaimed: 0) - nothing synced it again after a claim, so
+  // listLeaderboard/listParticipation's `ORDER BY rungs_claimed DESC` sort
+  // key was permanently 0 for every player. Re-derive from the final,
+  // authoritative state.meta.eventProgress.rungsClaimed.length rather than
+  // trusting the results array's ok/rungIndex flags directly - that's
+  // idempotent and self-healing (safe to call even if triggered
+  // redundantly, and correct even if a future action could somehow touch
+  // rungsClaimed by a path other than claimEventRung). The `results.some`
+  // check below is just the cheap gate for "was a claim even attempted this
+  // batch" so a normal action batch with no event activity doesn't pay for
+  // an extra DB write.
+  //
+  // Keyed off each successful claim's echoed-back `eventId` rather than
+  // meta.eventProgress.eventId: a claim may target a SUPERSEDED window from
+  // meta.pendingEventClaims (spec §5.3's 48h grace outliving the event), in
+  // which case meta.eventProgress is either null or a different event
+  // entirely, and syncing that one's count would be flatly wrong.
+  const claimedEventIds = new Set(
+    results.filter((r) => r.ok && typeof r.rungIndex === 'number' && typeof r.eventId === 'string')
+      .map((r) => r.eventId),
+  );
+  for (const eventId of claimedEventIds) {
+    const record = state.meta.eventProgress && state.meta.eventProgress.eventId === eventId
+      ? state.meta.eventProgress
+      : (state.meta.pendingEventClaims || []).find((p) => p && p.eventId === eventId);
+    if (record && Array.isArray(record.rungsClaimed)) {
+      updateParticipationProgress(userId, eventId, record.rungsClaimed.length, now);
+    }
+  }
+
   return { state, results };
 }

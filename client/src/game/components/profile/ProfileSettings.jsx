@@ -74,11 +74,20 @@ function UsernameForm({ displayName, onUsernameChanged }) {
 }
 
 export default function ProfileSettings({ user, displayName, onUsernameChanged, onLogout, onOpenReset, onConfigSaved }) {
-  // Admin-only UI visibility - the real gate is server-side (server/auth.js
-  // requireRole('admin')), this only decides whether to show the section at
+  // Admin-panel UI visibility - the real gate is server-side (server/auth.js
+  // requireRole per route), this only decides whether to show the section at
   // all. /api/me now returns the caller's effective roles (owners implicitly
-  // hold 'admin'), so no client-side user-id allowlist is needed anymore.
-  const isAdmin = !!user && Array.isArray(user.roles) && user.roles.includes('admin');
+  // hold both; getEffectiveRoles folds 'event_coordinator' into every
+  // 'admin'), so no client-side user-id allowlist is needed anymore.
+  //
+  // Widened from admin-only (pre-v1.4) to admin-OR-event_coordinator: a pure
+  // coordinator (granted 'event_coordinator' but not 'admin') needs to reach
+  // this panel too, just to see its own Events tab - AdminPanel itself does
+  // the finer-grained per-tab filtering (Users/Balancing/Roles stay
+  // admin-only), so showing the panel to a coordinator here doesn't expose
+  // anything they aren't already allowed to see.
+  const canSeeAdminPanel = !!user && Array.isArray(user.roles)
+    && (user.roles.includes('admin') || user.roles.includes('event_coordinator'));
   return (
     <div className="flex flex-col gap-4">
       <UsernameForm displayName={displayName} onUsernameChanged={onUsernameChanged} />
@@ -86,7 +95,7 @@ export default function ProfileSettings({ user, displayName, onUsernameChanged, 
         <LogOut size={16} /> Log out
       </button>
       <DangerZone onOpenReset={onOpenReset} />
-      {isAdmin && <AdminPanel user={user} onConfigSaved={onConfigSaved} />}
+      {canSeeAdminPanel && <AdminPanel user={user} onConfigSaved={onConfigSaved} />}
     </div>
   );
 }

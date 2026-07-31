@@ -161,6 +161,19 @@ describe('coldStorage actions', () => {
 
     expect(applyAction(s, { type: 'buyTapeUpgrade', id: 'nonsense' }, DEFAULT_CONFIG, NOW).result.error).toBe('invalid_target');
   });
+  it('every tape credit also bumps the lifetime tapes counter', () => {
+    const s = stateWithTrackStarted(20); // 3 blocks arrived
+    const { state } = applyAction(s, { type: 'claimAllBlocks' }, DEFAULT_CONFIG, NOW);
+    expect(state.meta.stats.tapesEarnedLifetime).toBe(state.meta.coldStorage.tapes);
+  });
+  it('spending tapes does not reduce the lifetime counter', () => {
+    const s = initialState();
+    s.meta.coldStorage.tapes = 100;
+    s.meta.stats.tapesEarnedLifetime = 100;
+    const { state } = applyAction(s, { type: 'buyTapeUpgrade', id: 'compression' }, DEFAULT_CONFIG, NOW);
+    expect(state.meta.coldStorage.tapes).toBe(90);
+    expect(state.meta.stats.tapesEarnedLifetime).toBe(100); // unchanged
+  });
   it('none of the new handlers mutate their input state', () => {
     const s = stateWithTrackStarted(20);
     const snapshot = structuredClone(s);

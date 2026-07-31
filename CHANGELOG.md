@@ -1,5 +1,38 @@
 # Changelog
 
+## v1.4.0
+
+Live Events: config-overlay events with goal ladders, running one at a time
+on top of the existing balancing config.
+
+- Config-overlay events: a coordinator-authored set of tunable modifiers
+  (the same `production`/`heat`/`minigames`/`offline`/`batchQueue` tunables
+  the Balancing tab edits) applied read-time on top of the admin baseline
+  while an event is active - the stored config itself is never touched.
+- Goal ladders: per-event reward tiers keyed to a player's own progress
+  since joining (FLOPS/wafers/tapes earned, minigames won, blocks claimed),
+  each claimable once its target is met, paying out wafers/tapes/FLOPS.
+- Four seeded seasonal events - Summer Surge, Spooky Packets, Black Frame
+  Friday, and Frost Uptime - each with its own theme, modifiers, and ladder,
+  brought in and out on an hourly scheduler that also runs at boot.
+- Personal event windows: a player's own run starts at their first login
+  during an active event and lasts the event's full duration, capped at 24h
+  past the event's global end, with a 48h grace period afterward to still
+  claim any rung already earned before the window closed.
+- Event leaderboard (ranked by rungs claimed) with a per-user opt-out that
+  removes them immediately, not just on their next join.
+- Admin/coordinator Events tab: authoring with a TUNABLES-driven modifier
+  builder and ladder builder, schedule/activate/end/delete controls, and a
+  per-event participation view.
+- New `event_coordinator` role (granted/revoked by an admin, implied by
+  `admin` itself) scoped to the Events tab only - it does not carry
+  Balancing/Roles/Users access.
+
+Fixes:
+- A rejected action with a bad/expired target (e.g. an already-claimed
+  event rung) no longer surfaces the generic "Event unavailable" toast for
+  every action type - the message is now specific to what actually failed.
+
 ## v1.3.0
 
 Cold Storage: a new tab, unlocked at the Server Room tier, built around a

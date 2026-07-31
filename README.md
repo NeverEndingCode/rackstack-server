@@ -10,6 +10,13 @@ passive reward track that refills on a timer, one offline-only archival job
 Tapes tree paid for with the tab's own currency - all of it, including
 progress and purchased upgrades, survives Migrate and Singularity resets.
 
+As of v1.4, Live Events layer time-boxed config overlays and goal ladders on
+top of the regular economy - only one runs at a time. Four seasonal events
+(Summer Surge, Spooky Packets, Black Frame Friday, Frost Uptime) come and go
+automatically on their own annual windows via an hourly scheduler, and a
+coordinator can author, schedule, and run additional ones from the admin
+dashboard's Events tab. See [Live Events](#live-events) below for details.
+
 ## Architecture
 
 - `shared/` - a package used by both server and client (via a `@shared` Vite
@@ -69,7 +76,10 @@ shown in Discord's own "Copy User ID" (enable Developer Mode) or visible in
 the server's `users` table after your first login. DB-stored `admin` /
 `event_coordinator` roles (grantable from the dashboard once you're in) are
 for everyone else - `SUPER_ADMIN_IDS` is only for the owner(s) who should
-always have full access no matter what's in the database.
+always have full access no matter what's in the database. `event_coordinator`
+only unlocks the Events tab (author/schedule/activate/end Live Events, see
+below); `admin` implies it and additionally unlocks Balancing, Roles, and
+Users.
 
 ## 3. Run with Docker Compose
 
@@ -158,6 +168,39 @@ npm run dev
 ```
 
 Visit the client dev server's printed URL (usually `http://localhost:5173`).
+
+## Live Events
+
+At most one event is active globally at a time. Each is a set of tunable
+modifiers (the same `production`/`heat`/`minigames`/`offline`/`batchQueue`
+tunables the Balancing tab edits) applied read-time on top of the admin
+baseline config, plus a goal ladder of rungs a player claims for wafers/
+tapes/FLOPS as they clear metric targets.
+
+- **Seasonal events ship pre-seeded** (`server/data/seasonalEvents.js`):
+  Summer Surge (July), Spooky Packets (late October), Black Frame Friday
+  (late November), Frost Uptime (December-January). Each starts as a
+  windowless draft and gets its concrete `starts_at`/`ends_at` materialized
+  automatically, every year, by the scheduler below - no admin action
+  needed for them to run on schedule.
+- **Hourly scheduler** (`server/eventService.js`'s `runScheduler`, invoked
+  once at boot and every hour after): materializes seasonal recurrences into
+  a scheduled window, ends any active event whose window has closed, and
+  activates any scheduled event whose window has opened.
+- **Personal per-player windows**: a player's own run starts at their first
+  login while an event is active and lasts the event's full duration, capped
+  at 24h past the event's global end - two players who join at different
+  times see different countdowns. A 48h grace period afterward still lets
+  them claim any rung they'd already earned before their window closed.
+- **Leaderboard + opt-out**: ranked by rungs claimed, visible from the
+  in-game Event tab. Opting out (a per-user toggle, not per-event) removes
+  you from it immediately, not just on your next join.
+- **Coordinator authoring** (Profile > Settings > Events, `event_coordinator`
+  role or `admin`): create/edit a draft with a TUNABLES-driven modifier
+  builder and ladder builder, schedule a window, activate/end it, delete
+  unscheduled drafts, and view per-event participation. Activating a second
+  event while one is already active is rejected outright (409) - end the
+  running one first.
 
 ## Notes / things worth knowing
 

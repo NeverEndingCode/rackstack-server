@@ -4,6 +4,7 @@ import { initialState } from './state.js';
 import { goalCtx, GOAL_DEFS, REPEATABLE_DEFS } from './goals.js';
 import { TOTAL_BLOCKS, JOB_TYPES, TAPE_UPGRADE_DEFS } from './coldStorageData.js';
 import { computeColdStorageEffects, blockReward, jobDurationSec, jobReward } from './coldStorage.js';
+import { rungProgress } from './events.js';
 
 const LANE_DEFS = { tiers: TIER_DEFS, grid: GRID_DEFS, overclock: OVERCLOCK_DEFS };
 
@@ -179,6 +180,7 @@ function claimBlock(s, action, config, now) {
 
   cs.blocksClaimed[index] = true;
   cs.tapes += tapes;
+  s.meta.stats.tapesEarnedLifetime = (s.meta.stats.tapesEarnedLifetime || 0) + tapes;
   if (flops > 0) {
     s.run.credits += flops;
     s.run.lifetimeRun += flops;
@@ -207,6 +209,7 @@ function claimAllBlocks(s, action, config, now) {
   if (claimedCount === 0) return err('invalid_target');
 
   cs.tapes += tapes;
+  s.meta.stats.tapesEarnedLifetime = (s.meta.stats.tapesEarnedLifetime || 0) + tapes;
   if (flops > 0) {
     s.run.credits += flops;
     s.run.lifetimeRun += flops;
@@ -242,6 +245,7 @@ function resetTrack(s, action, config, now) {
       flops += reward.flops;
     }
     cs.tapes += tapes;
+    s.meta.stats.tapesEarnedLifetime = (s.meta.stats.tapesEarnedLifetime || 0) + tapes;
     if (flops > 0) {
       s.run.credits += flops;
       s.run.lifetimeRun += flops;
@@ -282,6 +286,7 @@ function claimJob(s, action, config) {
   const tapes = Math.round(jobReward(job.type, config) * csEff.tapeRewardMult);
 
   s.meta.coldStorage.tapes += tapes;
+  s.meta.stats.tapesEarnedLifetime = (s.meta.stats.tapesEarnedLifetime || 0) + tapes;
   s.meta.coldStorage.job = null;
   s.meta.stats.jobsCompletedLifetime = (s.meta.stats.jobsCompletedLifetime || 0) + 1;
   if (job.type === 'deep') {
@@ -401,6 +406,135 @@ function hardReset(s, action, config, now, rng) {
   return { ok: true };
 }
 
+// The 48h post-event grace period during which players can still claim
+// rungs they already qualified for after the event itself ends. Exported so
+// the client (Task 7's RackStack.jsx/EventPanel.jsx) can gate the event
+// tab's visibility and grace-period messaging on the exact same window the
+// server enforces here, rather than duplicating the constant and risking
+// drift.
+export const EVENT_CLAIM_GRACE_MS = 48 * 3600 * 1000;
+
+// The ladder for the event a player is actually mid-run on isn't part of
+// `state` - it lives in the DB (events table) and reaches here via
+// `config.__claimableEvent = { id, ladder, endsAt }`, attached by
+// server/stateService.js's loadEvaluateAndSchedule() (NOT
+// getEffectiveConfig()/config.__activeEvent - that field only reflects
+// whichever event is GLOBALLY `status: 'active'` right now, and disappears
+// the instant an event ends, which made this reducer's own grace-period
+// branch below unreachable end-to-end: the moment status flipped to
+// 'ended', __activeEvent vanished and the guard below rejected every claim
+// with invalid_target before now > ep.endsAt + EVENT_CLAIM_GRACE_MS was ever
+// checked - a real bug, found and fixed post-Task-7).
+// __claimableEvent is resolved per-user from `state.meta.eventProgress.
+// eventId` regardless of that event's current DB status, so a player's
+// claim window/grace period can outlive the event's global 'active' status
+// exactly as spec'd. It's attached to a per-request shallow copy of the
+// config object - never to configService's shared (version, eventId)-keyed
+// cache - so one user's claimable event can never leak into another user's
+// request. If no event is active AND the player has no lingering
+// eventProgress, config.__claimableEvent is simply absent.
+//
+// `config.__pendingClaimables` (same `{ id, ladder, endsAt }` shape, an
+// array) carries the ladders for any personal windows that were force-ended
+// early by a NEWER event going active - spec §5.2 force-ends the WINDOW, but
+// §5.3's 48h claim grace still applies, so those rungs stay claimable from
+// `state.meta.pendingEventClaims`. `action.eventId` selects which of the two
+// slots a claim targets; omitting it keeps the pre-existing behaviour (the
+// current claimable event), so a direct API caller that only sends
+// `{ type, index }` is unaffected.
+function claimEventRung(s, action, config, now) {
+  const { index, eventId } = action;
+
+  const claimables = [];
+  if (config.__claimableEvent) claimables.push(config.__claimableEvent);
+  if (Array.isArray(config.__pendingClaimables)) {
+    for (const c of config.__pendingClaimables) { if (c) claimables.push(c); }
+  }
+
+  // User-supplied id: resolved by .find() over the resolved list, never as a
+  // bare object key.
+  const activeEvent = eventId === undefined || eventId === null
+    ? claimables[0]
+    : claimables.find((c) => c.id === eventId);
+  if (!activeEvent) return err('invalid_target');
+
+  const ep = progressRecordFor(s.meta, activeEvent.id);
+  if (!ep) return err('invalid_target');
+
+  const ladder = activeEvent.ladder;
+  if (!Array.isArray(ladder)) return err('invalid_target');
+  if (!validIndex(index, ladder.length)) return err('invalid_target');
+  if (!Array.isArray(ep.rungsClaimed)) return err('invalid_target');
+  if (ep.rungsClaimed.includes(index)) return err('invalid_target');
+
+  if (now > ep.endsAt + EVENT_CLAIM_GRACE_MS) return err('cooldown_active');
+
+  // A superseded window (meta.pendingEventClaims) carries `claimableRungs`:
+  // the met-but-unclaimed set frozen at the instant it was force-ended. Its
+  // ladder must NOT be re-evaluated against live `meta`, or it keeps climbing
+  // in parallel with the new event's ladder and one grind pays out both -
+  // spec §5.3 keeps open only the rungs already qualified. A live window has
+  // no such field and is measured normally.
+  if (Array.isArray(ep.claimableRungs)) {
+    if (!ep.claimableRungs.includes(index)) return err('not_met');
+  } else if (!rungProgress(ladder[index], s.meta, ep.baseline).met) {
+    return err('not_met');
+  }
+
+  const rung = ladder[index];
+
+  const reward = rung.reward || {};
+  // Match existing reward-crediting precedent exactly: FLOPS go to BOTH
+  // run.credits and run.lifetimeRun (see claimAnomaly's credits branch and
+  // claimBlock's FLOPS bonus); tapes go to BOTH coldStorage.tapes and
+  // stats.tapesEarnedLifetime; wafers go to meta.wafers and
+  // stats.totalWafersEarned (see claimGoal).
+  if (typeof reward.wafers === 'number') {
+    s.meta.wafers += reward.wafers;
+    s.meta.stats.totalWafersEarned = (s.meta.stats.totalWafersEarned || 0) + reward.wafers;
+  }
+  if (typeof reward.tapes === 'number') {
+    s.meta.coldStorage.tapes += reward.tapes;
+    s.meta.stats.tapesEarnedLifetime = (s.meta.stats.tapesEarnedLifetime || 0) + reward.tapes;
+  }
+  if (typeof reward.flops === 'number') {
+    s.run.credits += reward.flops;
+    s.run.lifetimeRun += reward.flops;
+  }
+
+  ep.rungsClaimed.push(index);
+  // `eventId` echoes back which event's ladder this rung came from - the
+  // claim may have targeted a superseded (pendingEventClaims) window, so
+  // callers that sync per-event bookkeeping (stateService.applyActions ->
+  // updateParticipationProgress) must not assume meta.eventProgress.
+  return { ok: true, reward, rungIndex: index, eventId: activeEvent.id };
+}
+
+/**
+ * The player's own progress record for `eventId`: their live/in-grace
+ * `meta.eventProgress` if it targets that event, otherwise a superseded
+ * window still inside its claim grace (`meta.pendingEventClaims`). Returns
+ * the record itself (callers mutate `rungsClaimed` in place on the already-
+ * cloned state), or null. Both slots are searched by `.find()` on a stored
+ * `eventId` string - never by bare-key lookup.
+ */
+function progressRecordFor(meta, eventId) {
+  const ep = meta.eventProgress;
+  if (ep && ep.eventId === eventId) return ep;
+  const pending = meta.pendingEventClaims;
+  if (!Array.isArray(pending)) return null;
+  return pending.find((p) => p && p.eventId === eventId) || null;
+}
+
+// Boolean-validated client display preference; the route layer (Task 6)
+// mirrors this to the `users` column. The reducer only records it in `meta`.
+function setLeaderboardOptOut(s, action) {
+  const { optOut } = action;
+  if (typeof optOut !== 'boolean') return err('invalid_target');
+  s.meta.leaderboardOptOut = optOut;
+  return { ok: true };
+}
+
 // Object.create(null): a plain `{}` object literal inherits from
 // Object.prototype, so a lookup like HANDLERS['__proto__'] doesn't resolve
 // to `undefined` (the intended "unregistered action" signal) - it resolves
@@ -418,6 +552,7 @@ const HANDLERS = Object.assign(Object.create(null), {
   migrate, singularity, buyUpgrade, buyShardUpgrade,
   claimGoal, claimRepeatable, claimAnomaly, hardReset,
   claimBlock, claimAllBlocks, resetTrack, startJob, cancelJob, claimJob, buyTapeUpgrade,
+  claimEventRung, setLeaderboardOptOut,
 });
 
 export function applyAction(state, action, config, now, rng = Math.random) {

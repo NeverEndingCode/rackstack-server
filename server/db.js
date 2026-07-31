@@ -3,6 +3,7 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { randomUUID } from 'node:crypto';
+import { SEASONAL_EVENTS } from './data/seasonalEvents.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -44,6 +45,9 @@ function guardedAddColumn(sql) {
 
 guardedAddColumn("ALTER TABLE users ADD COLUMN roles TEXT DEFAULT '[]'");
 guardedAddColumn('ALTER TABLE users ADD COLUMN custom_username INTEGER DEFAULT 0');
+// v1.4 Live Events: the opt-out ships here (spec §5.2) and is reused by
+// v1.5's global leaderboards - it's a per-user preference, not event-scoped.
+guardedAddColumn('ALTER TABLE users ADD COLUMN leaderboard_opt_out INTEGER DEFAULT 0');
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS config (
@@ -68,6 +72,37 @@ db.exec(`
     started_at INTEGER NOT NULL,
     finished_at INTEGER,
     score INTEGER
+  );
+`);
+
+// v1.4 Live Events schema (additive). live_events holds both admin-authored
+// and seeded (server/data/seasonalEvents.js) events; event_participation
+// tracks each user's progress through one event's ladder while it's live.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS live_events (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT,
+    theme TEXT,
+    modifiers TEXT NOT NULL,
+    ladder TEXT NOT NULL,
+    status TEXT NOT NULL,
+    starts_at INTEGER,
+    ends_at INTEGER,
+    recurrence TEXT,
+    created_at INTEGER NOT NULL,
+    created_by TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS event_participation (
+    user_id TEXT NOT NULL REFERENCES users(id),
+    event_id TEXT NOT NULL REFERENCES live_events(id),
+    started_at INTEGER NOT NULL,
+    ends_at INTEGER NOT NULL,
+    rungs_claimed INTEGER NOT NULL DEFAULT 0,
+    last_progress_at INTEGER,
+    opted_out INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, event_id)
   );
 `);
 
@@ -314,4 +349,232 @@ export function putConfigRow(version, data, userId) {
 
 export function getConfigHistory() {
   return db.prepare('SELECT * FROM config_history ORDER BY rowid DESC').all();
+}
+
+// --- Live Events (v1.4) -----------------------------------------------
+//
+// Unlike getSave/getConfigRow (which hand back their JSON columns as raw
+// text and let the caller JSON.parse), the event getters below parse
+// `theme`, `modifiers`, `ladder`, and `recurrence` before returning. That's
+// a deliberate departure from the rest of this module's convention: every
+// caller of these getters (route layer, scheduler, reducer-side effective
+// config merge) needs the structured value, never the raw text, so parsing
+// once here avoids repeating (and re-risking) JSON.parse at every call site.
+
+function parseEventRow(row) {
+  if (!row) return row;
+  return {
+    ...row,
+    theme: JSON.parse(row.theme ?? 'null'),
+    modifiers: JSON.parse(row.modifiers),
+    ladder: JSON.parse(row.ladder),
+    recurrence: JSON.parse(row.recurrence ?? 'null'),
+  };
+}
+
+export function listEvents() {
+  return db.prepare('SELECT * FROM live_events ORDER BY created_at ASC').all().map(parseEventRow);
+}
+
+export function getEvent(id) {
+  return parseEventRow(db.prepare('SELECT * FROM live_events WHERE id = ?').get(id));
+}
+
+/**
+ * Returns the single event currently in status 'active', or undefined if
+ * none is. Keeping at most one event active is an application-level
+ * invariant enforced by the lifecycle/scheduler (Task 4), not a DB
+ * constraint - this just reads the first match.
+ */
+export function getActiveEvent() {
+  return parseEventRow(db.prepare("SELECT * FROM live_events WHERE status = 'active' LIMIT 1").get());
+}
+
+const putEventStmt = db.prepare(`
+  INSERT INTO live_events (id, name, description, theme, modifiers, ladder, status, starts_at, ends_at, recurrence, created_at, created_by)
+  VALUES (@id, @name, @description, @theme, @modifiers, @ladder, @status, @starts_at, @ends_at, @recurrence, @created_at, @created_by)
+  ON CONFLICT(id) DO UPDATE SET
+    name = excluded.name, description = excluded.description, theme = excluded.theme,
+    modifiers = excluded.modifiers, ladder = excluded.ladder, status = excluded.status,
+    starts_at = excluded.starts_at, ends_at = excluded.ends_at, recurrence = excluded.recurrence,
+    created_by = excluded.created_by
+`);
+
+/**
+ * Insert-or-replace for a single event, keyed on `event.id`. `theme`,
+ * `modifiers`, `ladder`, and `recurrence` are plain JS values here (arrays/
+ * objects/null); this function JSON.stringify's them for storage, mirroring
+ * putSave/putConfigRow's convention of stringifying at the write boundary.
+ * On conflict, `created_at` is intentionally left untouched (it's the
+ * original creation time, not a "last written" timestamp) - everything else
+ * is fully replaced. Accepts either camelCase (startsAt/createdAt/createdBy)
+ * or snake_case (starts_at/created_at/created_by) keys for the non-JSON
+ * fields, since callers may pass back a row previously read via getEvent
+ * (snake_case) or freshly authored data (camelCase).
+ */
+export function putEvent(event) {
+  const row = {
+    id: event.id,
+    name: event.name,
+    description: event.description ?? null,
+    theme: JSON.stringify(event.theme ?? null),
+    modifiers: JSON.stringify(event.modifiers ?? []),
+    ladder: JSON.stringify(event.ladder ?? []),
+    status: event.status ?? 'draft',
+    starts_at: event.startsAt ?? event.starts_at ?? null,
+    ends_at: event.endsAt ?? event.ends_at ?? null,
+    recurrence: JSON.stringify(event.recurrence ?? null),
+    created_at: event.createdAt ?? event.created_at ?? Date.now(),
+    created_by: event.createdBy ?? event.created_by ?? null,
+  };
+  putEventStmt.run(row);
+  return getEvent(row.id);
+}
+
+/**
+ * Updates only `status`, plus `starts_at`/`ends_at` when explicitly passed
+ * in the options object (a key present but `null` clears that column; a key
+ * simply absent leaves the existing value untouched). This lets the
+ * scheduler flip status alone (e.g. active -> ended) without needing to
+ * re-supply - or accidentally wipe - the event's window.
+ */
+export function setEventStatus(id, status, { startsAt, endsAt } = {}) {
+  const sets = ['status = @status'];
+  const params = { id, status };
+  if (startsAt !== undefined) { sets.push('starts_at = @starts_at'); params.starts_at = startsAt; }
+  if (endsAt !== undefined) { sets.push('ends_at = @ends_at'); params.ends_at = endsAt; }
+  db.prepare(`UPDATE live_events SET ${sets.join(', ')} WHERE id = @id`).run(params);
+}
+
+/**
+ * Deletes an event row outright. This module does not enforce "drafts
+ * only" - the route layer (Task 6) is responsible for rejecting deletes of
+ * scheduled/active/ended events before calling this.
+ */
+export function deleteEvent(id) {
+  db.prepare('DELETE FROM live_events WHERE id = ?').run(id);
+}
+
+const upsertParticipationStmt = db.prepare(`
+  INSERT INTO event_participation (user_id, event_id, started_at, ends_at, rungs_claimed, last_progress_at, opted_out)
+  VALUES (@user_id, @event_id, @started_at, @ends_at, @rungs_claimed, @last_progress_at, @opted_out)
+  ON CONFLICT(user_id, event_id) DO UPDATE SET
+    started_at = excluded.started_at, ends_at = excluded.ends_at,
+    rungs_claimed = excluded.rungs_claimed, last_progress_at = excluded.last_progress_at,
+    opted_out = excluded.opted_out
+`);
+
+/**
+ * Insert-or-replace for one user's participation row in one event, keyed on
+ * (user_id, event_id). Accepts camelCase or snake_case keys, same rationale
+ * as putEvent.
+ */
+export function upsertParticipation(row) {
+  const params = {
+    user_id: row.userId ?? row.user_id,
+    event_id: row.eventId ?? row.event_id,
+    started_at: row.startedAt ?? row.started_at,
+    ends_at: row.endsAt ?? row.ends_at,
+    rungs_claimed: row.rungsClaimed ?? row.rungs_claimed ?? 0,
+    last_progress_at: row.lastProgressAt ?? row.last_progress_at ?? null,
+    opted_out: (row.optedOut ?? row.opted_out) ? 1 : 0,
+  };
+  upsertParticipationStmt.run(params);
+  return getParticipation(params.user_id, params.event_id);
+}
+
+export function getParticipation(userId, eventId) {
+  return db.prepare('SELECT * FROM event_participation WHERE user_id = ? AND event_id = ?').get(userId, eventId);
+}
+
+const updateParticipationProgressStmt = db.prepare(`
+  UPDATE event_participation SET rungs_claimed = ?, last_progress_at = ?
+  WHERE user_id = ? AND event_id = ?
+`);
+
+/**
+ * Narrow, idempotent progress sync used by stateService.applyActions after a
+ * successful claimEventRung (hotfix for the "rungs_claimed frozen at 0" bug -
+ * upsertParticipation was only ever called once, at join time, from
+ * joinEventIfEligible). Deliberately NOT a call to upsertParticipation: that
+ * function's ON CONFLICT clause overwrites every column, including
+ * `opted_out` and `started_at`/`ends_at` - a caller here that doesn't have
+ * (or doesn't want to re-fetch) the user's current opt-out flag would
+ * silently un-opt-out them on every claim. A plain UPDATE touching only
+ * `rungs_claimed`/`last_progress_at` leaves every other column alone, and is
+ * a harmless no-op (0 rows affected, no throw) if the participation row
+ * doesn't exist for some reason (e.g. the event was deleted out from under
+ * an in-flight claim).
+ */
+export function updateParticipationProgress(userId, eventId, rungsClaimed, lastProgressAt) {
+  updateParticipationProgressStmt.run(rungsClaimed, lastProgressAt, userId, eventId);
+}
+
+/**
+ * All participants in an event, ranked for the coordinator view / leaderboard:
+ * most rungs claimed first, ties broken by whoever reached their current
+ * progress earliest.
+ */
+export function listParticipation(eventId) {
+  return db.prepare(
+    'SELECT * FROM event_participation WHERE event_id = ? ORDER BY rungs_claimed DESC, last_progress_at ASC',
+  ).all(eventId);
+}
+
+export function setLeaderboardOptOut(userId, optOut) {
+  db.prepare('UPDATE users SET leaderboard_opt_out = ? WHERE id = ?').run(optOut ? 1 : 0, userId);
+}
+
+/**
+ * Leaderboard rows for `eventId`, same ranking as listParticipation (most
+ * rungs claimed first, ties broken by earliest last_progress_at), but -
+ * unlike listParticipation - LEFT JOINed against `users` and filtered on
+ * the LIVE `users.leaderboard_opt_out`, not the value snapshotted into
+ * `event_participation.opted_out` at join time. That snapshot is written
+ * once by joinEventIfEligible and never updated again, so a user who opts
+ * out AFTER joining would otherwise keep appearing here (Task 6 review
+ * carry-forward, hard requirement 1). PUT /api/me/leaderboard-opt-out
+ * writes straight to `users.leaderboard_opt_out`, so this query picks up
+ * that change immediately on the very next read - no re-sync step needed.
+ * Capped at `limit` rows (default 50, per the route's leaderboard contract).
+ */
+export function listLeaderboard(eventId, limit = 50) {
+  return db.prepare(`
+    SELECT ep.user_id AS userId, u.username AS username,
+           ep.rungs_claimed AS rungsClaimed, ep.last_progress_at AS lastProgressAt
+    FROM event_participation ep
+    LEFT JOIN users u ON u.id = ep.user_id
+    WHERE ep.event_id = ? AND COALESCE(u.leaderboard_opt_out, 0) = 0
+    ORDER BY ep.rungs_claimed DESC, ep.last_progress_at ASC
+    LIMIT ?
+  `).all(eventId, limit);
+}
+
+const seedEventStmt = db.prepare(`
+  INSERT OR IGNORE INTO live_events (id, name, description, theme, modifiers, ladder, status, starts_at, ends_at, recurrence, created_at, created_by)
+  VALUES (@id, @name, @description, @theme, @modifiers, @ladder, 'draft', NULL, NULL, @recurrence, @created_at, NULL)
+`);
+
+/**
+ * Inserts each SEASONAL_EVENTS entry as status 'draft' with no window, but
+ * only when that id isn't already present - INSERT OR IGNORE makes this
+ * safe to call on every boot (idempotent) without ever clobbering an
+ * admin-edited copy of a seeded event (e.g. a coordinator tweaked
+ * summer-surge's modifiers or already scheduled it). Called from
+ * ensureConfig-adjacent boot code (Task 4).
+ */
+export function seedSeasonalEvents() {
+  const now = Date.now();
+  for (const evt of SEASONAL_EVENTS) {
+    seedEventStmt.run({
+      id: evt.id,
+      name: evt.name,
+      description: evt.description ?? null,
+      theme: JSON.stringify(evt.theme ?? null),
+      modifiers: JSON.stringify(evt.modifiers ?? []),
+      ladder: JSON.stringify(evt.ladder ?? []),
+      recurrence: JSON.stringify(evt.recurrence ?? null),
+      created_at: now,
+    });
+  }
 }

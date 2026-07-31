@@ -20,6 +20,18 @@ describe('migrateSave', () => {
     const once = migrateSave(fixture);
     expect(migrateSave(once)).toEqual(once);
   });
+  it('defaults the v1.4 fields on a pre-v1.4 save', () => {
+    const preV14 = { run: { credits: 5 }, meta: { wafers: 3, coldStorage: { tapes: 99 } } };
+    const s = migrateSave(preV14);
+    expect(s.meta.stats.tapesEarnedLifetime).toBe(0);
+    expect(s.meta.eventProgress).toBeNull();
+    expect(s.meta.coldStorage.tapes).toBe(99); // existing data preserved
+  });
+  it('preserves in-flight event progress', () => {
+    const s = initialState();
+    s.meta.eventProgress = { eventId: 'summer', joinedAt: 1, endsAt: 2, baseline: { flopsEarned: 5 }, rungsClaimed: [0, 1] };
+    expect(migrateSave(s).meta.eventProgress).toEqual(s.meta.eventProgress);
+  });
 });
 
 describe('evaluate', () => {
@@ -76,6 +88,12 @@ describe('coldStorage state wiring', () => {
     expect(s.meta.coldStorage.blocksClaimed.every((b) => b === false)).toBe(true);
     expect(s.meta.coldStorage.job).toBeNull();
     expect(s.meta.stats.blocksClaimedLifetime).toBe(0);
+  });
+
+  it('initialState has a zeroed lifetime tapes counter and no event progress', () => {
+    const s = initialState();
+    expect(s.meta.stats.tapesEarnedLifetime).toBe(0);
+    expect(s.meta.eventProgress).toBeNull();
   });
 
   it('migrateSave pads a pre-v1.3 save with a fresh coldStorage block', () => {

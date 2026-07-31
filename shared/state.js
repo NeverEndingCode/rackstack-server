@@ -31,7 +31,18 @@ export function initialState() {
       stats: {
         migrates: 0, minigamesWon: 0, singularities: 0, totalWafersEarned: 0, lifetimeFlopsAllTime: 0,
         blocksClaimedLifetime: 0, jobsCompletedLifetime: 0, deepJobsCompletedLifetime: 0,
+        tapesEarnedLifetime: 0,
       },
+      eventProgress: null,
+      // Live Events (v1.4): personal windows that were force-ended early by
+      // a NEW event going active (spec §5.2) but whose 48h claim grace
+      // (spec §5.3) hasn't run out yet. Force-ending the WINDOW is not the
+      // same as destroying the CLAIM RIGHT - eventService.joinEventIfEligible
+      // moves the superseded eventProgress here instead of dropping it, and
+      // claimEventRung (shared/reducer.js) will still pay out any rung
+      // already met at the moment it was superseded. Same record shape as
+      // eventProgress; newest first, pruned once past grace.
+      pendingEventClaims: [],
       coldStorage: {
         trackStartedAt: Date.now(),
         blocksClaimed: Array(TOTAL_BLOCKS).fill(false),
@@ -90,6 +101,13 @@ export function migrateSave(raw) {
     shardUpgrades: { ...base.meta.shardUpgrades, ...(srcMeta.shardUpgrades || {}) },
     repeatable: { ...base.meta.repeatable, ...(srcMeta.repeatable || {}) },
     stats: { ...base.meta.stats, ...(srcMeta.stats || {}) },
+    // v1.4: added after eventProgress shipped, so pre-existing saves have no
+    // such key - the base.meta spread above already defaults it, but pin the
+    // ARRAY-ness explicitly here too. Every consumer (claimEventRung,
+    // joinEventIfEligible, stateService's __pendingClaimables resolution)
+    // iterates it, and a corrupt/hand-edited save carrying a non-array must
+    // not reach them.
+    pendingEventClaims: Array.isArray(srcMeta.pendingEventClaims) ? srcMeta.pendingEventClaims : [],
   };
 
   const srcCS = srcMeta.coldStorage || {};
