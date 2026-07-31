@@ -7,7 +7,7 @@ import {
   TUNABLES, DEFAULT_CONFIG, getAtPath, setAtPath,
 } from '@shared/configSchema.js';
 import {
-  fetchConfig, putAdminConfig, fetchConfigHistory, rollbackConfig,
+  fetchAdminConfig, putAdminConfig, fetchConfigHistory, rollbackConfig,
 } from '../../api.js';
 
 // Group TUNABLES rows by their path prefix, preserving TUNABLES' own
@@ -85,9 +85,14 @@ export default function AdminBalancing({ onConfigSaved }) {
   const [historyError, setHistoryError] = useState(null);
   const [rollingBack, setRollingBack] = useState(null); // version currently rolling back
 
+  // fetchAdminConfig (GET /api/admin/config), never fetchConfig: this pane
+  // PUTs back whatever document it loaded, and GET /api/config now serves the
+  // event-overlaid GAMEPLAY config. Loading that here would bake an active
+  // event's modifiers into the stored baseline on the next save - the stored
+  // config document is never written with event modifiers merged in.
   async function loadConfig() {
     setLoadError(null);
-    const res = await fetchConfig();
+    const res = await fetchAdminConfig();
     if (!res || res.error) { setLoadError('Failed to load config.'); return; }
     setServerConfig(res);
     setRaw(rawFromData(res.data));
@@ -162,7 +167,7 @@ export default function AdminBalancing({ onConfigSaved }) {
     setHistoryError(null);
     const res = await rollbackConfig(version);
     if (res && typeof res.version === 'number') {
-      const cfg = await fetchConfig();
+      const cfg = await fetchAdminConfig();
       setRollingBack(null);
       if (cfg && !cfg.error) {
         setServerConfig(cfg);

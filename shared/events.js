@@ -130,6 +130,48 @@ export function validateLadder(ladder) {
   return errors.length ? { ok: false, errors } : { ok: true };
 }
 
+// --- Recurrence -----------------------------------------------------------
+//
+// An annual recurrence is exactly `{ month (1-indexed), day, durationDays }`.
+// Nothing else is accepted: eventService.nextOccurrence() feeds all three
+// straight into Date.UTC()/arithmetic, so a missing or non-numeric field
+// produces a NaN window, and setEventStatus happily stores it - promoting the
+// event to `scheduled` with a NULL/NaN window it can never leave (DELETE is
+// draft-only, activate returns not_scheduled). A negative durationDays is
+// just as bad in the other direction: it materializes endsAt < startsAt, so
+// every joiner gets an already-expired personal window.
+//
+// Unknown keys are rejected rather than ignored so an authoring typo
+// (`durationDay: 14`) fails loudly at write time instead of silently
+// defaulting to NaN at scheduler time.
+const RECURRENCE_KEYS = ['month', 'day', 'durationDays'];
+const RECURRENCE_RANGES = { month: [1, 12], day: [1, 31], durationDays: [1, 365] };
+
+export function validateRecurrence(recurrence) {
+  if (recurrence === null || recurrence === undefined) return { ok: true };
+  if (typeof recurrence !== 'object' || Array.isArray(recurrence)) {
+    return { ok: false, errors: ['recurrence must be an object like { month, day, durationDays }'] };
+  }
+
+  const errors = [];
+  for (const key of Object.keys(recurrence)) {
+    if (!RECURRENCE_KEYS.includes(key)) errors.push(`recurrence: unknown field ${key}`);
+  }
+  for (const key of RECURRENCE_KEYS) {
+    const v = Object.prototype.hasOwnProperty.call(recurrence, key) ? recurrence[key] : undefined;
+    const [min, max] = RECURRENCE_RANGES[key];
+    if (typeof v !== 'number' || !Number.isInteger(v) || v < min || v > max) {
+      errors.push(`recurrence.${key} must be an integer between ${min} and ${max}`);
+    }
+  }
+  return errors.length ? { ok: false, errors } : { ok: true };
+}
+
+/** Boolean form of validateRecurrence, for read paths (the scheduler). */
+export function isValidRecurrence(recurrence) {
+  return recurrence !== null && recurrence !== undefined && validateRecurrence(recurrence).ok;
+}
+
 export function rungProgress(rung, meta, baseline) {
   const value = eventMetricValue(rung.metric, meta) ?? 0;
   const hasBaseline = baseline && typeof rung.metric === 'string'

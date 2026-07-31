@@ -14,12 +14,18 @@ import {
   listEvents, getEvent, getActiveEvent, putEvent, setEventStatus, deleteEvent,
   listParticipation, listLeaderboard, setLeaderboardOptOut,
 } from '../db.js';
-import { getConfig, updateConfig, rollbackConfig, getHistory, invalidateEffectiveConfig } from '../configService.js';
-import { activateEvent, endEvent } from '../eventService.js';
+import {
+  getConfig, getEffectiveConfig, updateConfig, rollbackConfig, getHistory, invalidateEffectiveConfig,
+} from '../configService.js';
+import {
+  activateEvent, endEvent, resolvePlayerEvents, inClaimGrace,
+} from '../eventService.js';
 import { loadAndEvaluate, loadEvaluateAndSchedule, applyActions } from '../stateService.js';
 import { minigameWafers } from '../../shared/gameRules.js';
 import { USERNAME_RE } from '../../shared/validation.js';
-import { validateModifiers, validateLadder, rungProgress } from '../../shared/events.js';
+import {
+  validateModifiers, validateLadder, validateRecurrence, rungProgress,
+} from '../../shared/events.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const router = express.Router();
@@ -86,6 +92,8 @@ router.get('/api/state', requireAuth, (req, res) => {
   const now = Date.now();
   const { state, gained, activeEvent } = loadAndEvaluate(req.user.sub, now);
   const { version } = getConfig();
+  const { current } = resolvePlayerEvents(state);
+  const claimable = current && inClaimGrace(current.progress, now) ? current.event : null;
   res.json({
     run: state.run,
     meta: state.meta,
@@ -93,6 +101,23 @@ router.get('/api/state', requireAuth, (req, res) => {
     offlineGain: gained,
     configVersion: version,
     serverTime: now,
+    // The event THIS player can still see/claim against, which is not the
+    // same thing as `activeEvent` below: `activeEvent` is the globally
+    // active row and goes null the instant an event ends, while a player's
+    // own 48h claim grace (spec §5.3) can outlive that by two days.
+    // Resolved from their own meta.eventProgress, so the client can seed its
+    // ladder from a page load made entirely within grace - previously the
+    // ladder existed only in memory and a single reload stranded every
+    // outstanding Claim button.
+    claimableEvent: claimable ? {
+      id: claimable.id,
+      name: claimable.name,
+      description: claimable.description,
+      theme: claimable.theme,
+      ladder: claimable.ladder,
+      startsAt: claimable.starts_at,
+      endsAt: claimable.ends_at,
+    } : null,
     // Live Events (v1.4): a client-friendly view of the currently active
     // event (null when none) and this user's own progress against it -
     // eventProgress is also nested at state.meta.eventProgress (it's part
@@ -126,7 +151,51 @@ router.post('/api/actions', requireAuth, (req, res) => {
 // Config (tunables) - read for everyone signed in, write for admins
 // ---------------------------------------------------------------------------
 
+// The GAMEPLAY config read. Serves getEffectiveConfig() - the admin baseline
+// with the currently active event's modifiers merged on top - because that is
+// what the server itself evaluates with (stateService.loadEvaluateAndSchedule).
+// Serving the un-overlaid baseline here meant the client ran the entire game
+// on different numbers than the server: with a gridMult:3 event live the
+// headline rate stayed at the baseline and every reconcile snapped the
+// counter forward, and - far worse - Summer Surge's shipped
+// `heat.capacity: 4000` modifier made the client cross ITS 2000-heat cap and
+// pop the "Overheated!" meltdown modal, freezing the overclock lane locally,
+// while the server considered the rack perfectly healthy.
+//
+// Admin tooling must NOT read this route: AdminBalancing PUTs back whatever
+// document it loaded, so an admin save while an event was active would bake
+// that event's modifiers into the STORED config permanently. GET
+// /api/admin/config below is the baseline read, and is what the Balancing tab
+// loads and writes against.
+//
+// `activeEventId` is the missing half of the client's cache key: the config
+// VERSION does not change when an event flips active/ended, so a client
+// watching `version` alone would never notice the overlay appearing or
+// disappearing underneath it.
 router.get('/api/config', requireAuth, (req, res) => {
+  const { version, data, eventId } = getEffectiveConfig();
+  res.json({ version, activeEventId: eventId, data: stripRuntimeFields(data) });
+});
+
+// Runtime-only fields (`__activeEvent`, and anything else prefixed `__`) are
+// attached to the effective config for the reducer's benefit and are not part
+// of the tunables schema - validateConfig() rejects them, and the client has
+// no use for them. Strips them onto a shallow copy; the source object is
+// configService's shared cache and must never be mutated here.
+function stripRuntimeFields(data) {
+  const out = {};
+  for (const key of Object.keys(data)) {
+    if (key.startsWith('__')) continue;
+    out[key] = data[key];
+  }
+  return out;
+}
+
+// The admin BASELINE read: getConfig(), never the event overlay. This is the
+// document the Balancing tab edits and PUTs back to /api/admin/config, so it
+// has to be the stored, admin-authored one - the stored config document is
+// never written with event modifiers merged in.
+router.get('/api/admin/config', requireAuth, requireRole('admin'), (req, res) => {
   const { version, data } = getConfig();
   res.json({ version, data });
 });
@@ -304,41 +373,63 @@ router.post('/api/minigame/finish', requireAuth, (req, res) => {
 // Reuses loadAndEvaluate - same join-on-login path GET /api/state drives -
 // so hitting this route on its own is enough to join a freshly-activated
 // event, exactly like GET /api/state.
+function eventView(event) {
+  return {
+    id: event.id,
+    name: event.name,
+    description: event.description,
+    theme: event.theme,
+    ladder: event.ladder,
+  };
+}
+
+function progressView(event, progress, meta) {
+  const ladder = Array.isArray(event.ladder) ? event.ladder : [];
+  return {
+    joinedAt: progress.joinedAt,
+    endsAt: progress.endsAt,
+    rungsClaimed: progress.rungsClaimed,
+    rungs: ladder.map((rung, i) => ({
+      ...rungProgress(rung, meta, progress.baseline),
+      claimed: progress.rungsClaimed.includes(i),
+    })),
+  };
+}
+
 router.get('/api/event', requireAuth, (req, res) => {
   const now = Date.now();
-  const { state, activeEvent } = loadAndEvaluate(req.user.sub, now);
+  const { state } = loadAndEvaluate(req.user.sub, now);
 
-  if (!activeEvent) {
-    return res.json({ event: null, progress: null, leaderboard: [] });
+  // Resolved from the PLAYER's own save, not from getActiveEvent(). Gating
+  // this route on "is an event globally active" is what made spec §5.3's 48h
+  // claim grace unreachable: the response flipped to event:null the instant
+  // the event ended globally, and since the client's only copy of the ladder
+  // was in-memory React state seeded at boot, a player who closed the tab and
+  // reopened it inside their grace window got no ladder and no Claim buttons
+  // at all - their rewards expired unclaimable - even though posting the
+  // identical claim straight to /api/actions still succeeded.
+  const { current, pending } = resolvePlayerEvents(state);
+  const live = current && inClaimGrace(current.progress, now) ? current : null;
+
+  // Windows force-ended early by a newer event activating, still inside
+  // their own grace (spec §5.2 ends the window, §5.3 keeps the claim open).
+  const pendingClaims = pending
+    .filter((p) => inClaimGrace(p.progress, now))
+    .map((p) => ({ event: eventView(p.event), progress: progressView(p.event, p.progress, state.meta) }));
+
+  if (!live) {
+    return res.json({ event: null, progress: null, leaderboard: [], pendingClaims });
   }
 
-  const eventProgress = state.meta.eventProgress;
-  const progress = eventProgress && eventProgress.eventId === activeEvent.id
-    ? {
-      joinedAt: eventProgress.joinedAt,
-      endsAt: eventProgress.endsAt,
-      rungsClaimed: eventProgress.rungsClaimed,
-      rungs: activeEvent.ladder.map((rung, i) => ({
-        ...rungProgress(rung, state.meta, eventProgress.baseline),
-        claimed: eventProgress.rungsClaimed.includes(i),
-      })),
-    }
-    : null;
-
   res.json({
-    event: {
-      id: activeEvent.id,
-      name: activeEvent.name,
-      description: activeEvent.description,
-      theme: activeEvent.theme,
-      ladder: activeEvent.ladder,
-    },
-    progress,
+    event: eventView(live.event),
+    progress: progressView(live.event, live.progress, state.meta),
     // Hard requirement 1 (Task 4 review carry-forward): listLeaderboard
     // live-joins users.leaderboard_opt_out rather than trusting
     // event_participation.opted_out's join-time snapshot, so a user who
     // opts out after joining disappears from this list immediately.
-    leaderboard: listLeaderboard(activeEvent.id, 50),
+    leaderboard: listLeaderboard(live.event.id, 50),
+    pendingClaims,
   });
 });
 
@@ -385,6 +476,14 @@ router.post('/api/admin/events', requireAuth, requireRole('event_coordinator'), 
   if (!modResult.ok) return res.status(400).json({ errors: modResult.errors });
   const ladderResult = validateLadder(ladder);
   if (!ladderResult.ok) return res.status(400).json({ errors: ladderResult.errors });
+  // An unvalidated recurrence is not merely cosmetic: `{}` or `"weekly"`
+  // makes the scheduler materialize a NaN window, promoting the event to
+  // 'scheduled' with no usable window and no way out (DELETE is draft-only,
+  // activate answers not_scheduled), and `durationDays: -5` materializes
+  // endsAt < startsAt, handing every joiner an instantly-expired personal
+  // window. Both are permanent, both are silent.
+  const recurrenceResult = validateRecurrence(recurrence);
+  if (!recurrenceResult.ok) return res.status(400).json({ errors: recurrenceResult.errors });
 
   const event = putEvent({
     id,

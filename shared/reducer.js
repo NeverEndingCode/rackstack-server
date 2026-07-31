@@ -433,14 +433,38 @@ export const EVENT_CLAIM_GRACE_MS = 48 * 3600 * 1000;
 // cache - so one user's claimable event can never leak into another user's
 // request. If no event is active AND the player has no lingering
 // eventProgress, config.__claimableEvent is simply absent.
+//
+// `config.__pendingClaimables` (same `{ id, ladder, endsAt }` shape, an
+// array) carries the ladders for any personal windows that were force-ended
+// early by a NEWER event going active - spec §5.2 force-ends the WINDOW, but
+// §5.3's 48h claim grace still applies, so those rungs stay claimable from
+// `state.meta.pendingEventClaims`. `action.eventId` selects which of the two
+// slots a claim targets; omitting it keeps the pre-existing behaviour (the
+// current claimable event), so a direct API caller that only sends
+// `{ type, index }` is unaffected.
 function claimEventRung(s, action, config, now) {
-  const activeEvent = config.__claimableEvent;
-  const ep = s.meta.eventProgress;
-  if (!ep || !activeEvent || ep.eventId !== activeEvent.id) return err('invalid_target');
+  const { index, eventId } = action;
 
-  const { index } = action;
+  const claimables = [];
+  if (config.__claimableEvent) claimables.push(config.__claimableEvent);
+  if (Array.isArray(config.__pendingClaimables)) {
+    for (const c of config.__pendingClaimables) { if (c) claimables.push(c); }
+  }
+
+  // User-supplied id: resolved by .find() over the resolved list, never as a
+  // bare object key.
+  const activeEvent = eventId === undefined || eventId === null
+    ? claimables[0]
+    : claimables.find((c) => c.id === eventId);
+  if (!activeEvent) return err('invalid_target');
+
+  const ep = progressRecordFor(s.meta, activeEvent.id);
+  if (!ep) return err('invalid_target');
+
   const ladder = activeEvent.ladder;
+  if (!Array.isArray(ladder)) return err('invalid_target');
   if (!validIndex(index, ladder.length)) return err('invalid_target');
+  if (!Array.isArray(ep.rungsClaimed)) return err('invalid_target');
   if (ep.rungsClaimed.includes(index)) return err('invalid_target');
 
   if (now > ep.endsAt + EVENT_CLAIM_GRACE_MS) return err('cooldown_active');
@@ -469,7 +493,27 @@ function claimEventRung(s, action, config, now) {
   }
 
   ep.rungsClaimed.push(index);
-  return { ok: true, reward, rungIndex: index };
+  // `eventId` echoes back which event's ladder this rung came from - the
+  // claim may have targeted a superseded (pendingEventClaims) window, so
+  // callers that sync per-event bookkeeping (stateService.applyActions ->
+  // updateParticipationProgress) must not assume meta.eventProgress.
+  return { ok: true, reward, rungIndex: index, eventId: activeEvent.id };
+}
+
+/**
+ * The player's own progress record for `eventId`: their live/in-grace
+ * `meta.eventProgress` if it targets that event, otherwise a superseded
+ * window still inside its claim grace (`meta.pendingEventClaims`). Returns
+ * the record itself (callers mutate `rungsClaimed` in place on the already-
+ * cloned state), or null. Both slots are searched by `.find()` on a stored
+ * `eventId` string - never by bare-key lookup.
+ */
+function progressRecordFor(meta, eventId) {
+  const ep = meta.eventProgress;
+  if (ep && ep.eventId === eventId) return ep;
+  const pending = meta.pendingEventClaims;
+  if (!Array.isArray(pending)) return null;
+  return pending.find((p) => p && p.eventId === eventId) || null;
 }
 
 // Boolean-validated client display preference; the route layer (Task 6)

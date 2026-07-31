@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 
-import { TICK_MS, ANOMALY_LABELS, EVENT_REFRESH_THROTTLE_MS } from './game/constants.js';
+import {
+  TICK_MS, ANOMALY_LABELS, EVENT_REFRESH_THROTTLE_MS, CONFIG_POLL_MS,
+} from './game/constants.js';
 import { cardBorder, textDim, teal, amber, danger, inset } from './game/theme.js';
 import { TABS } from './game/data/tabs.js';
 import {
@@ -61,8 +63,23 @@ import ProfileView from './game/components/profile/ProfileView.jsx';
 function isEventLive(eventProgress, now) {
   return !!(eventProgress && now <= eventProgress.endsAt);
 }
-function isEventTabVisible(eventProgress, now) {
-  return !!(eventProgress && now <= eventProgress.endsAt + EVENT_CLAIM_GRACE_MS);
+function isEventTabVisible(eventProgress, pendingClaims, now) {
+  if (eventProgress && now <= eventProgress.endsAt + EVENT_CLAIM_GRACE_MS) return true;
+  // A window force-ended early by a newer event activating keeps its own 48h
+  // claim grace (spec §5.3), so the tab has to stay reachable for it even
+  // when the player has no current eventProgress at all.
+  return Array.isArray(pendingClaims) && pendingClaims.length > 0;
+}
+
+// Identity of the EFFECTIVE gameplay config. The stored config's `version`
+// alone is not enough: activating or ending a live event changes the numbers
+// the server evaluates with (its modifiers are overlaid on the baseline)
+// without ever bumping that version, so a client keyed on version alone would
+// keep predicting production, heat and costs from the wrong document
+// indefinitely.
+function configKeyOf(configRes) {
+  if (!configRes) return null;
+  return `${configRes.version}:${configRes.activeEventId || ''}`;
 }
 
 export default function RackStack({ user }) {
@@ -87,6 +104,11 @@ export default function RackStack({ user }) {
   // (see refreshEventData).
   const [activeEvent, setActiveEvent] = useState(null);
   const [eventLeaderboard, setEventLeaderboard] = useState([]);
+  // Windows force-ended early by a newer event activating, still inside their
+  // own 48h claim grace: [{ event, progress }] straight from GET /api/event.
+  // Unlike `activeEvent` these carry their own progress snapshot, because the
+  // canonical meta.eventProgress has already moved on to the newer event.
+  const [pendingClaims, setPendingClaims] = useState([]);
   // Local mirror of the display name so a successful username change (see
   // ProfileSettings) reflects in the header/profile immediately, without a
   // page reload or waiting on the next /api/me fetch (App.jsx's `user`
@@ -102,6 +124,10 @@ export default function RackStack({ user }) {
   // value even within the same render pass, rather than lagging a render
   // behind the way a plain useEffect-synced ref would.
   const configRef = useRef(null);
+  // configKeyOf() of whatever configRef currently holds - see the poll in the
+  // heartbeat effect below.
+  const configKeyRef = useRef(null);
+  const lastConfigPollAtRef = useRef(0);
   const stateRef = useRef(null);
   const queueRef = useRef(null);
   const lastTickAtRef = useRef(Date.now());
@@ -114,6 +140,11 @@ export default function RackStack({ user }) {
   // matching block in handleReconcile for why (the server rolls its own
   // reward independently of the client's optimistic prediction).
   const pendingAnomalyIdsRef = useRef(new Set());
+  // _cids of in-flight claimEventRung actions still waiting on the server's
+  // reconciled result for their reward modal - same mechanism as
+  // pendingAnomalyIdsRef above; see claimEventRung() for why the optimistic
+  // local result can't be used.
+  const pendingRungClaimIdsRef = useRef(new Set());
   // Throttle gate for refreshEventData() (see its doc comment below) -
   // last Date.now() a GET /api/event fetch was kicked off from
   // handleReconcile, so a burst of reconciles (e.g. rapid IMMEDIATE claims)
@@ -197,6 +228,13 @@ export default function RackStack({ user }) {
       if (result.ok && result.reward) openAnomalyRewardModal(result.reward);
     }
 
+    let rungClaimed = false;
+    for (const result of results || []) {
+      if (!pendingRungClaimIdsRef.current.has(result._cid)) continue;
+      pendingRungClaimIdsRef.current.delete(result._cid);
+      if (result.ok) { openRungRewardModal(result.reward); rungClaimed = true; }
+    }
+
     const now = Date.now();
     let next = serverState;
     for (const action of pendingActionsRef.current) {
@@ -220,28 +258,47 @@ export default function RackStack({ user }) {
     // ever touched a Live Event" (either a cached identity already loaded,
     // or a live/in-grace eventProgress just landed in `next`) so a player
     // who's never interacted with one never triggers an extra request here.
-    if ((activeEvent || next.meta.eventProgress)
-      && now - lastEventFetchAtRef.current > EVENT_REFRESH_THROTTLE_MS) {
+    // A confirmed rung claim bypasses the throttle outright: that's exactly
+    // the moment a player wants to watch their own leaderboard standing move
+    // (same rationale as toggleLeaderboardOptOut).
+    if (rungClaimed
+      || ((activeEvent || next.meta.eventProgress)
+        && now - lastEventFetchAtRef.current > EVENT_REFRESH_THROTTLE_MS)) {
       lastEventFetchAtRef.current = now;
       refreshEventData();
     }
   }
 
-  // GET /api/event -> the active event's identity/ladder + the (opt-out-
-  // filtered, capped-at-50) leaderboard. Only ever applies a NON-null
-  // `event` onto `activeEvent` - the route reports `event: null` the moment
-  // the event's global status flips to 'ended' (server/routes/api.js has no
-  // "recently ended" notion), but a player's own claim window can still be
-  // open for up to EVENT_CLAIM_GRACE_MS past that, and losing the ladder
-  // definition mid-grace would strand their Claim buttons with nothing to
-  // render against. The leaderboard is applied unconditionally either way -
-  // an empty list during grace (once the server stops returning one) reads
-  // as "no leaderboard data", which is honest.
+  // GET /api/event -> the player's own live-or-in-grace event identity/ladder
+  // + the (opt-out-filtered, capped-at-50) leaderboard + any force-ended-but-
+  // still-claimable windows. The route resolves `event` from the caller's own
+  // eventProgress rather than from whatever is globally active, so it stays
+  // populated through the whole 48h claim grace and a null here genuinely
+  // means "this player has no window at all" - hence applying it
+  // unconditionally. (It used to be applied only when non-null, because the
+  // route dropped the event the instant its global status left 'active'; the
+  // in-memory copy that workaround preserved died on the next page reload,
+  // which is exactly how the grace period became unreachable through the UI.)
   async function refreshEventData() {
     const res = await fetchEvent();
     if (!res || res.error) return;
-    if (res.event) setActiveEvent(res.event);
+    setActiveEvent(res.event || null);
     setEventLeaderboard(res.leaderboard || []);
+    setPendingClaims(Array.isArray(res.pendingClaims) ? res.pendingClaims : []);
+  }
+
+  // GET /api/config -> the EFFECTIVE (event-overlaid) gameplay config, i.e.
+  // the exact document the server evaluates with. Applied only when its
+  // identity actually changed, so the 10s poll below is a no-op in the
+  // overwhelmingly common case.
+  async function refreshConfig() {
+    const res = await fetchConfig();
+    if (!res || res.error) return;
+    const key = configKeyOf(res);
+    if (key === configKeyRef.current) return;
+    configKeyRef.current = key;
+    configRef.current = res.data;
+    setConfig(res);
   }
 
   // If the event tab is open when the personal window + grace period both
@@ -250,10 +307,10 @@ export default function RackStack({ user }) {
   // rendering entirely (see the TABS filtering in the render body below).
   useEffect(() => {
     if (!state) return;
-    if (activeTab === 'event' && !isEventTabVisible(state.meta.eventProgress, Date.now())) {
+    if (activeTab === 'event' && !isEventTabVisible(state.meta.eventProgress, pendingClaims, Date.now())) {
       setActiveTab('racks');
     }
-  }, [state, activeTab]);
+  }, [state, activeTab, pendingClaims]);
 
   const REJECT_MESSAGES = {
     insufficient_credits: 'Not enough FLOPS',
@@ -310,7 +367,10 @@ export default function RackStack({ user }) {
     // will never reconcile normally, so stop waiting on it for the reward
     // modal too (rather than leaking an entry in pendingAnomalyIdsRef that
     // never gets cleared).
-    for (const id of ids) pendingAnomalyIdsRef.current.delete(id);
+    for (const id of ids) {
+      pendingAnomalyIdsRef.current.delete(id);
+      pendingRungClaimIdsRef.current.delete(id);
+    }
   }
 
   if (queueRef.current === null) {
@@ -343,6 +403,7 @@ export default function RackStack({ user }) {
         return;
       }
       configRef.current = configRes.data;
+      configKeyRef.current = configKeyOf(configRes);
       setConfig(configRes);
       const initial = { run: stateRes.run, meta: stateRes.meta, server: stateRes.server };
       stateRef.current = initial;
@@ -353,14 +414,20 @@ export default function RackStack({ user }) {
       } else if (initial.server.overheated) {
         setModal({ type: 'meltdown' });
       }
-      // Live Events (v1.4): GET /api/state already carries the active
-      // event's identity (Task 4) - seed activeEvent from it directly so
-      // the banner/tab don't have to wait on a second round trip. If
-      // there's an event (or a lingering grace-period eventProgress) to
-      // show, also kick a refreshEventData() for the leaderboard, which
+      // Live Events (v1.4): GET /api/state already carries this player's
+      // claimable event identity - seed activeEvent from it directly so the
+      // banner/tab don't have to wait on a second round trip. Prefer
+      // `claimableEvent` (resolved from THIS player's own eventProgress, so
+      // it survives the event's global end for the full 48h claim grace)
+      // over `activeEvent` (the globally active row, null the instant an
+      // event ends); during a live event they're the same row. Seeding from
+      // `activeEvent` alone is what made the grace period unreachable after
+      // any page reload. If there's anything to show, also kick a
+      // refreshEventData() for the leaderboard and pending claims, which
       // /api/state doesn't carry.
-      if (stateRes.activeEvent) setActiveEvent(stateRes.activeEvent);
-      if (stateRes.activeEvent || stateRes.eventProgress) {
+      const bootEvent = stateRes.claimableEvent || stateRes.activeEvent;
+      if (bootEvent) setActiveEvent(bootEvent);
+      if (bootEvent || stateRes.eventProgress) {
         lastEventFetchAtRef.current = Date.now();
         refreshEventData();
       }
@@ -403,6 +470,22 @@ export default function RackStack({ user }) {
     const iv = setInterval(() => {
       setClockTick((t) => t + 1);
 
+      // Effective-config poll. The client predicts production/heat locally
+      // every 250ms from `configRef.current`, and an event
+      // activating/ending swaps the document the SERVER evaluates with
+      // without bumping its `version` - so there is no save-driven refetch
+      // path (onConfigSaved) that covers it, and no reconcile to piggyback
+      // on for a player who is idle but has the tab open. Left unrefreshed,
+      // Summer Surge's shipped `heat.capacity: 4000` makes this client cross
+      // ITS stale 2000 cap and pop a false meltdown modal. Cheap: GET
+      // /api/config is a cached in-memory document, and refreshConfig()
+      // no-ops unless (version, activeEventId) actually changed.
+      const now = Date.now();
+      if (now - lastConfigPollAtRef.current > CONFIG_POLL_MS) {
+        lastConfigPollAtRef.current = now;
+        refreshConfig();
+      }
+
       const mg = minigameRef.current;
       if (mg && mg.timeLeft > 0 && (mg.type === 'rush' || mg.type === 'debug' || mg.type === 'match' || mg.type === 'balance')) {
         const newTimeLeft = mg.timeLeft - 1;
@@ -444,21 +527,31 @@ export default function RackStack({ user }) {
   // right at the edge of the 48h grace period, not just for snappy feedback.
   // Reuses the 'eventClaim' modal type claimAnomaly already opened below -
   // both are a one-line "here's what you got" toast.
-  function claimEventRung(index) {
-    const result = dispatchAction({ type: 'claimEventRung', index });
-    if (result.ok) {
-      const reward = result.reward || {};
-      const parts = [];
-      if (reward.wafers) parts.push(`+${Math.round(reward.wafers)} wafers`);
-      if (reward.tapes) parts.push(`+${Math.round(reward.tapes)} tapes`);
-      if (reward.flops) parts.push(`+${Math.round(reward.flops)} FLOPS`);
-      setModal({ type: 'eventClaim', text: parts.join(' · ') || 'Reward claimed' });
-      // Same rationale as toggleLeaderboardOptOut below: a claim is exactly
-      // the moment a player wants to see their own leaderboard standing
-      // move, not wait out the reconcile-piggyback throttle.
-      lastEventFetchAtRef.current = Date.now();
-      refreshEventData();
-    }
+  // Confirmed from the SERVER's reconciled result, correlated by _cid -
+  // exactly the pattern claimAnomaly/openAnomalyRewardModal already use, and
+  // for a related reason: the optimistic local apply cannot produce a
+  // trustworthy result here. claimEventRung's ladder arrives via
+  // `config.__claimableEvent`, a server-only per-request field that is never
+  // part of the config the client holds, so the local applyAction ALWAYS
+  // returned `{ok:false, error:'invalid_target'}` and this `if (result.ok)`
+  // branch never once fired - no reward modal, no leaderboard refresh, while
+  // every other claim in the game (claimGoal/claimBlock/claimAnomaly/
+  // claimJob) confirms itself. The reward did still land via reconcile, so
+  // nothing was lost; it just silently looked like nothing happened.
+  // Shipping __claimableEvent to the client would duplicate the grace-window
+  // eligibility rules client-side and is deliberately not done.
+  function claimEventRung(index, eventId) {
+    const result = dispatchAction({ type: 'claimEventRung', index, eventId });
+    pendingRungClaimIdsRef.current.add(result._cid);
+  }
+
+  function openRungRewardModal(reward) {
+    const r = reward || {};
+    const parts = [];
+    if (r.wafers) parts.push(`+${Math.round(r.wafers)} wafers`);
+    if (r.tapes) parts.push(`+${Math.round(r.tapes)} tapes`);
+    if (r.flops) parts.push(`+${Math.round(r.flops)} FLOPS`);
+    setModal({ type: 'eventClaim', text: parts.join(' · ') || 'Reward claimed' });
   }
 
   // The opt-out toggle needs BOTH calls, not either alone: the route (PUT
@@ -524,9 +617,13 @@ export default function RackStack({ user }) {
   // the new tunables immediately rather than waiting for a reload.
   // configRef is updated synchronously (same pattern as the boot effect)
   // since ticks/dispatches read it mid-render-cycle.
-  function handleConfigSaved(newConfig) {
-    configRef.current = newConfig.data;
-    setConfig(newConfig);
+  // AdminBalancing hands us the BASELINE document it just saved (it reads and
+  // writes GET/PUT /api/admin/config). What the game must actually run on is
+  // the EFFECTIVE config - that baseline with any active event's modifiers
+  // merged on top - so re-fetch rather than adopting the argument, or a save
+  // made during a live event would silently drop the overlay client-side.
+  function handleConfigSaved() {
+    refreshConfig();
   }
   function claimGoal(g) {
     const result = dispatchAction({ type: 'claimGoal', id: g.id });
@@ -815,8 +912,8 @@ export default function RackStack({ user }) {
   // from that check).
   const eventProgress = state.meta.eventProgress;
   const eventLive = isEventLive(eventProgress, now);
-  const eventTabVisible = isEventTabVisible(eventProgress, now);
-  const eventGraceActive = eventTabVisible && !eventLive;
+  const eventTabVisible = isEventTabVisible(eventProgress, pendingClaims, now);
+  const eventGraceActive = !!eventProgress && !eventLive;
   // Unlike grid/overclock/singularity/coldstorage (always rendered, just
   // disabled until unlocked - see TabBar.jsx), the event tab is absent from
   // the bar entirely outside its window: "no event running" isn't a
@@ -922,6 +1019,7 @@ export default function RackStack({ user }) {
           eventProgress={eventProgress}
           meta={state.meta}
           leaderboard={eventLeaderboard}
+          pendingClaims={pendingClaims}
           userId={user && user.id}
           optOut={state.meta.leaderboardOptOut}
           graceActive={eventGraceActive}

@@ -31,6 +31,78 @@ function rewardText(reward) {
   return parts.join(' · ') || 'reward';
 }
 
+// One ladder's worth of rung cards. `rows` are pre-resolved
+// {reward, current, target, met, claimed} - the live event resolves them
+// locally through rungProgress (the exact function the server runs), while a
+// pending (force-ended, still-claimable) window uses the server's own
+// snapshot from GET /api/event, since the client has no baseline for it.
+function RungList({ rows, accent, onClaim }) {
+  return (
+    <div className="flex flex-col gap-2">
+      {rows.map((row, i) => {
+        const claimable = row.met && !row.claimed;
+        const pct = row.target > 0 ? Math.min(100, (row.current / row.target) * 100) : 0;
+        return (
+          <div
+            key={i}
+            className="rounded-xl p-3"
+            style={{ background: cardBg, border: `1px solid ${row.claimed ? teal : cardBorder}`, opacity: row.claimed ? 0.6 : 1 }}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-sm font-semibold" style={{ color: textMain }}>
+                {row.claimed ? '✓ ' : ''}{rewardText(row.reward)}
+              </div>
+              {claimable && (
+                <button
+                  onClick={() => onClaim(i)}
+                  className="rounded-lg px-3 py-1.5 text-xs font-semibold shrink-0"
+                  style={{ background: amber, color: '#0E141B' }}
+                >
+                  Claim
+                </button>
+              )}
+            </div>
+            <div className="mt-1.5 h-1.5 rounded" style={{ background: inset }}>
+              <div className="h-1.5 rounded" style={{ background: row.claimed ? teal : accent, width: `${pct}%` }} />
+            </div>
+            <div className="mt-1 text-xs font-mono" style={{ color: textDim }}>
+              {fmt(row.current)}/{fmt(row.target)}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// A window force-ended early by a NEWER event going active. Spec §5.2
+// force-ends the lingering personal window, but §5.3 keeps its claims open
+// for 48h - so these render as their own card below the current event's
+// ladder rather than being silently dropped (which is what used to happen:
+// the superseded eventProgress was nulled outright and every met-but-
+// unclaimed rung was destroyed permanently).
+function PendingClaimCard({ entry, onClaim }) {
+  const { event, progress } = entry;
+  const accent = (event.theme && event.theme.color) || violet;
+  const rows = (progress.rungs || []).map((r, i) => ({
+    ...r, reward: (event.ladder[i] || {}).reward,
+  }));
+  const graceMsLeft = Math.max(0, (progress.endsAt + EVENT_CLAIM_GRACE_MS) - Date.now());
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="rounded-xl p-3" style={{ background: cardBg, border: `1px solid ${amber}` }}>
+        <div className="text-sm font-semibold" style={{ color: textMain }}>
+          Unclaimed from {event.name}
+        </div>
+        <div className="mt-1 text-xs font-mono" style={{ color: amber }}>
+          This event was superseded — claim within {fmtCountdown(graceMsLeft)}
+        </div>
+      </div>
+      <RungList rows={rows} accent={accent} onClaim={(i) => onClaim(i, event.id)} />
+    </div>
+  );
+}
+
 // event: {id, name, description, theme: {icon,color}|null, ladder} - the
 // currently (or, during the 48h post-end grace window, most-recently)
 // active event's identity. RackStack.jsx caches this itself (see its
@@ -49,14 +121,23 @@ function rewardText(reward) {
 // (<=50) array RackStack fetches opportunistically (GET /api/event) - not
 // derivable from local state the way the ladder progress is.
 export default function EventPanel({
-  event, eventProgress, meta, leaderboard, userId, optOut, graceActive, onClaimRung, onToggleOptOut,
+  event, eventProgress, meta, leaderboard, pendingClaims = [],
+  userId, optOut, graceActive, onClaimRung, onToggleOptOut,
 }) {
-  if (!event || !eventProgress) {
+  const pending = Array.isArray(pendingClaims) ? pendingClaims : [];
+  const hasCurrent = !!(event && eventProgress);
+
+  if (!hasCurrent) {
     return (
-      <div className="max-w-2xl mx-auto px-4 py-4">
-        <div className="rounded-xl p-4 text-sm" style={{ background: cardBg, border: `1px solid ${cardBorder}`, color: textDim }}>
-          Event details aren&rsquo;t available right now. If you still have rewards to claim, try reopening this tab in a moment.
-        </div>
+      <div className="max-w-2xl mx-auto px-4 py-4 flex flex-col gap-3">
+        {pending.map((entry) => (
+          <PendingClaimCard key={entry.event.id} entry={entry} onClaim={onClaimRung} />
+        ))}
+        {pending.length === 0 && (
+          <div className="rounded-xl p-4 text-sm" style={{ background: cardBg, border: `1px solid ${cardBorder}`, color: textDim }}>
+            Event details aren&rsquo;t available right now. If you still have rewards to claim, try reopening this tab in a moment.
+          </div>
+        )}
       </div>
     );
   }
@@ -86,42 +167,19 @@ export default function EventPanel({
         </div>
       </div>
 
-      <div className="flex flex-col gap-2">
-        {event.ladder.map((rung, i) => {
-          const progress = rungProgress(rung, meta, eventProgress.baseline);
-          const claimed = eventProgress.rungsClaimed.includes(i);
-          const claimable = progress.met && !claimed;
-          const pct = progress.target > 0 ? Math.min(100, (progress.current / progress.target) * 100) : 0;
-          return (
-            <div
-              key={i}
-              className="rounded-xl p-3"
-              style={{ background: cardBg, border: `1px solid ${claimed ? teal : cardBorder}`, opacity: claimed ? 0.6 : 1 }}
-            >
-              <div className="flex items-center justify-between gap-2">
-                <div className="text-sm font-semibold" style={{ color: textMain }}>
-                  {claimed ? '✓ ' : ''}{rewardText(rung.reward)}
-                </div>
-                {claimable && (
-                  <button
-                    onClick={() => onClaimRung(i)}
-                    className="rounded-lg px-3 py-1.5 text-xs font-semibold shrink-0"
-                    style={{ background: amber, color: '#0E141B' }}
-                  >
-                    Claim
-                  </button>
-                )}
-              </div>
-              <div className="mt-1.5 h-1.5 rounded" style={{ background: inset }}>
-                <div className="h-1.5 rounded" style={{ background: claimed ? teal : accent, width: `${pct}%` }} />
-              </div>
-              <div className="mt-1 text-xs font-mono" style={{ color: textDim }}>
-                {fmt(progress.current)}/{fmt(progress.target)}
-              </div>
-            </div>
-          );
-        })}
-      </div>
+      <RungList
+        rows={event.ladder.map((rung, i) => ({
+          ...rungProgress(rung, meta, eventProgress.baseline),
+          reward: rung.reward,
+          claimed: eventProgress.rungsClaimed.includes(i),
+        }))}
+        accent={accent}
+        onClaim={(i) => onClaimRung(i, event.id)}
+      />
+
+      {pending.map((entry) => (
+        <PendingClaimCard key={entry.event.id} entry={entry} onClaim={onClaimRung} />
+      ))}
 
       <div className="rounded-xl p-3" style={{ background: cardBg, border: `1px solid ${cardBorder}` }}>
         <div className="flex items-center justify-between mb-2 gap-2">

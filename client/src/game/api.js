@@ -62,9 +62,25 @@ export function fetchState() {
   return request('/api/state');
 }
 
-// GET /api/config -> { version, data }
+// GET /api/config -> { version, activeEventId, data }
+// The GAMEPLAY config: the admin baseline with the currently active live
+// event's modifiers already merged in, i.e. exactly the document the SERVER
+// evaluates with. Runtime-only fields (__activeEvent) are stripped server-
+// side. `activeEventId` is the other half of the cache key - the config
+// `version` does NOT change when an event flips active/ended, so a client
+// watching version alone would silently keep running on the wrong numbers.
+// Admin tooling must use fetchAdminConfig() instead (see below).
 export function fetchConfig() {
   return request('/api/config');
+}
+
+// GET /api/admin/config -> { version, data }
+// The admin-authored BASELINE, with no event overlay. This is what the
+// Balancing tab loads and PUTs back to /api/admin/config: loading the
+// overlaid document there would bake an active event's modifiers into the
+// stored config permanently on the next save.
+export function fetchAdminConfig() {
+  return request('/api/admin/config');
 }
 
 // POST /api/minigame/start { game } -> { sessionId }
@@ -128,13 +144,15 @@ export function postRoleChange(userId, role, op) {
 // ---------------------------------------------------------------------------
 
 // GET /api/event -> { event: {id,name,description,theme,ladder}|null,
-//   progress: {joinedAt,endsAt,rungsClaimed,rungs}|null, leaderboard }
-// `event` is null whenever no event is currently active - notably including
-// the 48h post-end grace period (the route has no notion of "recently
-// ended", see server/routes/api.js) - callers that need the ladder to stay
-// reachable through grace (RackStack.jsx's activeEvent) must hang onto the
-// last non-null value themselves. `leaderboard` is already capped at 50 and
-// opt-out-filtered server-side.
+//   progress: {joinedAt,endsAt,rungsClaimed,rungs}|null, leaderboard,
+//   pendingClaims: [{ event, progress }] }
+// `event` is resolved from the CALLER's own eventProgress, not from whatever
+// is globally active, so it stays populated for the whole 48h post-end claim
+// grace (spec §5.3) and survives a page reload made inside that window. It is
+// null only when the player has no live-or-in-grace window at all.
+// `pendingClaims` carries windows force-ended early by a newer event
+// activating that are still inside their own grace. `leaderboard` is already
+// capped at 50 and opt-out-filtered server-side.
 export function fetchEvent() {
   return request('/api/event');
 }

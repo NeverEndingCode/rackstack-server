@@ -13,9 +13,16 @@ import {
   upsertParticipation, getUserById,
 } from './db.js';
 import { invalidateEffectiveConfig } from './configService.js';
-import { EVENT_METRIC_IDS, eventMetricValue } from '../shared/events.js';
+import { EVENT_METRIC_IDS, eventMetricValue, isValidRecurrence } from '../shared/events.js';
+import { EVENT_CLAIM_GRACE_MS } from '../shared/reducer.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+// How many superseded-but-still-claimable windows a save carries at once.
+// Only reachable when a coordinator runs several events back-to-back inside
+// one 48h grace period; the cap keeps a pathological schedule from growing
+// meta.pendingEventClaims without bound.
+const MAX_PENDING_EVENT_CLAIMS = 3;
 
 /**
  * Activates `id`: ends every other currently-active event first (enforcing
@@ -33,12 +40,26 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  * both the route and the scheduler call, and it always restores the
  * invariant no matter what state it's called from.
  *
+ * Refuses to activate an event whose stored window has ALREADY fully
+ * elapsed. This guard lives here, in the shared primitive, rather than only
+ * on the manual /activate route (where it originally shipped): runScheduler
+ * calls this same function, and a server that was down across a scheduled
+ * event's entire window - a host reboot, a container redeploy, an Unraid
+ * update, all routine for this deployment - would otherwise activate the
+ * dead event on next boot. That wipes every mid-grace player's eventProgress
+ * and joins them to a personal window (`min(now + duration, ends_at + 24h)`)
+ * that expired days ago, so they get no event tab at all, while the stale
+ * event's modifiers apply globally until the next hourly tick. The route
+ * keeps its own identical check so it can answer with its documented 400
+ * `invalid_target` before anything else happens.
+ *
  * Returns `{ ok: true }` or `{ ok: false, error }`.
  */
 export function activateEvent(id, now = Date.now()) {
   const event = getEvent(id);
   if (!event) return { ok: false, error: 'not_found' };
   if (event.ends_at == null) return { ok: false, error: 'not_scheduled' };
+  if (event.ends_at <= now) return { ok: false, error: 'invalid_target' };
 
   for (const other of listEvents()) {
     if (other.status === 'active' && other.id !== id) {
@@ -88,16 +109,48 @@ function nextOccurrence({ month, day, durationDays }, now) {
 }
 
 /**
- * Materializes recurrence into a concrete scheduled window for every event
- * that's currently `status: 'draft'`, has a `recurrence`, and has NO window
- * yet (`starts_at`/`ends_at` both null). Deliberately narrow: an event with
- * a coordinator-set window (even if it also carries a recurrence) is never
- * touched - hand-set scheduling always wins over the annual default.
+ * Materializes a recurrence into a concrete scheduled window. Two cases:
+ *
+ *  1. First run: `status: 'draft'`, has a `recurrence`, and has NO window yet
+ *     (`starts_at`/`ends_at` both null). Deliberately narrow - a DRAFT with a
+ *     coordinator-set window (even if it also carries a recurrence) is never
+ *     touched here; hand-set scheduling wins over the annual default.
+ *  2. Re-arming: `status: 'ended'`, has a `recurrence`, and its window has
+ *     been fully past for longer than the claim grace period. Without this,
+ *     "recurring" seasonal events ran exactly ONCE ever: nothing returns an
+ *     event to 'draft', so after summer-surge's first year it stayed 'ended'
+ *     forever and the README's "materialized automatically, every year"
+ *     promise (and spec §5.1/§5.2's annual recurrence) was simply false.
+ *     nextOccurrence() already targets next year once this year's window has
+ *     elapsed, so re-scheduling from here lands on the right one.
+ *
+ * The `+ EVENT_CLAIM_GRACE_MS` settle period on case 2 matters twice over.
+ * It keeps a just-ended event visibly 'ended' (rather than instantly
+ * re-labelled 'scheduled' for next year) for as long as anyone could still
+ * be claiming against it - and it's what exempts an event a coordinator
+ * ENDED EARLY, by hand, mid-window: that row's `ends_at` is still in the
+ * FUTURE, so it can't match here and won't be re-armed out from under the
+ * coordinator's decision. The manual end kills that occurrence only; once
+ * the authored window elapses, the annual recurrence resumes as authored. A
+ * coordinator who wants an event to stop recurring removes its recurrence.
+ *
+ * Rows whose stored `recurrence` isn't a valid `{month, day, durationDays}`
+ * are skipped outright: nextOccurrence() would compute a NaN window and
+ * strand the event in 'scheduled' forever. POST /api/admin/events rejects
+ * such shapes at write time (shared/events.js's validateRecurrence), so this
+ * only ever fires on rows written before that validation existed, or edited
+ * directly in the DB.
  */
 function materializeRecurrences(now) {
   for (const event of listEvents()) {
-    if (event.status !== 'draft' || !event.recurrence) continue;
-    if (event.starts_at != null || event.ends_at != null) continue;
+    if (!isValidRecurrence(event.recurrence)) continue;
+
+    const isUnscheduledDraft = event.status === 'draft'
+      && event.starts_at == null && event.ends_at == null;
+    const isElapsedRecurring = event.status === 'ended'
+      && event.ends_at != null && now > event.ends_at + EVENT_CLAIM_GRACE_MS;
+    if (!isUnscheduledDraft && !isElapsedRecurring) continue;
+
     const { startsAt, endsAt } = nextOccurrence(event.recurrence, now);
     setEventStatus(event.id, 'scheduled', { startsAt, endsAt });
   }
@@ -121,7 +174,14 @@ function materializeRecurrences(now) {
  *     window opened and then got immediately superseded did, technically,
  *     run - if that's undesirable a coordinator should not schedule
  *     overlapping windows). Already-'active' rows won't match on a second
- *     call, so this is idempotent too.
+ *     call, so this is idempotent too. A candidate whose window has ALREADY
+ *     fully elapsed by the time this tick runs (the server was down across
+ *     the whole window - reboot, redeploy, Unraid update) is marked 'ended'
+ *     here instead of activated; activateEvent refuses it anyway, but
+ *     leaving it 'scheduled' would make it a candidate again on every
+ *     subsequent tick, forever. Marking it 'ended' also hands it to
+ *     materializeRecurrences above, which re-arms it for next year if it
+ *     recurs.
  */
 export function runScheduler(now = Date.now()) {
   materializeRecurrences(now);
@@ -137,6 +197,10 @@ export function runScheduler(now = Date.now()) {
     .sort((a, b) => (a.starts_at - b.starts_at) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 
   for (const event of arrived) {
+    if (event.ends_at == null || event.ends_at <= now) {
+      endEvent(event.id, now);
+      continue;
+    }
     activateEvent(event.id, now);
   }
 }
@@ -162,6 +226,18 @@ export function runScheduler(now = Date.now()) {
  *    personal start), and the personal window runs the event's full
  *    duration from here, capped at 24h past the event's global end.
  *
+ * Superseding is where the claim right used to die. This function used to
+ * simply null out the old `eventProgress`; spec §5.2 does force-end a
+ * lingering personal WINDOW when the next event activates, but §5.3 keeps
+ * claims open for 48h past that personal end, and force-ending the window is
+ * not the same as destroying the claim. A coordinator starting the next
+ * event within 48h of the previous one's personal end - the normal cadence
+ * for back-to-back weekend events - silently and permanently destroyed every
+ * met-but-unclaimed rung. The superseded record is now moved to
+ * `meta.pendingEventClaims` (newest first) for the remainder of its own
+ * grace period instead, where claimEventRung, stateService's
+ * `__pendingClaimables` and GET /api/event can all still reach it.
+ *
  * Returns the active event row (or null/undefined if none) so callers
  * (stateService) don't need a second DB round-trip to build the API
  * response's `activeEvent` field.
@@ -171,8 +247,12 @@ export function joinEventIfEligible(userId, state, now = Date.now()) {
   const progress = state.meta.eventProgress;
 
   if (activeEvent && progress && progress.eventId !== activeEvent.id) {
-    state.meta.eventProgress = null;
+    supersedeEventProgress(state.meta, now);
   }
+
+  // Runs on every load, event active or not, so records age out of the save
+  // on their own rather than only when the next event happens to activate.
+  prunePendingEventClaims(state.meta, now);
 
   if (!activeEvent) return activeEvent;
   if (state.meta.eventProgress && state.meta.eventProgress.eventId === activeEvent.id) {
@@ -207,4 +287,84 @@ export function joinEventIfEligible(userId, state, now = Date.now()) {
   });
 
   return activeEvent;
+}
+
+/**
+ * Every event this player can still act on, resolved from their own save
+ * rather than from "whatever is globally active right now":
+ *
+ *   { current: { event, progress } | null, pending: [{ event, progress }] }
+ *
+ * `current` is their live-or-in-grace `meta.eventProgress`; `pending` is each
+ * force-ended-but-still-claimable window from `meta.pendingEventClaims`.
+ * Rows are looked up by id with getEvent() - NOT getActiveEvent() - so this
+ * resolves regardless of the event's current global status, which is the
+ * whole point: gating on `status === 'active'` is what made the 48h claim
+ * grace unreachable through the UI (GET /api/event returned event:null the
+ * instant an event ended globally, so a player who reloaded mid-grace lost
+ * the ladder and every Claim button, permanently).
+ *
+ * Deliberately does NOT filter on the grace window - callers decide. The
+ * per-request `__claimableEvent`/`__pendingClaimables` config fields must
+ * stay attached past grace so claimEventRung can answer `cooldown_active`
+ * (its documented past-grace code) instead of falling through to
+ * `invalid_target`; the presentation routes gate on inClaimGrace() below.
+ */
+export function resolvePlayerEvents(state) {
+  const result = { current: null, pending: [] };
+
+  const ep = state.meta.eventProgress;
+  if (ep && typeof ep.eventId === 'string') {
+    const event = getEvent(ep.eventId);
+    if (event) result.current = { event, progress: ep };
+  }
+
+  const pending = Array.isArray(state.meta.pendingEventClaims) ? state.meta.pendingEventClaims : [];
+  for (const p of pending) {
+    if (!p || typeof p.eventId !== 'string') continue;
+    const event = getEvent(p.eventId);
+    if (event) result.pending.push({ event, progress: p });
+  }
+
+  return result;
+}
+
+/** Whether a personal progress record is still inside its 48h claim grace. */
+export function inClaimGrace(progress, now) {
+  return !!(progress && typeof progress.endsAt === 'number'
+    && now <= progress.endsAt + EVENT_CLAIM_GRACE_MS);
+}
+
+/**
+ * Moves `meta.eventProgress` into `meta.pendingEventClaims` (force-ending the
+ * window per spec §5.2 while keeping the §5.3 claim right alive) and clears
+ * the live slot. A record whose grace has ALREADY run out is dropped rather
+ * than stored - there's nothing left to claim on it.
+ *
+ * `endsAt` is deliberately NOT rewritten to `now`: the 48h grace is measured
+ * from the personal end, and the whole point here is that the personal end
+ * already happened (or is being forced). Truncating it would shorten the
+ * grace a player was promised.
+ */
+function supersedeEventProgress(meta, now) {
+  const progress = meta.eventProgress;
+  meta.eventProgress = null;
+  if (!progress || typeof progress.eventId !== 'string') return;
+  if (typeof progress.endsAt !== 'number' || now > progress.endsAt + EVENT_CLAIM_GRACE_MS) return;
+
+  const pending = Array.isArray(meta.pendingEventClaims) ? meta.pendingEventClaims : [];
+  // Dedupe by eventId (`.find`-style filter, never a bare-key lookup) so a
+  // re-activated event can't end up with two competing records.
+  meta.pendingEventClaims = [progress, ...pending.filter((p) => p && p.eventId !== progress.eventId)]
+    .slice(0, MAX_PENDING_EVENT_CLAIMS);
+}
+
+/** Drops pending records whose own 48h claim grace has fully run out. */
+function prunePendingEventClaims(meta, now) {
+  const pending = meta.pendingEventClaims;
+  if (!Array.isArray(pending)) { meta.pendingEventClaims = []; return; }
+  meta.pendingEventClaims = pending.filter(
+    (p) => p && typeof p.eventId === 'string' && typeof p.endsAt === 'number'
+      && now <= p.endsAt + EVENT_CLAIM_GRACE_MS,
+  );
 }

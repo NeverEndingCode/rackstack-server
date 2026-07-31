@@ -1,10 +1,10 @@
 import { migrateSave, evaluate } from '../shared/state.js';
 import { applyAction, scheduleAnomaly } from '../shared/reducer.js';
 import {
-  getSave, putSave, getEvent, updateParticipationProgress,
+  getSave, putSave, updateParticipationProgress,
 } from './db.js';
 import { getEffectiveConfig } from './configService.js';
-import { joinEventIfEligible } from './eventService.js';
+import { joinEventIfEligible, resolvePlayerEvents } from './eventService.js';
 
 function safeParse(text, userId) {
   try {
@@ -77,22 +77,27 @@ export function loadEvaluateAndSchedule(userId, now) {
   // scheduleAnomaly above.
   const activeEvent = joinEventIfEligible(userId, state, now);
 
-  // Resolve the per-user claimable event, if any, AFTER join-on-login has
-  // had a chance to settle state.meta.eventProgress (new join, superseded-
-  // event clear, or untouched lingering grace-period progress - see
-  // joinEventIfEligible's doc comment). Looked up by id via getEvent()
-  // directly - NOT getActiveEvent() - so this resolves regardless of
-  // whether that specific event is still `status: 'active'`, `'ended'`, or
-  // anything else. If eventProgress references an id that no longer exists
-  // in the DB at all (e.g. a deleted event), getEvent() returns undefined,
-  // __claimableEvent is simply never attached, and claimEventRung's own
-  // `!activeEvent` guard fails closed with invalid_target - never throws.
-  const eventProgress = state.meta.eventProgress;
-  if (eventProgress && eventProgress.eventId) {
-    const claimable = getEvent(eventProgress.eventId);
-    if (claimable) {
-      config.__claimableEvent = { id: claimable.id, ladder: claimable.ladder, endsAt: claimable.ends_at };
-    }
+  // Resolve the per-user claimable event(s), if any, AFTER join-on-login has
+  // had a chance to settle state.meta.eventProgress/pendingEventClaims (new
+  // join, supersede-into-pending, prune, or untouched lingering grace-period
+  // progress - see joinEventIfEligible's doc comment). resolvePlayerEvents
+  // looks rows up by id via getEvent() directly - NOT getActiveEvent() - so
+  // this resolves regardless of whether that specific event is still
+  // `status: 'active'`, `'ended'`, or anything else. If a record references
+  // an id that no longer exists in the DB at all (e.g. a deleted event),
+  // getEvent() returns undefined, the entry is simply dropped, and
+  // claimEventRung's own `!activeEvent` guard fails closed with
+  // invalid_target - never throws.
+  const { current, pending } = resolvePlayerEvents(state);
+  if (current) {
+    config.__claimableEvent = {
+      id: current.event.id, ladder: current.event.ladder, endsAt: current.event.ends_at,
+    };
+  }
+  if (pending.length > 0) {
+    config.__pendingClaimables = pending.map(({ event }) => ({
+      id: event.id, ladder: event.ladder, endsAt: event.ends_at,
+    }));
   }
 
   return { state, gained, config, activeEvent };
@@ -142,10 +147,23 @@ export function applyActions(userId, actions, now = Date.now()) {
   // check below is just the cheap gate for "was a claim even attempted this
   // batch" so a normal action batch with no event activity doesn't pay for
   // an extra DB write.
-  const claimedThisBatch = results.some((r) => r.ok && typeof r.rungIndex === 'number');
-  if (claimedThisBatch && state.meta.eventProgress) {
-    const { eventId, rungsClaimed } = state.meta.eventProgress;
-    updateParticipationProgress(userId, eventId, rungsClaimed.length, now);
+  //
+  // Keyed off each successful claim's echoed-back `eventId` rather than
+  // meta.eventProgress.eventId: a claim may target a SUPERSEDED window from
+  // meta.pendingEventClaims (spec §5.3's 48h grace outliving the event), in
+  // which case meta.eventProgress is either null or a different event
+  // entirely, and syncing that one's count would be flatly wrong.
+  const claimedEventIds = new Set(
+    results.filter((r) => r.ok && typeof r.rungIndex === 'number' && typeof r.eventId === 'string')
+      .map((r) => r.eventId),
+  );
+  for (const eventId of claimedEventIds) {
+    const record = state.meta.eventProgress && state.meta.eventProgress.eventId === eventId
+      ? state.meta.eventProgress
+      : (state.meta.pendingEventClaims || []).find((p) => p && p.eventId === eventId);
+    if (record && Array.isArray(record.rungsClaimed)) {
+      updateParticipationProgress(userId, eventId, record.rungsClaimed.length, now);
+    }
   }
 
   return { state, results };

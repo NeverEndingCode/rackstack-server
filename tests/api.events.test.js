@@ -104,7 +104,9 @@ describe('GET /api/event (no active event, must run first)', () => {
     const user = makeUser();
     const res = await request(app).get('/api/event').set('Cookie', cookieFor(user));
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ event: null, progress: null, leaderboard: [] });
+    expect(res.body).toEqual({
+      event: null, progress: null, leaderboard: [], pendingClaims: [],
+    });
   });
 });
 

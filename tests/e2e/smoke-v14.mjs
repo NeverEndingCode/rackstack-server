@@ -284,6 +284,33 @@ async function measureGridGain(page, userId, owned, elapsedMs) {
   return res.body.run.credits - 10;
 }
 
+// Reads the number the CLIENT actually renders in the "Total Output" card
+// (StatsRow.jsx:14-16), as opposed to anything the server reports. Values go
+// through shared/gameRules.js's fmt(), so they may carry a K/M/G/... suffix -
+// parse it back rather than assuming a bare number. Returns NaN if the card
+// isn't on screen, which every caller asserts against, so a missing card can
+// never read as a silent 0.
+const FMT_SUFFIXES = ['', 'K', 'M', 'G', 'T', 'P', 'E', 'Z', 'Y', 'R', 'Q'];
+
+function parseFmt(text) {
+  const m = /^(-?[\d.]+)([A-Z]?)$/.exec(String(text).trim());
+  if (!m) return NaN;
+  const tier = FMT_SUFFIXES.indexOf(m[2] || '');
+  if (tier < 0) return NaN;
+  return Number(m[1]) * Math.pow(1000, tier);
+}
+
+async function readOutputRate(page) {
+  const text = await page.evaluate(() => {
+    const label = Array.from(document.querySelectorAll('div'))
+      .find((d) => d.textContent.trim() === 'Total Output');
+    if (!label || !label.nextElementSibling) return null;
+    // "<value> F/s" - the unit lives in a nested <span>, so drop it.
+    return label.nextElementSibling.textContent.replace(/\s*F\/s\s*$/, '');
+  });
+  return text === null ? NaN : parseFmt(text);
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -307,6 +334,9 @@ async function main() {
   const optOutPlayer = seedUser({ provider: 'discord', providerId: 'e2e-v14-optout', username: 'optout_v14_e2e' });
   const overlayPlayer = seedUser({ provider: 'discord', providerId: 'e2e-v14-overlay', username: 'overlay_v14_e2e' });
   const plainPlayer = seedUser({ provider: 'discord', providerId: 'e2e-v14-plain', username: 'plain_v14_e2e' });
+  const ratePlayer = seedUser({ provider: 'discord', providerId: 'e2e-v14-rate', username: 'rate_v14_e2e' });
+  const heatPlayer = seedUser({ provider: 'discord', providerId: 'e2e-v14-heat', username: 'heat_v14_e2e' });
+  const gracePlayer = seedUser({ provider: 'discord', providerId: 'e2e-v14-grace', username: 'grace_v14_e2e' });
 
   // ladderPlayer's pre-existing progress, seeded BEFORE any event exists (and
   // therefore before they ever join one) - Check 1 below asserts this value
@@ -338,6 +368,18 @@ async function main() {
   await plainCtx.addCookies([cookieFor(plainPlayer)]);
   const plainPage = await plainCtx.newPage();
 
+  const rateCtx = await browser.newContext();
+  await rateCtx.addCookies([cookieFor(ratePlayer)]);
+  const ratePage = await rateCtx.newPage();
+
+  const heatCtx = await browser.newContext();
+  await heatCtx.addCookies([cookieFor(heatPlayer)]);
+  const heatPage = await heatCtx.newPage();
+
+  const graceCtx = await browser.newContext();
+  await graceCtx.addCookies([cookieFor(gracePlayer)]);
+  const gracePage = await graceCtx.newPage();
+
   // Navigate every page once up front (no event exists yet, so none of this
   // triggers a join) purely so each page has a same-origin document loaded -
   // apiFetch's page.evaluate(fetch(relativePath)) needs that to resolve.
@@ -347,6 +389,9 @@ async function main() {
     bootAndGetState(optOutPage),
     bootAndGetState(overlayPage),
     bootAndGetState(plainPage),
+    bootAndGetState(ratePage),
+    bootAndGetState(heatPage),
+    bootAndGetState(gracePage),
   ]);
 
   // --- Check: non-coordinator 403s on every admin event route, and sees
@@ -452,7 +497,7 @@ async function main() {
 
   // --- Check 2: claim pays out once, can't double-claim, unmet rung has no
   //     claim control ------------------------------------------------------
-  await check('claiming a met rung pays out exactly once through the real UI and rejects a direct-API double-claim; an unmet rung never renders a claim control', async () => {
+  await check('claiming a met rung pays out exactly once through the real UI, opens the reward confirmation, and rejects a direct-API double-claim; an unmet rung never renders a claim control', async () => {
     await ladderPage.reload();
     await ladderPage.waitForResponse((r) => r.url().endsWith('/api/state'));
     await ladderPage.waitForTimeout(150);
@@ -478,6 +523,18 @@ async function main() {
 
     await ladderPage.waitForTimeout(150);
     assert(await claimButtons.count() === 0, 'expected no Claim button to remain visible after claiming the only claimable rung (rung 0 now claimed, rung 1 still unmet)');
+
+    // CRITICAL 3: the reward confirmation. claimEventRung's optimistic local
+    // apply ALWAYS returned invalid_target (its ladder arrives via
+    // config.__claimableEvent, a server-only per-request field the client
+    // never holds), so the `if (result.ok)` branch that opened this modal
+    // never fired once - a claim looked, to the player, like nothing had
+    // happened. The modal is now opened from handleReconcile on the
+    // authoritative server result, correlated by _cid.
+    await ladderPage.getByText('Resolved', { exact: true }).waitFor({ state: 'visible', timeout: 5000 });
+    assert(await ladderPage.getByText('+20 wafers').count() === 1, 'expected the reward confirmation modal to name the 20-wafer payout');
+    await ladderPage.getByRole('button', { name: 'Nice', exact: true }).click();
+    await ladderPage.waitForTimeout(150);
 
     const afterClaim = await apiFetch(ladderPage, '/api/state', { method: 'GET' });
     assert(afterClaim.body.meta.wafers === wafersBefore + 20, `expected wafers to increase by exactly 20 (before=${wafersBefore}, after=${afterClaim.body.meta.wafers})`);
@@ -544,10 +601,21 @@ async function main() {
     assert(second.status === 200, `expected 200 activating event 2 once event 1 was ended, got ${second.status} ${JSON.stringify(second.body)}`);
   });
 
-  // --- Check 5: the overlay is live, and the stored config is untouched ---
-  await check('overlay is live: an active production.gridMult modifier measurably changes output, and GET /api/config still reports the untouched stored baseline', async () => {
-    const configBefore = await apiFetch(overlayPage, '/api/config', { method: 'GET' });
-    assert(configBefore.body.data.production.gridMult === 1, `expected the stored config's gridMult to remain 1 while event 2's overlay is active, got ${configBefore.body.data.production.gridMult}`);
+  // --- Check 5: the overlay is live, and the STORED config is untouched ---
+  // GET /api/config is the GAMEPLAY read and now serves the event-overlaid
+  // document (that's Check 6's subject). The invariant this check exists for -
+  // "event modifiers are never written into the stored config" - therefore
+  // moves to GET /api/admin/config, the admin baseline route the Balancing tab
+  // reads and PUTs back against.
+  await check('overlay is live: an active production.gridMult modifier measurably changes output, GET /api/config reflects it, and GET /api/admin/config still reports the untouched stored baseline', async () => {
+    const baselineBefore = await apiFetch(coordPage, '/api/admin/config', { method: 'GET' });
+    assert(baselineBefore.status === 200, `GET /api/admin/config failed for the coordinator/owner: ${baselineBefore.status}`);
+    assert(baselineBefore.body.data.production.gridMult === 1, `expected the STORED config's gridMult to remain 1 while event 2's overlay is active, got ${baselineBefore.body.data.production.gridMult}`);
+
+    const gameplay = await apiFetch(overlayPage, '/api/config', { method: 'GET' });
+    assert(gameplay.body.data.production.gridMult === OVERLAY_MULT, `expected the GAMEPLAY config (GET /api/config) to carry the ${OVERLAY_MULT}x overlay, got ${gameplay.body.data.production.gridMult}`);
+    assert(gameplay.body.activeEventId === event2Id, `expected GET /api/config to name the active event as its cache key, got ${gameplay.body.activeEventId}`);
+    assert(gameplay.body.data.__activeEvent === undefined, 'expected the runtime-only __activeEvent field to be stripped before reaching the client');
 
     const overlaidGain = await measureGridGain(overlayPage, overlayPlayer.id, GRID_OWNED, ELAPSED_MS);
     const lowerBound = baselineGain * (OVERLAY_MULT - 0.3);
@@ -555,8 +623,165 @@ async function main() {
     assert(overlaidGain > lowerBound, `expected the ${OVERLAY_MULT}x gridMult overlay to meaningfully increase output (baseline=${baselineGain}, overlaid=${overlaidGain}, expected > ${lowerBound})`);
     assert(overlaidGain < upperBound, `overlaid gain (${overlaidGain}) is implausibly far above baseline*${OVERLAY_MULT} (${upperBound}) - check for a runaway/duplicated multiplier`);
 
-    const configAfter = await apiFetch(overlayPage, '/api/config', { method: 'GET' });
-    assert(configAfter.body.data.production.gridMult === 1, `expected the stored config's gridMult to still read 1 after measuring the overlaid output, got ${configAfter.body.data.production.gridMult}`);
+    const baselineAfter = await apiFetch(coordPage, '/api/admin/config', { method: 'GET' });
+    assert(baselineAfter.body.data.production.gridMult === 1, `expected the STORED config's gridMult to still read 1 after measuring the overlaid output, got ${baselineAfter.body.data.production.gridMult}`);
+  });
+
+  // --- Check 6: the CLIENT runs on the overlaid config, and notices when
+  //     the overlay appears/disappears without a reload -------------------
+  // Everything above asserts against the SERVER. This one reads the number
+  // the client actually renders. Pre-fix, GET /api/config served the
+  // un-overlaid admin baseline, so the headline rate was identical with and
+  // without an active event and every reconcile snapped the counter forward.
+  await check("the client's rendered output rate reflects the active event's overlay, and updates when the overlay ends without a page reload", async () => {
+    // Grid-only production, so the whole headline scales linearly with
+    // production.gridMult and the ratio below is exact.
+    {
+      const s = initialState();
+      s.run.grid[0].owned = GRID_OWNED;
+      putSave(ratePlayer.id, s, Date.now());
+    }
+    await bootAndGetState(ratePage); // event 2 (gridMult 3) is active here
+    await ratePage.waitForTimeout(500);
+
+    const overlaidRate = await readOutputRate(ratePage);
+    assert(Number.isFinite(overlaidRate) && overlaidRate > 0, `could not read a Total Output rate from the client, got ${overlaidRate}`);
+
+    // End the overlay. The config VERSION does not change when an event
+    // flips active/ended, so the pre-existing onConfigSaved refetch path
+    // cannot cover this - the client polls (version, activeEventId).
+    await endEventApi(coordPage, event2Id);
+    await ratePage.waitForTimeout(13000); // > CONFIG_POLL_MS (10s), no reload
+
+    const plainRate = await readOutputRate(ratePage);
+    assert(Number.isFinite(plainRate) && plainRate > 0, `could not read a post-overlay Total Output rate from the client, got ${plainRate}`);
+    assert(overlaidRate !== plainRate, `expected the client's rendered rate to CHANGE when the ${OVERLAY_MULT}x overlay ended, but it read ${overlaidRate} F/s both before and after - the client is running on the un-overlaid config`);
+    const ratio = overlaidRate / plainRate;
+    assert(ratio > OVERLAY_MULT - 0.3 && ratio < OVERLAY_MULT + 0.3, `expected the client's overlaid rate to be ~${OVERLAY_MULT}x its un-overlaid rate, got ${overlaidRate} vs ${plainRate} (ratio ${ratio.toFixed(2)})`);
+  });
+
+  // --- Check 7: Summer Surge's shipped heat.capacity overlay does not make
+  //     the client hallucinate a meltdown ---------------------------------
+  const event3Id = `e2e-heat-${Date.now()}`;
+  await check("with Summer Surge's shipped heat.capacity:4000 overlay active, the client shows no meltdown and gauges heat against the overlaid capacity", async () => {
+    await createEvent(coordPage, {
+      id: event3Id,
+      name: 'E2E Heat Event',
+      // The exact modifier server/data/seasonalEvents.js ships on
+      // summer-surge, against the stored baseline of 2000.
+      modifiers: [{ path: 'heat.capacity', value: 4000 }],
+      ladder: [{ metric: 'flopsEarned', target: 1, reward: { wafers: 1 } }],
+    });
+    {
+      const now = Date.now();
+      await scheduleEvent(coordPage, event3Id, now - 60000, now + 2 * 3600 * 1000);
+      const act = await activateEventApi(coordPage, event3Id);
+      assert(act.status === 200, `failed to activate ${event3Id}: ${act.status} ${JSON.stringify(act.body)}`);
+    }
+
+    // Heat sitting between the baseline cap (2000) and the overlaid cap
+    // (4000). Nothing is owned except one Colo Rack Unit (tiers[3], the
+    // tier RackStack.jsx gates `overclockUnlocked` on), so there is minimal
+    // production and no offline-gain modal to get in the way; evaluate()
+    // checks the heat cap regardless of ownership.
+    {
+      const s = initialState();
+      s.run.tiers[3].owned = 1; // Colo Rack Unit - unlocks the Overclock tab
+      s.run.heat = 2100;
+      putSave(heatPlayer.id, s, Date.now());
+    }
+    await bootAndGetState(heatPage);
+    // Several 250ms production ticks, i.e. several chances for the client's
+    // own evaluate() to cross ITS heat cap.
+    await heatPage.waitForTimeout(3000);
+
+    // POSITIVE CONTROL, and the sharpest assertion in this check: the heat
+    // gauge is rendered as run.heat / config.heat.capacity. 2100/4000 = 53%.
+    // On the un-overlaid config it is min(100, 2100/2000) = 100% until the
+    // first tick melts down and resets it to 0% - so this reading alone
+    // proves the overlaid capacity reached the client AND that the client is
+    // predicting locally against it, which is what makes the absence
+    // assertion below non-vacuous.
+    await heatPage.getByRole('button', { name: 'Overclock', exact: true }).click();
+    await heatPage.waitForTimeout(200);
+    const heatText = await heatPage.getByText(/^\d+%$/).first().innerText();
+    const heatPct = parseInt(heatText, 10);
+    assert(heatPct >= 50 && heatPct <= 56, `expected the client to gauge heat 2100 against the OVERLAID capacity 4000 (~53%), got ${heatText} - 100% or 0% means it is still using the stored 2000 cap`);
+
+    assert(await heatPage.getByText('Overheated!').count() === 0, 'expected NO meltdown modal: the server considers heat 2100 healthy against the event\'s 4000 capacity, so a client-side "Overheated!" is a pure hallucination that also freezes the overclock lane locally');
+    const state = await apiFetch(heatPage, '/api/state', { method: 'GET' });
+    assert(!state.body.server.overheated, `sanity: the SERVER must not consider this rack overheated either, got server.overheated=${state.body.server.overheated}`);
+    assert(state.body.run.heatCooldownUntil === null, `sanity: the SERVER must not have set an overheat cooldown, got ${state.body.run.heatCooldownUntil}`);
+  });
+
+  // --- Check 8: the 48h claim grace survives a full page reload ----------
+  const event4Id = `e2e-grace-${Date.now()}`;
+  await check('after the event ends globally, a full page reload inside the 48h grace still renders the ladder and a working Claim button', async () => {
+    await endEventApi(coordPage, event3Id);
+    await createEvent(coordPage, {
+      id: event4Id,
+      name: 'E2E Grace Event',
+      modifiers: [],
+      ladder: [
+        { metric: 'flopsEarned', target: 50, reward: { wafers: 20 } },
+        { metric: 'flopsEarned', target: 10000000, reward: { wafers: 5 } },
+      ],
+    });
+    {
+      const now = Date.now();
+      await scheduleEvent(coordPage, event4Id, now - 60000, now + 2 * 3600 * 1000);
+      const act = await activateEventApi(coordPage, event4Id);
+      assert(act.status === 200, `failed to activate ${event4Id}: ${act.status} ${JSON.stringify(act.body)}`);
+    }
+
+    const boot = await bootAndGetState(gracePage); // joins event 4
+    assert(boot.eventProgress && boot.eventProgress.eventId === event4Id, `expected gracePlayer to join ${event4Id}, got ${JSON.stringify(boot.eventProgress)}`);
+
+    // Clear rung 0's 50-FLOPS target, then end the event globally and push
+    // the personal window an hour into the past - i.e. 47h of claim grace
+    // left, the exact situation spec §5.3 exists for.
+    {
+      const data = JSON.parse(getSave(gracePlayer.id).data);
+      data.meta.stats.lifetimeFlopsAllTime += 300;
+      putSave(gracePlayer.id, data, Date.now());
+    }
+    await endEventApi(coordPage, event4Id);
+    {
+      const data = JSON.parse(getSave(gracePlayer.id).data);
+      data.meta.eventProgress.endsAt = Date.now() - 3600 * 1000;
+      putSave(gracePlayer.id, data, Date.now());
+    }
+
+    // THE reload. Pre-fix the ladder existed only as in-memory React state
+    // seeded at boot from GET /api/state's `activeEvent`, and both that field
+    // and GET /api/event went null the instant the event ended globally - so
+    // this reload left the player with "Event details aren't available right
+    // now", zero Claim buttons, and rewards that expired unclaimable, while
+    // the identical claim posted straight to /api/actions still succeeded.
+    await bootAndGetState(gracePage);
+    await gracePage.getByRole('button', { name: 'Event', exact: true }).click();
+    await gracePage.waitForTimeout(300);
+
+    // Positive control first: the panel must have rendered the real event,
+    // not the fallback card - otherwise every assertion below is vacuous.
+    await gracePage.getByText('E2E Grace Event', { exact: true }).waitFor({ state: 'visible', timeout: 5000 });
+    assert(await gracePage.getByText('Event details aren’t available right now.', { exact: false }).count() === 0, 'expected the real ladder, not the "Event details aren\'t available right now" fallback, after a reload inside the claim grace');
+
+    const claimButtons = gracePage.getByRole('button', { name: 'Claim', exact: true });
+    assert(await claimButtons.count() === 1, `expected exactly one Claim button (rung 0 met and unclaimed) after reloading inside the grace window, got ${await claimButtons.count()}`);
+
+    const wafersBefore = (await apiFetch(gracePage, '/api/state', { method: 'GET' })).body.meta.wafers;
+    const [claimResp] = await Promise.all([
+      gracePage.waitForResponse((r) => r.url().endsWith('/api/actions') && r.request().method() === 'POST'),
+      claimButtons.click(),
+    ]);
+    const claimBody = await claimResp.json();
+    assert(claimBody.results[0].ok === true, `expected the in-grace claim to be accepted, got ${JSON.stringify(claimBody.results[0])}`);
+    assert(claimBody.results[0].reward.wafers === 20, `expected 20 wafers from the in-grace claim, got ${JSON.stringify(claimBody.results[0].reward)}`);
+
+    await gracePage.getByText('Resolved', { exact: true }).waitFor({ state: 'visible', timeout: 5000 });
+    const wafersAfter = (await apiFetch(gracePage, '/api/state', { method: 'GET' })).body.meta.wafers;
+    assert(wafersAfter === wafersBefore + 20, `expected wafers to rise by 20 through the in-grace UI claim (before=${wafersBefore}, after=${wafersAfter})`);
   });
 
   await coordCtx.close();
@@ -564,6 +789,9 @@ async function main() {
   await optOutCtx.close();
   await overlayCtx.close();
   await plainCtx.close();
+  await rateCtx.close();
+  await heatCtx.close();
+  await graceCtx.close();
   await browser.close();
   browser = null;
 

@@ -39,7 +39,12 @@ describe('reducer: claimEventRung', () => {
     const s = joinedState({ flops: 150 }); // rung0 target 100, met
     const cfg = activeConfig();
     const { state: s2, result } = applyAction(s, { type: 'claimEventRung', index: 0 }, cfg, NOW);
-    expect(result).toEqual({ ok: true, reward: { flops: 50 }, rungIndex: 0 });
+    // `eventId` echoes which event's ladder the rung came from - a claim may
+    // target a superseded window from meta.pendingEventClaims, so callers
+    // (stateService's participation sync) can't infer it from eventProgress.
+    expect(result).toEqual({
+      ok: true, reward: { flops: 50 }, rungIndex: 0, eventId: 'ev1',
+    });
     expect(s2.run.credits).toBe(10 + 50); // initial 10 + flops reward
     expect(s2.run.lifetimeRun).toBe(50);
     expect(s2.meta.eventProgress.rungsClaimed).toEqual([0]);
