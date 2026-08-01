@@ -3,9 +3,10 @@ process.env.DB_PATH = ':memory:';
 import { describe, it, expect, beforeEach } from 'vitest';
 import { validateModifiers, validateLadder } from '../shared/events.js';
 
+import { driver } from '../server/db/index.js';
+
 const dbMod = await import('../server/db.js');
 const {
-  db,
   upsertUser,
   listEvents,
   getEvent,
@@ -20,6 +21,12 @@ const {
   seedSeasonalEvents,
 } = dbMod;
 const { SEASONAL_EVENTS } = await import('../server/data/seasonalEvents.js');
+
+// Schema/table-existence assertions below are inherently backend-specific
+// (sqlite_master, PRAGMA table_info); route them through the driver handle
+// rather than a module-level `db` export so the intent stays explicit. The
+// pg variant of these assertions is added in Task 4.
+const db = driver.__raw;
 
 function tableNames() {
   return db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().map((r) => r.name);
