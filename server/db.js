@@ -133,7 +133,7 @@ function findAvailableUsername(desiredName, isTaken) {
 // index below was introduced. Must run before the CREATE UNIQUE INDEX or
 // that statement would fail on any pre-existing collision. No-op when there
 // are no duplicates, so it's cheap to run unconditionally on every boot.
-export function dedupeUsernames() {
+function dedupeUsernamesSync() {
   const rows = db.prepare(
     'SELECT id, username, created_at FROM users WHERE username IS NOT NULL ORDER BY created_at ASC, id ASC',
   ).all();
@@ -150,7 +150,14 @@ export function dedupeUsernames() {
   }
 }
 
-dedupeUsernames();
+// Transitional: module init still needs this to run synchronously before the
+// unique index below is created. The exported async wrapper is what callers
+// (Task 2 moves this into schema init properly) will use going forward.
+export async function dedupeUsernames() {
+  return dedupeUsernamesSync();
+}
+
+dedupeUsernamesSync();
 
 db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username COLLATE NOCASE)');
 
@@ -171,7 +178,7 @@ const insertUserStmt = db.prepare(`
   VALUES (@id, @provider, @provider_id, @username, @avatar_url, @created_at)
 `);
 
-export function upsertUser({ provider, providerId, username, avatarUrl }) {
+export async function upsertUser({ provider, providerId, username, avatarUrl }) {
   const id = `${provider}:${providerId}`;
   const existing = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
   if (existing) {
@@ -217,11 +224,11 @@ export function upsertUser({ provider, providerId, username, avatarUrl }) {
   return user;
 }
 
-export function getUserById(id) {
+export async function getUserById(id) {
   return db.prepare('SELECT * FROM users WHERE id = ?').get(id);
 }
 
-export function getAllUsersWithSaves() {
+export async function getAllUsersWithSaves() {
   return db.prepare(`
     SELECT u.id, u.provider, u.username, u.avatar_url, u.created_at,
            u.leaderboard_opt_out,
@@ -232,18 +239,18 @@ export function getAllUsersWithSaves() {
   `).all();
 }
 
-export function getSave(userId) {
+export async function getSave(userId) {
   return db.prepare('SELECT * FROM saves WHERE user_id = ?').get(userId);
 }
 
-export function putSave(userId, data, lastSave) {
+export async function putSave(userId, data, lastSave) {
   db.prepare(`
     INSERT INTO saves (user_id, data, last_save) VALUES (?, ?, ?)
     ON CONFLICT(user_id) DO UPDATE SET data = excluded.data, last_save = excluded.last_save
   `).run(userId, JSON.stringify(data), lastSave);
 }
 
-export function deleteSave(userId) {
+export async function deleteSave(userId) {
   db.prepare('DELETE FROM saves WHERE user_id = ?').run(userId);
 }
 
@@ -253,7 +260,7 @@ export function deleteSave(userId) {
  * duplicates are not deduped here; callers (server/auth.js, Task 8) treat
  * this as a plain set.
  */
-export function getRoles(userId) {
+export async function getRoles(userId) {
   const row = db.prepare('SELECT roles FROM users WHERE id = ?').get(userId);
   if (!row || !row.roles) return [];
   try {
@@ -263,7 +270,7 @@ export function getRoles(userId) {
   }
 }
 
-export function setRoles(userId, roles) {
+export async function setRoles(userId, roles) {
   db.prepare('UPDATE users SET roles = ? WHERE id = ?').run(JSON.stringify(roles), userId);
 }
 
@@ -273,7 +280,7 @@ export function setRoles(userId, roles) {
  * contract as users.roles above. Callers treat it as a plain set; the route
  * layer owns validation against shared/tours.js.
  */
-export function getToursCompleted(userId) {
+export async function getToursCompleted(userId) {
   const row = db.prepare('SELECT tours_completed FROM users WHERE id = ?').get(userId);
   if (!row || !row.tours_completed) return [];
   try {
@@ -284,7 +291,7 @@ export function getToursCompleted(userId) {
   }
 }
 
-export function setToursCompleted(userId, ids) {
+export async function setToursCompleted(userId, ids) {
   db.prepare('UPDATE users SET tours_completed = ? WHERE id = ?').run(JSON.stringify(ids), userId);
 }
 
@@ -294,7 +301,7 @@ export function setToursCompleted(userId, ids) {
  * themself, and marks the username as user-chosen so upsertUser stops
  * overwriting it from the OAuth profile on future logins.
  */
-export function setUsername(userId, name) {
+export async function setUsername(userId, name) {
   const collision = db.prepare(
     'SELECT id FROM users WHERE username = ? COLLATE NOCASE AND id != ?',
   ).get(name, userId);
@@ -303,7 +310,7 @@ export function setUsername(userId, name) {
   return { ok: true };
 }
 
-export function createMinigameSession(userId, game) {
+export async function createMinigameSession(userId, game) {
   const session = {
     id: randomUUID(),
     user_id: userId,
@@ -319,7 +326,7 @@ export function createMinigameSession(userId, game) {
   return session;
 }
 
-export function getMinigameSession(id) {
+export async function getMinigameSession(id) {
   return db.prepare('SELECT * FROM minigame_sessions WHERE id = ?').get(id);
 }
 
@@ -332,7 +339,7 @@ export function getMinigameSession(id) {
  * Used to block a burst of concurrently-open sessions for the same game
  * (each of which would otherwise dodge the win cooldown independently).
  */
-export function getOpenMinigameSession(userId, game, minStartedAt) {
+export async function getOpenMinigameSession(userId, game, minStartedAt) {
   return db.prepare(`
     SELECT * FROM minigame_sessions
     WHERE user_id = ? AND game = ? AND finished_at IS NULL AND started_at >= ?
@@ -340,7 +347,7 @@ export function getOpenMinigameSession(userId, game, minStartedAt) {
   `).get(userId, game, minStartedAt);
 }
 
-export function finishMinigameSession(id, score) {
+export async function finishMinigameSession(id, score) {
   db.prepare('UPDATE minigame_sessions SET finished_at = ?, score = ? WHERE id = ?').run(Date.now(), score, id);
 }
 
@@ -350,7 +357,7 @@ export function finishMinigameSession(id, score) {
  * returned as the raw JSON text exactly as stored - mirroring getSave's
  * convention, callers JSON.parse it themselves.
  */
-export function getConfigRow() {
+export async function getConfigRow() {
   return db.prepare('SELECT * FROM config WHERE id = 1').get();
 }
 
@@ -360,7 +367,7 @@ export function getConfigRow() {
  * is a plain JS object; it is JSON.stringify'd here (the same convention
  * putSave uses) - callers never pass pre-stringified JSON.
  */
-export function putConfigRow(version, data, userId) {
+export async function putConfigRow(version, data, userId) {
   const text = JSON.stringify(data);
   const now = Date.now();
   db.prepare(`
@@ -373,7 +380,7 @@ export function putConfigRow(version, data, userId) {
   `).run(version, text, now, userId);
 }
 
-export function getConfigHistory() {
+export async function getConfigHistory() {
   return db.prepare('SELECT * FROM config_history ORDER BY rowid DESC').all();
 }
 
@@ -398,11 +405,11 @@ function parseEventRow(row) {
   };
 }
 
-export function listEvents() {
+export async function listEvents() {
   return db.prepare('SELECT * FROM live_events ORDER BY created_at ASC').all().map(parseEventRow);
 }
 
-export function getEvent(id) {
+export async function getEvent(id) {
   return parseEventRow(db.prepare('SELECT * FROM live_events WHERE id = ?').get(id));
 }
 
@@ -412,7 +419,7 @@ export function getEvent(id) {
  * invariant enforced by the lifecycle/scheduler (Task 4), not a DB
  * constraint - this just reads the first match.
  */
-export function getActiveEvent() {
+export async function getActiveEvent() {
   return parseEventRow(db.prepare("SELECT * FROM live_events WHERE status = 'active' LIMIT 1").get());
 }
 
@@ -438,7 +445,7 @@ const putEventStmt = db.prepare(`
  * fields, since callers may pass back a row previously read via getEvent
  * (snake_case) or freshly authored data (camelCase).
  */
-export function putEvent(event) {
+export async function putEvent(event) {
   const row = {
     id: event.id,
     name: event.name,
@@ -454,7 +461,7 @@ export function putEvent(event) {
     created_by: event.createdBy ?? event.created_by ?? null,
   };
   putEventStmt.run(row);
-  return getEvent(row.id);
+  return await getEvent(row.id);
 }
 
 /**
@@ -464,7 +471,7 @@ export function putEvent(event) {
  * scheduler flip status alone (e.g. active -> ended) without needing to
  * re-supply - or accidentally wipe - the event's window.
  */
-export function setEventStatus(id, status, { startsAt, endsAt } = {}) {
+export async function setEventStatus(id, status, { startsAt, endsAt } = {}) {
   const sets = ['status = @status'];
   const params = { id, status };
   if (startsAt !== undefined) { sets.push('starts_at = @starts_at'); params.starts_at = startsAt; }
@@ -477,7 +484,7 @@ export function setEventStatus(id, status, { startsAt, endsAt } = {}) {
  * only" - the route layer (Task 6) is responsible for rejecting deletes of
  * scheduled/active/ended events before calling this.
  */
-export function deleteEvent(id) {
+export async function deleteEvent(id) {
   db.prepare('DELETE FROM live_events WHERE id = ?').run(id);
 }
 
@@ -495,7 +502,7 @@ const upsertParticipationStmt = db.prepare(`
  * (user_id, event_id). Accepts camelCase or snake_case keys, same rationale
  * as putEvent.
  */
-export function upsertParticipation(row) {
+export async function upsertParticipation(row) {
   const params = {
     user_id: row.userId ?? row.user_id,
     event_id: row.eventId ?? row.event_id,
@@ -506,10 +513,10 @@ export function upsertParticipation(row) {
     opted_out: (row.optedOut ?? row.opted_out) ? 1 : 0,
   };
   upsertParticipationStmt.run(params);
-  return getParticipation(params.user_id, params.event_id);
+  return await getParticipation(params.user_id, params.event_id);
 }
 
-export function getParticipation(userId, eventId) {
+export async function getParticipation(userId, eventId) {
   return db.prepare('SELECT * FROM event_participation WHERE user_id = ? AND event_id = ?').get(userId, eventId);
 }
 
@@ -532,7 +539,7 @@ const updateParticipationProgressStmt = db.prepare(`
  * doesn't exist for some reason (e.g. the event was deleted out from under
  * an in-flight claim).
  */
-export function updateParticipationProgress(userId, eventId, rungsClaimed, lastProgressAt) {
+export async function updateParticipationProgress(userId, eventId, rungsClaimed, lastProgressAt) {
   updateParticipationProgressStmt.run(rungsClaimed, lastProgressAt, userId, eventId);
 }
 
@@ -541,13 +548,13 @@ export function updateParticipationProgress(userId, eventId, rungsClaimed, lastP
  * most rungs claimed first, ties broken by whoever reached their current
  * progress earliest.
  */
-export function listParticipation(eventId) {
+export async function listParticipation(eventId) {
   return db.prepare(
     'SELECT * FROM event_participation WHERE event_id = ? ORDER BY rungs_claimed DESC, last_progress_at ASC',
   ).all(eventId);
 }
 
-export function setLeaderboardOptOut(userId, optOut) {
+export async function setLeaderboardOptOut(userId, optOut) {
   db.prepare('UPDATE users SET leaderboard_opt_out = ? WHERE id = ?').run(optOut ? 1 : 0, userId);
 }
 
@@ -564,7 +571,7 @@ export function setLeaderboardOptOut(userId, optOut) {
  * that change immediately on the very next read - no re-sync step needed.
  * Capped at `limit` rows (default 50, per the route's leaderboard contract).
  */
-export function listLeaderboard(eventId, limit = 50) {
+export async function listLeaderboard(eventId, limit = 50) {
   return db.prepare(`
     SELECT ep.user_id AS userId, u.username AS username,
            ep.rungs_claimed AS rungsClaimed, ep.last_progress_at AS lastProgressAt
@@ -581,7 +588,7 @@ export function listLeaderboard(eventId, limit = 50) {
  * 'draft', which by definition has no window). Backs the v1.5 leaderboard's
  * latest-event board. Returns null when no event has ever been scheduled.
  */
-export function getLatestEventId() {
+export async function getLatestEventId() {
   const row = db.prepare(
     "SELECT id FROM live_events WHERE status != 'draft' AND starts_at IS NOT NULL ORDER BY starts_at DESC LIMIT 1",
   ).get();
@@ -601,7 +608,7 @@ const seedEventStmt = db.prepare(`
  * summer-surge's modifiers or already scheduled it). Called from
  * ensureConfig-adjacent boot code (Task 4).
  */
-export function seedSeasonalEvents() {
+export async function seedSeasonalEvents() {
   const now = Date.now();
   for (const evt of SEASONAL_EVENTS) {
     seedEventStmt.run({

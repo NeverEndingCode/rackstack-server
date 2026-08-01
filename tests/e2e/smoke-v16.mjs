@@ -164,14 +164,14 @@ function assert(cond, message) {
 }
 
 let seq = 0;
-function seedUser(mutate) {
+async function seedUser(mutate) {
   seq += 1;
-  const user = upsertUser({
+  const user = await upsertUser({
     provider: 'discord', providerId: `v16-${seq}`, username: `v16user${seq}`, avatarUrl: null,
   });
   const s = initialState();
   if (mutate) mutate(s);
-  putSave(user.id, s, Date.now());
+  await putSave(user.id, s, Date.now());
   return user;
 }
 
@@ -201,7 +201,7 @@ async function main() {
   // --- 1-4: the tours round trip -------------------------------------------
 
   await check('GET /api/me returns an empty toursCompleted for a fresh user', async () => {
-    const u = seedUser();
+    const u = await seedUser();
     const res = await api(u, '/api/me');
     assert(res.status === 200, `expected 200, got ${res.status}`);
     assert(Array.isArray(res.body.toursCompleted), 'toursCompleted is not an array');
@@ -209,7 +209,7 @@ async function main() {
   });
 
   await check('completing onboarding marks every registered tour, and /api/me reflects it', async () => {
-    const u = seedUser();
+    const u = await seedUser();
     const put = await api(u, '/api/me/tours', {
       method: 'PUT',
       body: JSON.stringify({ tourId: ONBOARDING_TOUR_ID, completed: true }),
@@ -231,7 +231,7 @@ async function main() {
   });
 
   await check('completed:false removes the tour (replay path)', async () => {
-    const u = seedUser();
+    const u = await seedUser();
     await api(u, '/api/me/tours', {
       method: 'PUT',
       body: JSON.stringify({ tourId: ONBOARDING_TOUR_ID, completed: true }),
@@ -252,7 +252,7 @@ async function main() {
   // --- 5: validation --------------------------------------------------------
 
   await check('an unregistered tour id is rejected with 400', async () => {
-    const u = seedUser();
+    const u = await seedUser();
     const res = await api(u, '/api/me/tours', {
       method: 'PUT',
       body: JSON.stringify({ tourId: 'bogus-tour', completed: true }),
@@ -264,7 +264,7 @@ async function main() {
   // --- 6: the new heat tunables --------------------------------------------
 
   await check('GET /api/config exposes ventPercent + overheatPopupMs and drops ventAmount', async () => {
-    const u = seedUser();
+    const u = await seedUser();
     const res = await api(u, '/api/config');
     assert(res.status === 200, `expected 200, got ${res.status}`);
     const heat = res.body.data.heat;
@@ -276,7 +276,7 @@ async function main() {
   // --- 7: percentage venting through the real action path ------------------
 
   await check('a vent action sheds 25% of heat capacity', async () => {
-    const u = seedUser((s) => { s.run.heat = 1500; });
+    const u = await seedUser((s) => { s.run.heat = 1500; });
     const before = await api(u, '/api/state');
     assert(before.status === 200, `expected 200, got ${before.status}`);
     const capacity = 2000;   // DEFAULT_CONFIG.heat.capacity, no Cold Storage bonus
@@ -311,7 +311,7 @@ async function main() {
     const browser = await pw.chromium.launch();
     try {
       await check('a fresh player sees the tour, and Next advances it', async () => {
-        const u = seedUser();
+        const u = await seedUser();
         const ctx = await browser.newContext();
         await ctx.addCookies([{
           name: COOKIE_NAME,
@@ -346,7 +346,7 @@ async function main() {
       });
 
       await check('Skip closes the tour and persists across a reload', async () => {
-        const u = seedUser();
+        const u = await seedUser();
         const ctx = await browser.newContext();
         await ctx.addCookies([{
           name: COOKIE_NAME,

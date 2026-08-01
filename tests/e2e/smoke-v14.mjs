@@ -209,9 +209,9 @@ function assert(cond, message) {
 // start with the guided tours already completed - otherwise the onboarding
 // tour auto-starts over the built client and its overlay swallows the clicks
 // these checks depend on. New-player tour behaviour is covered by smoke-v16.
-function seedUser({ provider, providerId, username }) {
-  const user = upsertUser({ provider, providerId, username, avatarUrl: null });
-  setToursCompleted(user.id, TOUR_IDS);
+async function seedUser({ provider, providerId, username }) {
+  const user = await upsertUser({ provider, providerId, username, avatarUrl: null });
+  await setToursCompleted(user.id, TOUR_IDS);
   return user;
 }
 
@@ -285,7 +285,7 @@ async function endEventApi(page, id) {
 async function measureGridGain(page, userId, owned, elapsedMs) {
   const s = initialState();
   s.run.grid[0].owned = owned;
-  putSave(userId, s, Date.now() - elapsedMs);
+  await putSave(userId, s, Date.now() - elapsedMs);
   const res = await apiFetch(page, '/api/state', { method: 'GET' });
   if (res.status !== 200) throw new Error(`GET /api/state failed while measuring grid gain: ${res.status} ${JSON.stringify(res.body)}`);
   return res.body.run.credits - 10;
@@ -334,16 +334,16 @@ async function main() {
   // The owner id doubles as our event-authoring "coordinator" persona - an
   // owner's effective roles always include event_coordinator (server/
   // auth.js's getEffectiveRoles), so no separate setRoles call is needed.
-  const coordinator = seedUser({ provider: 'github', providerId: '37058311', username: 'coord_v14_e2e' });
+  const coordinator = await seedUser({ provider: 'github', providerId: '37058311', username: 'coord_v14_e2e' });
   assert(`${coordinator.id}` === OWNER_ID, `expected seeded owner id ${OWNER_ID}, got ${coordinator.id}`);
 
-  const ladderPlayer = seedUser({ provider: 'discord', providerId: 'e2e-v14-ladder', username: 'ladder_v14_e2e' });
-  const optOutPlayer = seedUser({ provider: 'discord', providerId: 'e2e-v14-optout', username: 'optout_v14_e2e' });
-  const overlayPlayer = seedUser({ provider: 'discord', providerId: 'e2e-v14-overlay', username: 'overlay_v14_e2e' });
-  const plainPlayer = seedUser({ provider: 'discord', providerId: 'e2e-v14-plain', username: 'plain_v14_e2e' });
-  const ratePlayer = seedUser({ provider: 'discord', providerId: 'e2e-v14-rate', username: 'rate_v14_e2e' });
-  const heatPlayer = seedUser({ provider: 'discord', providerId: 'e2e-v14-heat', username: 'heat_v14_e2e' });
-  const gracePlayer = seedUser({ provider: 'discord', providerId: 'e2e-v14-grace', username: 'grace_v14_e2e' });
+  const ladderPlayer = await seedUser({ provider: 'discord', providerId: 'e2e-v14-ladder', username: 'ladder_v14_e2e' });
+  const optOutPlayer = await seedUser({ provider: 'discord', providerId: 'e2e-v14-optout', username: 'optout_v14_e2e' });
+  const overlayPlayer = await seedUser({ provider: 'discord', providerId: 'e2e-v14-overlay', username: 'overlay_v14_e2e' });
+  const plainPlayer = await seedUser({ provider: 'discord', providerId: 'e2e-v14-plain', username: 'plain_v14_e2e' });
+  const ratePlayer = await seedUser({ provider: 'discord', providerId: 'e2e-v14-rate', username: 'rate_v14_e2e' });
+  const heatPlayer = await seedUser({ provider: 'discord', providerId: 'e2e-v14-heat', username: 'heat_v14_e2e' });
+  const gracePlayer = await seedUser({ provider: 'discord', providerId: 'e2e-v14-grace', username: 'grace_v14_e2e' });
 
   // ladderPlayer's pre-existing progress, seeded BEFORE any event exists (and
   // therefore before they ever join one) - Check 1 below asserts this value
@@ -352,7 +352,7 @@ async function main() {
   {
     const s = initialState();
     s.meta.stats.lifetimeFlopsAllTime = 500;
-    putSave(ladderPlayer.id, s, Date.now());
+    await putSave(ladderPlayer.id, s, Date.now());
   }
 
   const coordCtx = await browser.newContext();
@@ -490,10 +490,10 @@ async function main() {
     // smoke-v13.mjs's mutateSave uses for other time-based mechanics) - the
     // invariant under test is the baseline subtraction, not how the stat
     // itself got incremented.
-    const row = getSave(ladderPlayer.id);
+    const row = await getSave(ladderPlayer.id);
     const data = JSON.parse(row.data);
     data.meta.stats.lifetimeFlopsAllTime += 300;
-    putSave(ladderPlayer.id, data, Date.now());
+    await putSave(ladderPlayer.id, data, Date.now());
 
     const postAct = await apiFetch(ladderPage, '/api/event', { method: 'GET' });
     assert(postAct.body.progress.rungs[0].current === 300, `expected rung 0's current progress to read 300 (only the post-join delta - not the pre-existing 500, not the raw 800 total), got ${postAct.body.progress.rungs[0].current}`);
@@ -646,7 +646,7 @@ async function main() {
     {
       const s = initialState();
       s.run.grid[0].owned = GRID_OWNED;
-      putSave(ratePlayer.id, s, Date.now());
+      await putSave(ratePlayer.id, s, Date.now());
     }
     await bootAndGetState(ratePage); // event 2 (gridMult 3) is active here
     await ratePage.waitForTimeout(500);
@@ -695,7 +695,7 @@ async function main() {
       const s = initialState();
       s.run.tiers[3].owned = 1; // Colo Rack Unit - unlocks the Overclock tab
       s.run.heat = 2100;
-      putSave(heatPlayer.id, s, Date.now());
+      await putSave(heatPlayer.id, s, Date.now());
     }
     await bootAndGetState(heatPage);
     // Several 250ms production ticks, i.e. several chances for the client's
@@ -748,15 +748,15 @@ async function main() {
     // the personal window an hour into the past - i.e. 47h of claim grace
     // left, the exact situation spec §5.3 exists for.
     {
-      const data = JSON.parse(getSave(gracePlayer.id).data);
+      const data = JSON.parse((await getSave(gracePlayer.id)).data);
       data.meta.stats.lifetimeFlopsAllTime += 300;
-      putSave(gracePlayer.id, data, Date.now());
+      await putSave(gracePlayer.id, data, Date.now());
     }
     await endEventApi(coordPage, event4Id);
     {
-      const data = JSON.parse(getSave(gracePlayer.id).data);
+      const data = JSON.parse((await getSave(gracePlayer.id)).data);
       data.meta.eventProgress.endsAt = Date.now() - 3600 * 1000;
-      putSave(gracePlayer.id, data, Date.now());
+      await putSave(gracePlayer.id, data, Date.now());
     }
 
     // THE reload. Pre-fix the ladder existed only as in-memory React state

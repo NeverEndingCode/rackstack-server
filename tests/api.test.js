@@ -20,13 +20,13 @@ const { COOKIE_NAME } = await import('../server/auth.js');
 
 const v11Fixture = JSON.parse(readFileSync(new URL('./fixtures/v11-save.json', import.meta.url)));
 
-ensureConfig();
+await ensureConfig();
 const app = buildApp();
 
 let seq = 0;
-function makeUser(overrides = {}) {
+async function makeUser(overrides = {}) {
   seq += 1;
-  return upsertUser({
+  return await upsertUser({
     provider: 'discord',
     providerId: `u${seq}`,
     username: `user${seq}`,
@@ -49,8 +49,8 @@ function cookieFor(user) {
 
 describe('GET /api/state', () => {
   it('migrates a v1.1-shape save into canonical state, preserving credits/wafers', async () => {
-    const user = makeUser();
-    putSave(user.id, v11Fixture, Date.now());
+    const user = await makeUser();
+    await putSave(user.id, v11Fixture, Date.now());
 
     const res = await request(app).get('/api/state').set('Cookie', cookieFor(user));
 
@@ -71,7 +71,7 @@ describe('GET /api/state', () => {
 
 describe('POST /api/actions', () => {
   it('400s when actions is not an array', async () => {
-    const user = makeUser();
+    const user = await makeUser();
     const res = await request(app)
       .post('/api/actions')
       .set('Cookie', cookieFor(user))
@@ -80,7 +80,7 @@ describe('POST /api/actions', () => {
   });
 
   it('400s when actions has more than 100 entries', async () => {
-    const user = makeUser();
+    const user = await makeUser();
     const actions = Array.from({ length: 101 }, (_, i) => ({ _cid: i, type: 'collectAll' }));
     const res = await request(app)
       .post('/api/actions')
@@ -90,7 +90,7 @@ describe('POST /api/actions', () => {
   });
 
   it('buy path mutates canon; a second identical unaffordable buy fails without undoing the first', async () => {
-    const user = makeUser(); // fresh state: credits = 10
+    const user = await makeUser(); // fresh state: credits = 10
 
     const res = await request(app)
       .post('/api/actions')
@@ -112,7 +112,7 @@ describe('POST /api/actions', () => {
   });
 
   it('rejects a malicious non-numeric index payload with a normal ok:false result, not a 500', async () => {
-    const user = makeUser(); // fresh state: credits = 10
+    const user = await makeUser(); // fresh state: credits = 10
 
     const res = await request(app)
       .post('/api/actions')
@@ -132,7 +132,7 @@ describe('POST /api/actions', () => {
   });
 
   it('rejects a prototype-key action type (__proto__) with a normal ok:false result, not a 500', async () => {
-    const user = makeUser();
+    const user = await makeUser();
 
     const res = await request(app)
       .post('/api/actions')
@@ -156,12 +156,12 @@ describe('POST /api/actions', () => {
 // prove the generic HTTP dispatch pipeline reaches them.
 describe('POST /api/actions: Cold Storage', () => {
   it('dispatches claimBlock through the existing generic action pipeline', async () => {
-    const user = makeUser();
+    const user = await makeUser();
     const state = initialState();
     // DEFAULT_CONFIG.batchQueue.blockDurationMs is 6h; starting the track 20h
     // ago means floor(20/6) = 3 blocks (indices 0-2) have arrived.
     state.meta.coldStorage.trackStartedAt = Date.now() - 20 * 3600 * 1000;
-    putSave(user.id, state, Date.now());
+    await putSave(user.id, state, Date.now());
 
     const res = await request(app)
       .post('/api/actions')
@@ -174,10 +174,10 @@ describe('POST /api/actions: Cold Storage', () => {
   });
 
   it('dispatches claimAllBlocks, resetTrack, startJob, and cancelJob in one batch', async () => {
-    const user = makeUser();
+    const user = await makeUser();
     const state = initialState();
     state.meta.coldStorage.trackStartedAt = Date.now() - 200 * 3600 * 1000; // all 16 blocks arrived
-    putSave(user.id, state, Date.now());
+    await putSave(user.id, state, Date.now());
 
     const res = await request(app)
       .post('/api/actions')
@@ -212,11 +212,11 @@ describe('POST /api/actions: Cold Storage', () => {
   // this test includes `_cid` too to prove the split doesn't disturb the
   // semantic `id` the reducer actually keys off of.
   it('rejects buyTapeUpgrade at max level via the existing config-driven check', async () => {
-    const user = makeUser();
+    const user = await makeUser();
     const state = initialState();
     state.meta.coldStorage.upgrades.headstart = 5; // DEFAULT_CONFIG.upgrades.maxLevels.headstart
     state.meta.coldStorage.tapes = 1e9; // plenty of tapes - proves this is max_level, not insufficient_credits
-    putSave(user.id, state, Date.now());
+    await putSave(user.id, state, Date.now());
 
     const res = await request(app)
       .post('/api/actions')
@@ -231,7 +231,7 @@ describe('POST /api/actions: Cold Storage', () => {
 
 describe('config: admin gating and owner bump', () => {
   it('non-admin PUT /api/admin/config -> 403', async () => {
-    const user = makeUser();
+    const user = await makeUser();
     const res = await request(app)
       .put('/api/admin/config')
       .set('Cookie', cookieFor(user))
@@ -240,7 +240,7 @@ describe('config: admin gating and owner bump', () => {
   });
 
   it('owner (via SUPER_ADMIN_IDS) can update config, and GET /api/config reflects the bump', async () => {
-    const owner = upsertUser({ provider: 'test', providerId: 'owner', username: 'owner', avatarUrl: null });
+    const owner = await upsertUser({ provider: 'test', providerId: 'owner', username: 'owner', avatarUrl: null });
     const before = await request(app).get('/api/config').set('Cookie', cookieFor(owner));
     const nextData = structuredClone(DEFAULT_CONFIG);
     nextData.heat.capacity = 2500;
@@ -258,7 +258,7 @@ describe('config: admin gating and owner bump', () => {
   });
 
   it('PUT /api/admin/config with an invalid doc -> 400 with errors[]', async () => {
-    const owner = upsertUser({ provider: 'test', providerId: 'owner', username: 'owner', avatarUrl: null });
+    const owner = await upsertUser({ provider: 'test', providerId: 'owner', username: 'owner', avatarUrl: null });
     const bad = structuredClone(DEFAULT_CONFIG);
     bad.heat.capacity = -5;
     const res = await request(app)
@@ -273,9 +273,9 @@ describe('config: admin gating and owner bump', () => {
 
 describe('roles', () => {
   it('a non-owner admin cannot grant the admin role (owner-only) -> 403', async () => {
-    const admin = makeUser();
-    setRoles(admin.id, ['admin']);
-    const target = makeUser();
+    const admin = await makeUser();
+    await setRoles(admin.id, ['admin']);
+    const target = await makeUser();
 
     const res = await request(app)
       .post('/api/admin/roles')
@@ -285,8 +285,8 @@ describe('roles', () => {
   });
 
   it('a non-admin cannot use the roles endpoint at all -> 403', async () => {
-    const user = makeUser();
-    const target = makeUser();
+    const user = await makeUser();
+    const target = await makeUser();
     const res = await request(app)
       .post('/api/admin/roles')
       .set('Cookie', cookieFor(user))
@@ -295,9 +295,9 @@ describe('roles', () => {
   });
 
   it('a non-owner admin CAN grant event_coordinator', async () => {
-    const admin = makeUser();
-    setRoles(admin.id, ['admin']);
-    const target = makeUser();
+    const admin = await makeUser();
+    await setRoles(admin.id, ['admin']);
+    const target = await makeUser();
 
     const res = await request(app)
       .post('/api/admin/roles')
@@ -308,8 +308,8 @@ describe('roles', () => {
   });
 
   it('owner can grant admin', async () => {
-    const owner = upsertUser({ provider: 'test', providerId: 'owner', username: 'owner', avatarUrl: null });
-    const target = makeUser();
+    const owner = await upsertUser({ provider: 'test', providerId: 'owner', username: 'owner', avatarUrl: null });
+    const target = await makeUser();
     const res = await request(app)
       .post('/api/admin/roles')
       .set('Cookie', cookieFor(owner))
@@ -319,8 +319,8 @@ describe('roles', () => {
   });
 
   it('unknown role -> 400', async () => {
-    const owner = upsertUser({ provider: 'test', providerId: 'owner', username: 'owner', avatarUrl: null });
-    const target = makeUser();
+    const owner = await upsertUser({ provider: 'test', providerId: 'owner', username: 'owner', avatarUrl: null });
+    const target = await makeUser();
     const res = await request(app)
       .post('/api/admin/roles')
       .set('Cookie', cookieFor(owner))
@@ -329,7 +329,7 @@ describe('roles', () => {
   });
 
   it('cannot modify a super-admin id -> 400', async () => {
-    const owner = upsertUser({ provider: 'test', providerId: 'owner', username: 'owner', avatarUrl: null });
+    const owner = await upsertUser({ provider: 'test', providerId: 'owner', username: 'owner', avatarUrl: null });
     const res = await request(app)
       .post('/api/admin/roles')
       .set('Cookie', cookieFor(owner))
@@ -340,8 +340,8 @@ describe('roles', () => {
 
 describe('PUT /api/me/username', () => {
   it('sets a valid username -> 200, then a case-insensitive collision from another user -> 409', async () => {
-    const u1 = makeUser();
-    const u2 = makeUser();
+    const u1 = await makeUser();
+    const u2 = await makeUser();
 
     const res1 = await request(app)
       .put('/api/me/username')
@@ -358,7 +358,7 @@ describe('PUT /api/me/username', () => {
   });
 
   it('rejects an invalid username shape -> 400', async () => {
-    const user = makeUser();
+    const user = await makeUser();
     const res = await request(app)
       .put('/api/me/username')
       .set('Cookie', cookieFor(user))
@@ -370,7 +370,7 @@ describe('PUT /api/me/username', () => {
 
 describe('minigames', () => {
   it('start -> finish pays clamped wafers; a second start within cooldown -> 429', async () => {
-    const user = makeUser();
+    const user = await makeUser();
 
     const startRes = await request(app)
       .post('/api/minigame/start')
@@ -400,7 +400,7 @@ describe('minigames', () => {
   });
 
   it('a second concurrently-open session for the same game is rejected -> 409 (burst-start regression)', async () => {
-    const user = makeUser();
+    const user = await makeUser();
 
     const first = await request(app)
       .post('/api/minigame/start')
@@ -426,7 +426,7 @@ describe('minigames', () => {
   });
 
   it('a session that predates a win cannot be redeemed once the win cooldown is set -> 429, no credit, still marked finished (burst-finish regression)', async () => {
-    const user = makeUser();
+    const user = await makeUser();
 
     // Win once, which sets server.gameCooldowns.rush.
     const startRes = await request(app)
@@ -444,7 +444,7 @@ describe('minigames', () => {
     // Craft a second session directly via the db layer, bypassing the
     // start-time session_open/cooldown gate entirely, to simulate one that
     // was opened concurrently before the win landed.
-    const craftedSession = createMinigameSession(user.id, 'rush');
+    const craftedSession = await createMinigameSession(user.id, 'rush');
 
     const blockedFinish = await request(app)
       .post('/api/minigame/finish')
@@ -467,7 +467,7 @@ describe('minigames', () => {
   });
 
   it('an unknown session id -> 404', async () => {
-    const user = makeUser();
+    const user = await makeUser();
     const res = await request(app)
       .post('/api/minigame/finish')
       .set('Cookie', cookieFor(user))
@@ -476,7 +476,7 @@ describe('minigames', () => {
   });
 
   it('finishing the same session twice -> 410 on the second call', async () => {
-    const user = makeUser();
+    const user = await makeUser();
     const startRes = await request(app)
       .post('/api/minigame/start')
       .set('Cookie', cookieFor(user))
@@ -497,7 +497,7 @@ describe('minigames', () => {
   });
 
   it('match pays 0 and no cooldown/win-bump when not won', async () => {
-    const user = makeUser();
+    const user = await makeUser();
     const startRes = await request(app)
       .post('/api/minigame/start')
       .set('Cookie', cookieFor(user))
@@ -518,7 +518,7 @@ describe('minigames', () => {
 
 describe('GET /api/me', () => {
   it('includes effective roles and isOwner', async () => {
-    const owner = upsertUser({ provider: 'test', providerId: 'owner', username: 'owner', avatarUrl: null });
+    const owner = await upsertUser({ provider: 'test', providerId: 'owner', username: 'owner', avatarUrl: null });
     const res = await request(app).get('/api/me').set('Cookie', cookieFor(owner));
     expect(res.status).toBe(200);
     expect(res.body.isOwner).toBe(true);
@@ -528,7 +528,7 @@ describe('GET /api/me', () => {
 
 describe('GET /api/changelog', () => {
   it('returns text/plain, falling back gracefully if CHANGELOG.md does not exist yet', async () => {
-    const user = makeUser();
+    const user = await makeUser();
     const res = await request(app).get('/api/changelog').set('Cookie', cookieFor(user));
     expect(res.status).toBe(200);
     expect(res.text.length).toBeGreaterThan(0);
@@ -537,7 +537,7 @@ describe('GET /api/changelog', () => {
 
 describe('retired routes', () => {
   it('GET/POST/DELETE /api/save no longer exist', async () => {
-    const user = makeUser();
+    const user = await makeUser();
     const get = await request(app).get('/api/save').set('Cookie', cookieFor(user));
     const post = await request(app).post('/api/save').set('Cookie', cookieFor(user)).send({});
     const del = await request(app).delete('/api/save').set('Cookie', cookieFor(user));

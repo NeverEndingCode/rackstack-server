@@ -161,9 +161,9 @@ function assert(cond, message) {
 // start with the guided tours already completed - otherwise the onboarding
 // tour auto-starts over the built client and its overlay swallows the clicks
 // these checks depend on. New-player tour behaviour is covered by smoke-v16.
-function seedUser({ provider, providerId, username }) {
-  const user = upsertUser({ provider, providerId, username, avatarUrl: null });
-  setToursCompleted(user.id, TOUR_IDS);
+async function seedUser({ provider, providerId, username }) {
+  const user = await upsertUser({ provider, providerId, username, avatarUrl: null });
+  await setToursCompleted(user.id, TOUR_IDS);
   return user;
 }
 
@@ -207,18 +207,18 @@ async function main() {
   browser = await pw.chromium.launch();
 
   // --- Seed users -----------------------------------------------------------
-  const owner = seedUser({ provider: 'github', providerId: '37058311', username: 'owner_ev_e2e' });
+  const owner = await seedUser({ provider: 'github', providerId: '37058311', username: 'owner_ev_e2e' });
   assert(`${owner.id}` === OWNER_ID, `expected seeded owner id ${OWNER_ID}, got ${owner.id}`);
 
   // A PURE event_coordinator - explicitly NOT granted 'admin' - proving the
   // brief's requirement that a coordinator-only account can reach the panel
   // and see ONLY the Events tab.
-  const coordinator = seedUser({ provider: 'discord', providerId: 'e2e-ev-coord', username: 'coord_ev_e2e' });
-  setRoles(coordinator.id, ['event_coordinator']);
+  const coordinator = await seedUser({ provider: 'discord', providerId: 'e2e-ev-coord', username: 'coord_ev_e2e' });
+  await setRoles(coordinator.id, ['event_coordinator']);
 
   // A plain, non-admin, non-coordinator player - used to confirm the event
   // becomes visible to a genuinely unprivileged second user once activated.
-  const player = seedUser({ provider: 'discord', providerId: 'e2e-ev-player', username: 'player_ev_e2e' });
+  const player = await seedUser({ provider: 'discord', providerId: 'e2e-ev-player', username: 'player_ev_e2e' });
 
   const eventId = `e2e-surge-${Date.now()}`;
 

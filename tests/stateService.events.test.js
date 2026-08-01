@@ -40,12 +40,12 @@ const { loadEvaluateAndSchedule, loadAndEvaluate, applyActions } = stateService;
 const { EVENT_CLAIM_GRACE_MS } = await import('../shared/reducer.js');
 const { initialState } = await import('../shared/state.js');
 
-ensureConfig();
+await ensureConfig();
 
 let seq = 0;
-function makeUser() {
+async function makeUser() {
   seq += 1;
-  return upsertUser({
+  return await upsertUser({
     provider: 'discord', providerId: `ss${seq}`, username: `ssuser${seq}`, avatarUrl: null,
   });
 }
@@ -75,17 +75,17 @@ function sampleEvent(overrides = {}) {
 // cache before it next invalidates.
 // ---------------------------------------------------------------------------
 describe('loadEvaluateAndSchedule: __claimableEvent per-user isolation (hotfix bug a safety property)', () => {
-  it('does not mutate configService\'s shared effective-config cache when attaching a per-user __claimableEvent', () => {
+  it('does not mutate configService\'s shared effective-config cache when attaching a per-user __claimableEvent', async () => {
     const now = Date.now();
-    const alice = makeUser();
+    const alice = await makeUser();
 
-    putEvent(sampleEvent({ id: 'isolation-evt', startsAt: now - 1000, endsAt: now + 100000 }));
-    activateEvent('isolation-evt', now);
+    await putEvent(sampleEvent({ id: 'isolation-evt', startsAt: now - 1000, endsAt: now + 100000 }));
+    await activateEvent('isolation-evt', now);
 
-    const sharedBefore = getEffectiveConfig();
+    const sharedBefore = await getEffectiveConfig();
     expect(sharedBefore.data.__claimableEvent).toBeUndefined();
 
-    const { config: configA } = loadEvaluateAndSchedule(alice.id, now);
+    const { config: configA } = await loadEvaluateAndSchedule(alice.id, now);
     expect(configA.__claimableEvent).toEqual({
       id: 'isolation-evt',
       ladder: sampleEvent().ladder,
@@ -96,7 +96,7 @@ describe('loadEvaluateAndSchedule: __claimableEvent per-user isolation (hotfix b
     // getEffectiveConfig() hands back the identical cached reference - must
     // remain untouched by attaching Alice's claimable event to her own
     // per-request copy.
-    const sharedAfter = getEffectiveConfig();
+    const sharedAfter = await getEffectiveConfig();
     expect(sharedAfter.data).toBe(sharedBefore.data);
     expect(sharedAfter.data.__claimableEvent).toBeUndefined();
 
@@ -105,18 +105,18 @@ describe('loadEvaluateAndSchedule: __claimableEvent per-user isolation (hotfix b
     expect(configA).not.toBe(sharedAfter.data);
   });
 
-  it('two different users never see each other\'s __claimableEvent', () => {
+  it('two different users never see each other\'s __claimableEvent', async () => {
     const now = Date.now();
-    const alice = makeUser();
-    const bob = makeUser();
+    const alice = await makeUser();
+    const bob = await makeUser();
 
-    putEvent(sampleEvent({ id: 'leak-evt', startsAt: now - 1000, endsAt: now + 5000 }));
-    activateEvent('leak-evt', now);
+    await putEvent(sampleEvent({ id: 'leak-evt', startsAt: now - 1000, endsAt: now + 5000 }));
+    await activateEvent('leak-evt', now);
 
     // Alice joins while the event is active (persisted via loadAndEvaluate).
-    const { state: aliceState } = loadAndEvaluate(alice.id, now);
+    const { state: aliceState } = await loadAndEvaluate(alice.id, now);
     expect(aliceState.meta.eventProgress.eventId).toBe('leak-evt');
-    const { config: configAAfterJoin } = loadEvaluateAndSchedule(alice.id, now);
+    const { config: configAAfterJoin } = await loadEvaluateAndSchedule(alice.id, now);
     expect(configAAfterJoin.__claimableEvent.id).toBe('leak-evt');
 
     // The event ends globally with nothing new activated, and Bob loads his
@@ -125,14 +125,14 @@ describe('loadEvaluateAndSchedule: __claimableEvent per-user isolation (hotfix b
     // eventProgress null. If the shared cache had somehow been mutated by
     // Alice's request, Bob's config could incorrectly inherit her
     // __claimableEvent.
-    endEvent('leak-evt', now + 6000);
-    const { state: bobState, config: configB } = loadEvaluateAndSchedule(bob.id, now + 7000);
+    await endEvent('leak-evt', now + 6000);
+    const { state: bobState, config: configB } = await loadEvaluateAndSchedule(bob.id, now + 7000);
     expect(bobState.meta.eventProgress).toBeNull();
     expect(configB.__claimableEvent).toBeUndefined();
 
     // Alice's own lingering grace-period progress must still resolve
     // correctly and independently of Bob's load.
-    const { config: configAAfterBob } = loadEvaluateAndSchedule(alice.id, now + 7000);
+    const { config: configAAfterBob } = await loadEvaluateAndSchedule(alice.id, now + 7000);
     expect(configAAfterBob.__claimableEvent).toEqual({
       id: 'leak-evt',
       ladder: sampleEvent().ladder,
@@ -146,22 +146,22 @@ describe('loadEvaluateAndSchedule: __claimableEvent per-user isolation (hotfix b
 // Bug (a): the 48h claim grace period itself.
 // ---------------------------------------------------------------------------
 describe('claimEventRung end-to-end: 48h grace period reachable after the event globally ends (hotfix bug a)', () => {
-  it('an ended event stops applying its modifiers immediately, but its ladder stays claimable (and actually pays out) within the grace period', () => {
+  it('an ended event stops applying its modifiers immediately, but its ladder stays claimable (and actually pays out) within the grace period', async () => {
     const now = Date.now();
-    const user = makeUser();
-    const baseGridMult = getConfig().data.production.gridMult;
+    const user = await makeUser();
+    const baseGridMult = (await getConfig()).data.production.gridMult;
 
-    putEvent(sampleEvent({
+    await putEvent(sampleEvent({
       id: 'grace-evt',
       startsAt: now - 1000,
       endsAt: now + 5000,
       modifiers: [{ path: 'production.gridMult', value: baseGridMult + 5 }],
     }));
-    activateEvent('grace-evt', now);
-    expect(getEffectiveConfig().data.production.gridMult).toBe(baseGridMult + 5);
+    await activateEvent('grace-evt', now);
+    expect((await getEffectiveConfig()).data.production.gridMult).toBe(baseGridMult + 5);
 
     // Join while the event is still active.
-    const { state: joined } = loadAndEvaluate(user.id, now);
+    const { state: joined } = await loadAndEvaluate(user.id, now);
     expect(joined.meta.eventProgress.eventId).toBe('grace-evt');
     const startingWafers = joined.meta.wafers;
 
@@ -169,16 +169,16 @@ describe('claimEventRung end-to-end: 48h grace period reachable after the event 
     // elapsed - this is precisely the case that returned invalid_target
     // before the fix, because config.__activeEvent disappeared the instant
     // status left 'active'.
-    endEvent('grace-evt', now + 2000);
+    await endEvent('grace-evt', now + 2000);
 
     // The modifier overlay must be gone immediately - that part already
     // worked correctly and must not regress.
-    expect(getEffectiveConfig().data.__activeEvent).toBeUndefined();
-    expect(getEffectiveConfig().data.production.gridMult).toBe(baseGridMult);
+    expect((await getEffectiveConfig()).data.__activeEvent).toBeUndefined();
+    expect((await getEffectiveConfig()).data.production.gridMult).toBe(baseGridMult);
 
     // The claim, made after the global end but well within grace, must now
     // succeed and actually pay out.
-    const { state: claimed, results } = applyActions(
+    const { state: claimed, results } = await applyActions(
       user.id,
       [{ type: 'claimEventRung', index: 0 }],
       now + 3000,
@@ -188,28 +188,28 @@ describe('claimEventRung end-to-end: 48h grace period reachable after the event 
     expect(claimed.meta.eventProgress.rungsClaimed).toEqual([0]);
   });
 
-  it('rejects with cooldown_active - not invalid_target - once the 48h grace period after the personal endsAt has truly passed', () => {
+  it('rejects with cooldown_active - not invalid_target - once the 48h grace period after the personal endsAt has truly passed', async () => {
     const now = Date.now();
-    const user = makeUser();
+    const user = await makeUser();
 
-    putEvent(sampleEvent({
+    await putEvent(sampleEvent({
       id: 'grace-expired-evt',
       startsAt: now - 1000,
       endsAt: now + 1000,
     }));
-    activateEvent('grace-expired-evt', now);
+    await activateEvent('grace-expired-evt', now);
 
-    const { state: joined } = loadAndEvaluate(user.id, now);
+    const { state: joined } = await loadAndEvaluate(user.id, now);
     const personalEndsAt = joined.meta.eventProgress.endsAt;
 
-    endEvent('grace-expired-evt', now + 1500);
+    await endEvent('grace-expired-evt', now + 1500);
 
     const pastGrace = personalEndsAt + EVENT_CLAIM_GRACE_MS + 1;
-    const { results } = applyActions(user.id, [{ type: 'claimEventRung', index: 0 }], pastGrace);
+    const { results } = await applyActions(user.id, [{ type: 'claimEventRung', index: 0 }], pastGrace);
     expect(results[0]).toEqual({ ok: false, error: 'cooldown_active' });
   });
 
-  it('fails closed with invalid_target (never throws) when eventProgress references an event id no longer in the DB at all', () => {
+  it('fails closed with invalid_target (never throws) when eventProgress references an event id no longer in the DB at all', async () => {
     // Simulates a save whose eventProgress points at an event id that has
     // since been deleted (or, as constructed here, simply never existed) -
     // event_participation's FK to live_events(id) means a row that was ever
@@ -217,7 +217,7 @@ describe('claimEventRung end-to-end: 48h grace period reachable after the event 
     // this exercises the same code path (getEvent(id) returns undefined)
     // directly via a hand-placed save rather than via a real delete.
     const now = Date.now();
-    const user = makeUser();
+    const user = await makeUser();
 
     const s = initialState();
     s.meta.eventProgress = {
@@ -227,12 +227,13 @@ describe('claimEventRung end-to-end: 48h grace period reachable after the event 
       baseline: { flopsEarned: 0 },
       rungsClaimed: [],
     };
-    putSave(user.id, s, now);
+    await putSave(user.id, s, now);
 
-    let results;
-    expect(() => {
-      ({ results } = applyActions(user.id, [{ type: 'claimEventRung', index: 0 }], now + 1000));
-    }).not.toThrow();
+    // Rewritten from expect(() => {...}).not.toThrow(): applyActions is now
+    // async, so a synchronous wrapper can never observe a throw - any
+    // rejection here fails the test the same way a synchronous throw would
+    // have under the old assertion.
+    const { results } = await applyActions(user.id, [{ type: 'claimEventRung', index: 0 }], now + 1000);
     expect(results[0]).toEqual(expect.objectContaining({ ok: false, error: 'invalid_target' }));
   });
 });

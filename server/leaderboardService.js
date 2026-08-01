@@ -28,9 +28,9 @@ const BOARDS = [
   ['tapes', (meta) => (meta.coldStorage && meta.coldStorage.tapes) || 0],
 ];
 
-function buildBoards(limit) {
+async function buildBoards(limit) {
   const players = [];
-  for (const row of getAllUsersWithSaves()) {
+  for (const row of await getAllUsersWithSaves()) {
     // The LIVE opt-out column (users.leaderboard_opt_out), the one v1.4
     // shipped for exactly this - never event_participation.opted_out, which is
     // a join-time snapshot that never updates afterwards.
@@ -70,11 +70,11 @@ function buildBoards(limit) {
   // The latest event's board comes from event_participation rather than saves:
   // listLeaderboard already applies the same live opt-out filter and the same
   // ranking the Event tab uses, so the two can never disagree.
-  const eventId = getLatestEventId();
+  const eventId = await getLatestEventId();
   const badgesByUser = new Map(players.map((p) => [p.userId, p.badges]));
   const avatarByUser = new Map(players.map((p) => [p.userId, p.avatarUrl]));
   boards.latestEventRung = eventId
-    ? listLeaderboard(eventId, limit).map((r) => ({
+    ? (await listLeaderboard(eventId, limit)).map((r) => ({
       userId: r.userId,
       username: r.username,
       avatarUrl: avatarByUser.get(r.userId) || null,
@@ -93,9 +93,9 @@ function buildBoards(limit) {
  * letting a live event's overlay quietly change how a SHARED cross-user cache
  * behaves would be surprising.
  */
-export function getLeaderboards(now = Date.now()) {
-  const { data: config } = getConfig();
+export async function getLeaderboards(now = Date.now()) {
+  const { data: config } = await getConfig();
   if (cache && now - cache.generatedAt < config.social.leaderboardCacheMs) return cache;
-  cache = { generatedAt: now, boards: buildBoards(config.social.leaderboardLimit) };
+  cache = { generatedAt: now, boards: await buildBoards(config.social.leaderboardLimit) };
   return cache;
 }
