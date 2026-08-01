@@ -21,6 +21,7 @@ import {
   activateEvent, endEvent, resolvePlayerEvents, inClaimGrace,
 } from '../eventService.js';
 import { loadAndEvaluate, loadEvaluateAndSchedule, applyActions } from '../stateService.js';
+import { getLeaderboards } from '../leaderboardService.js';
 import { minigameWafers } from '../../shared/gameRules.js';
 import { USERNAME_RE } from '../../shared/validation.js';
 import {
@@ -637,6 +638,20 @@ router.get('/api/admin/events/:id/participation', requireAuth, requireRole('even
   const event = getEvent(req.params.id);
   if (!event) return res.status(404).json({ error: 'not_found' });
   res.json({ participation: listParticipation(event.id) });
+});
+
+// ---------------------------------------------------------------------------
+// Leaderboards (v1.5)
+// ---------------------------------------------------------------------------
+
+// Every board at once, already ranked, opt-out-filtered and capped
+// server-side. The payload is a single shared in-memory cache
+// (server/leaderboardService.js), so this is cheap to poll - the client
+// throttles it anyway. Respects users.leaderboard_opt_out, the same live
+// column the per-event leaderboard filters on.
+router.get('/api/leaderboard', requireAuth, (req, res) => {
+  const { generatedAt, boards } = getLeaderboards(Date.now());
+  res.json({ generatedAt, boards });
 });
 
 // ---------------------------------------------------------------------------

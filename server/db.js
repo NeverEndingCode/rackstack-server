@@ -220,6 +220,7 @@ export function getUserById(id) {
 export function getAllUsersWithSaves() {
   return db.prepare(`
     SELECT u.id, u.provider, u.username, u.avatar_url, u.created_at,
+           u.leaderboard_opt_out,
            s.data, s.last_save
     FROM users u
     LEFT JOIN saves s ON s.user_id = u.id
@@ -548,6 +549,18 @@ export function listLeaderboard(eventId, limit = 50) {
     ORDER BY ep.rungs_claimed DESC, ep.last_progress_at ASC
     LIMIT ?
   `).all(eventId, limit);
+}
+
+/**
+ * The most recently-STARTED event that has actually run (any status except
+ * 'draft', which by definition has no window). Backs the v1.5 leaderboard's
+ * latest-event board. Returns null when no event has ever been scheduled.
+ */
+export function getLatestEventId() {
+  const row = db.prepare(
+    "SELECT id FROM live_events WHERE status != 'draft' AND starts_at IS NOT NULL ORDER BY starts_at DESC LIMIT 1",
+  ).get();
+  return row ? row.id : null;
 }
 
 const seedEventStmt = db.prepare(`
