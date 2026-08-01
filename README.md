@@ -175,6 +175,46 @@ npm run dev
 
 Visit the client dev server's printed URL (usually `http://localhost:5173`).
 
+## Running the tests
+
+```bash
+npm test          # Postgres backend (default) - boots a throwaway container
+npm run test:sqlite   # SQLite backend, no container needed
+npm run test:all      # both, sqlite then pg
+```
+
+The Postgres backend needs a container runtime that speaks the Docker API.
+`tests/setup/pg-global.js` boots one shared Postgres 16 container via
+[Testcontainers](https://node.testcontainers.org) and each test file carves
+out its own database from it (`tests/helpers/backend.js`), so files can't
+see each other's rows.
+
+- **Docker**: works out of the box, nothing to configure.
+- **Podman** (what this repo's containers were validated against; no
+  `docker` binary required): start the user socket once per login session
+  and Testcontainers will find it automatically -
+  `tests/setup/pg-global.js` points `DOCKER_HOST` at the Podman socket
+  itself if `DOCKER_HOST` isn't already set, so no per-developer config is
+  needed:
+
+  ```bash
+  systemctl --user start podman.socket
+  ```
+
+  Rootless Podman can't grant Testcontainers' Ryuk reaper the privileges it
+  wants, so the harness also sets `TESTCONTAINERS_RYUK_DISABLED=true` by
+  default when using Podman. With Ryuk off, the container is stopped and
+  removed by `teardown()` in `pg-global.js` at the end of the run instead -
+  if a run is killed hard enough to skip that (e.g. `SIGKILL`), clean up any
+  leftovers with `podman ps -a` / `podman rm -f`.
+- **CI** sets `TEST_DATABASE_URL` directly against a Postgres service
+  container (see `.github/workflows/test.yml`) and never touches
+  Testcontainers at all.
+
+To point manually at a different runtime or disable Ryuk yourself, set
+`DOCKER_HOST` and/or `TESTCONTAINERS_RYUK_DISABLED` before running the
+tests - the harness only fills these in when they're unset.
+
 ## Live Events
 
 At most one event is active globally at a time. Each is a set of tunable
