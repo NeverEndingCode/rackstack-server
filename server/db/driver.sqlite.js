@@ -3,7 +3,11 @@ import fs from 'fs';
 import path from 'path';
 import { randomUUID } from 'node:crypto';
 import { SEASONAL_EVENTS } from '../data/seasonalEvents.js';
-import { applySchema, dedupeUsernamesSync } from './schema.sqlite.js';
+// Aliased on import: the schema-layer function and this driver's own
+// `dedupeUsernames` interface method (a thin delegation to it, below) share
+// a name on purpose - the alias just keeps the two from shadowing each
+// other inside this file.
+import { applySchema, dedupeUsernames as dedupeUsernamesSchema } from './schema.sqlite.js';
 import {
   findAvailableUsername, parseEventRow, normalizeEventRow, normalizeParticipationRow,
 } from './shared.js';
@@ -201,7 +205,7 @@ export async function createSqliteDriver({ path: dbPath }) {
     },
 
     async dedupeUsernames() {
-      return dedupeUsernamesSync(db);
+      return await dedupeUsernamesSchema(db);
     },
 
     async createMinigameSession(userId, game) {

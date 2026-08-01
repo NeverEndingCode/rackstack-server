@@ -8,10 +8,12 @@ import { findAvailableUsername } from './shared.js';
  *
  * findAvailableUsername is async (its Postgres counterpart needs an async
  * predicate), so this function is too - awaited by applySchema before it
- * creates the unique index. The isTaken predicate here is itself sync (an
- * in-memory Set check); awaiting a non-promise value is harmless.
+ * creates the unique index, and by driver.sqlite.js's `dedupeUsernames`
+ * interface method (a thin delegation to this). The isTaken predicate here
+ * is itself sync (an in-memory Set check); awaiting a non-promise value is
+ * harmless.
  */
-export async function dedupeUsernamesSync(db) {
+export async function dedupeUsernames(db) {
   const rows = db.prepare(
     'SELECT id, username, created_at FROM users WHERE username IS NOT NULL ORDER BY created_at ASC, id ASC',
   ).all();
@@ -132,7 +134,7 @@ export async function applySchema(db) {
     );
   `);
 
-  await dedupeUsernamesSync(db);
+  await dedupeUsernames(db);
 
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username COLLATE NOCASE)');
 }
