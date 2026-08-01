@@ -17,6 +17,12 @@ automatically on their own annual windows via an hourly scheduler, and a
 coordinator can author, schedule, and run additional ones from the admin
 dashboard's Events tab. See [Live Events](#live-events) below for details.
 
+As of v1.5, a Social tab adds a daily contracts board (three contracts a day,
+the same three types for everyone, with targets scaled to your own progress),
+global leaderboards, and a badge case of achievements that unlock on their own
+as you play. A daily login streak sits in the header. See
+[Social & Retention](#social--retention) below.
+
 ## Architecture
 
 - `shared/` - a package used by both server and client (via a `@shared` Vite
@@ -201,6 +207,42 @@ tapes/FLOPS as they clear metric targets.
   unscheduled drafts, and view per-event participation. Activating a second
   event while one is already active is rejected outright (409) - end the
   running one first.
+
+## Social & Retention
+
+All four of these are bonuses - none of them gates content, and none
+introduces a new currency.
+
+- **Daily contracts** (Social tab): three a day, rotating at midnight UTC.
+  Which three is derived deterministically from the date, so everyone on the
+  server gets the same set and can compare notes; the numeric targets scale
+  to each player's own output and level. Both the targets and the progress
+  baselines are snapshotted at rollover, so a contract can't recede as you
+  grow into it. Completing one pays wafers + tapes. A player who hasn't
+  unlocked Cold Storage gets base-lane substitutions rather than contracts
+  they can't act on.
+- **Daily streak** (header banner): a 7-day escalating claim - FLOPS on days
+  1-3, wafers on 4-6, Tapes on day 7 - which then stays at the day-7 reward
+  for as long as it's unbroken. Missing a full UTC day resets it to day 1.
+  The day boundary is the same one contracts roll over on, so showing up once
+  a day satisfies both.
+- **Leaderboards** (Social tab): all-time FLOPS, level, Legacy Cores,
+  Singularities, Tapes, and the latest event's rungs. Aggregated server-side
+  from canonical saves behind a ~60s cache. The same per-user opt-out the
+  Event tab already had covers these too - tick "Hide me from all
+  leaderboards" and you disappear from every board immediately.
+- **Achievements** (Social tab badge case): 19 of them, pure prestige - no
+  payout, ever. They unlock automatically the moment their condition is met,
+  including from progress that accrued while you were offline, and pop a
+  toast when they do. Your top three (gold first) show as mini-icons next to
+  your name on the leaderboards.
+- **Tuning**: everything numeric above lives under `social.*` in the
+  Balancing tab, and - like every other tunable - can be overlaid by a live
+  event's modifiers. `social.contractFlopsMin` is worth knowing about: it's a
+  floor on the FLOPS contract target, there because a purely rate-scaled
+  target is zero for a player at zero output (a fresh save, or the instant
+  after a Migrate) and would auto-complete for free. Set it to 0 if you'd
+  rather have that.
 
 ## Notes / things worth knowing
 

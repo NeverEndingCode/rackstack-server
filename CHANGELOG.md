@@ -1,5 +1,37 @@
 # Changelog
 
+## v1.5.0
+
+Social & Retention: a daily contracts board, global leaderboards,
+achievements, and a daily login streak - all bonuses layered on the existing
+economy, none of them gating content.
+
+- Daily contracts: three contracts a day, rotating at midnight UTC and
+  generated deterministically from the date, so every player gets the same
+  three *types* while the numeric targets scale to their own progress.
+  Targets and baselines are snapshotted at rollover, so buying racks mid-day
+  never moves the goalposts. Claims pay wafers + tapes.
+- A player who hasn't unlocked Cold Storage gets base-lane contracts
+  substituted for any Cold Storage ones, so nobody is ever handed a contract
+  they cannot possibly complete.
+- Global leaderboards: all-time FLOPS, level, Legacy Cores, Singularities,
+  Tapes, and the most recent event's rungs - aggregated server-side from
+  canonical saves behind a ~60s cache, with avatars, usernames, and badge
+  mini-icons. The existing per-user leaderboard opt-out now covers these
+  boards too, and takes effect immediately.
+- Achievements: 19 of them, pure prestige with no payout, unlocked
+  automatically the moment their condition is met - including from progress
+  accrued while offline. Shown as a badge case in the Social tab, and the
+  top three (gold first) ride along on leaderboard rows.
+- Daily streak: a 7-day escalating claim (FLOPS, then wafers, then Tapes on
+  day 7) that stays at the day-7 reward while unbroken; a fully missed UTC
+  day resets it to day 1. Claimed from a banner in the sticky header.
+- New Social tab holding contracts, the leaderboard, and the badge case.
+- New `social.*` tunables on the Balancing tab covering contract targets and
+  rewards, streak rewards, and leaderboard cache/size - all overlayable by a
+  live event's modifiers, so e.g. a double-streak-rewards weekend needs no
+  code change.
+
 ## v1.4.0
 
 Live Events: config-overlay events with goal ladders, running one at a time

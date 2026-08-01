@@ -44,3 +44,9 @@ export const EVENT_REFRESH_THROTTLE_MS = 8000;
 // The response is a cached in-memory document server-side and the client
 // discards it unless (version, activeEventId) actually changed.
 export const CONFIG_POLL_MS = 10000;
+
+// Social (v1.5): how often the Social tab's leaderboard section is allowed to
+// re-fetch GET /api/leaderboard. The server already serves one shared cached
+// payload (social.leaderboardCacheMs, default 60s), so this throttle exists to
+// bound client-side request volume, not server work.
+export const LEADERBOARD_REFRESH_THROTTLE_MS = 30000;

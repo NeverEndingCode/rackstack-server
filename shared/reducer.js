@@ -5,6 +5,10 @@ import { goalCtx, GOAL_DEFS, REPEATABLE_DEFS } from './goals.js';
 import { TOTAL_BLOCKS, JOB_TYPES, TAPE_UPGRADE_DEFS } from './coldStorageData.js';
 import { computeColdStorageEffects, blockReward, jobDurationSec, jobReward } from './coldStorage.js';
 import { rungProgress } from './events.js';
+import { utcDateKey } from './daily.js';
+import { contractsForState, contractProgress } from './contracts.js';
+import { canClaimStreak, nextStreakCount, streakReward } from './streak.js';
+import { checkAchievements } from './achievements.js';
 
 const LANE_DEFS = { tiers: TIER_DEFS, grid: GRID_DEFS, overclock: OVERCLOCK_DEFS };
 
@@ -503,6 +507,12 @@ function claimEventRung(s, action, config, now) {
   }
 
   ep.rungsClaimed.push(index);
+  // Feeds the 'event_champion' achievement through the ordinary
+  // condition-driven path (shared/achievements.js) rather than special-casing
+  // a badge grant here - spec §5.1's "top rung awards a badge".
+  if (index === ladder.length - 1) {
+    s.meta.stats.eventTopRungs = (s.meta.stats.eventTopRungs || 0) + 1;
+  }
   // `eventId` echoes back which event's ladder this rung came from - the
   // claim may have targeted a superseded (pendingEventClaims) window, so
   // callers that sync per-event bookkeeping (stateService.applyActions ->
@@ -524,6 +534,70 @@ function progressRecordFor(meta, eventId) {
   const pending = meta.pendingEventClaims;
   if (!Array.isArray(pending)) return null;
   return pending.find((p) => p && p.eventId === eventId) || null;
+}
+
+// v1.5 Social. Both handlers below are gated on a CALENDAR-DAY key rather
+// than a rolling window, so "already done today" is invalid_target (the
+// existing string for a repeat claim, as in claimGoal/claimBlock) and never
+// cooldown_active - no new error strings.
+
+function claimContract(s, action, config, now) {
+  const { index } = action;
+  if (!validIndex(index, 3)) return err('invalid_target');
+
+  // The board is rolled over on the server's load path
+  // (server/stateService.js) BEFORE any action is applied, so a dateKey that
+  // isn't today's here means this claim raced past a rollover - reject it
+  // rather than pay out against a stale target/baseline pair.
+  const today = utcDateKey(now);
+  if (today === null || s.meta.contracts.dateKey !== today) return err('invalid_target');
+
+  const contract = contractsForState(s.meta)[index];
+  if (!contract || !contract.def) return err('invalid_target');
+  if (s.meta.contracts.claimed[index] === true) return err('invalid_target');
+
+  const baseline = s.meta.contracts.baseline[contract.def.metric];
+  if (!contractProgress(contract.def, s.meta, baseline, contract.target).met) return err('not_met');
+
+  const scale = 1 + config.social.contractRewardLevelScalePct * (s.meta.level || 0);
+  const wafers = Math.round(config.social.contractRewardWafers * scale);
+  const tapes = Math.round(config.social.contractRewardTapes * scale);
+
+  s.meta.wafers += wafers;
+  s.meta.stats.totalWafersEarned = (s.meta.stats.totalWafersEarned || 0) + wafers;
+  s.meta.coldStorage.tapes += tapes;
+  s.meta.stats.tapesEarnedLifetime = (s.meta.stats.tapesEarnedLifetime || 0) + tapes;
+  s.meta.contracts.claimed[index] = true;
+  s.meta.stats.contractsCompletedLifetime = (s.meta.stats.contractsCompletedLifetime || 0) + 1;
+
+  return { ok: true, reward: { wafers, tapes }, index };
+}
+
+function claimStreak(s, action, config, now) {
+  const today = utcDateKey(now);
+  if (today === null) return err('invalid_target');
+  if (!canClaimStreak(s.meta.streak, today)) return err('invalid_target');
+
+  const day = nextStreakCount(s.meta.streak, today, config);
+  const ctx = goalCtx(s, config, now);
+  const reward = streakReward(day, config, ctx);
+
+  if (reward.flops > 0) {
+    s.run.credits += reward.flops;
+    s.run.lifetimeRun += reward.flops;
+  }
+  if (reward.wafers > 0) {
+    s.meta.wafers += reward.wafers;
+    s.meta.stats.totalWafersEarned = (s.meta.stats.totalWafersEarned || 0) + reward.wafers;
+  }
+  if (reward.tapes > 0) {
+    s.meta.coldStorage.tapes += reward.tapes;
+    s.meta.stats.tapesEarnedLifetime = (s.meta.stats.tapesEarnedLifetime || 0) + reward.tapes;
+  }
+
+  s.meta.streak = { count: day, lastClaimDate: today };
+  s.meta.stats.bestStreak = Math.max(s.meta.stats.bestStreak || 0, day);
+  return { ok: true, reward, day };
 }
 
 // Boolean-validated client display preference; the route layer (Task 6)
@@ -553,6 +627,7 @@ const HANDLERS = Object.assign(Object.create(null), {
   claimGoal, claimRepeatable, claimAnomaly, hardReset,
   claimBlock, claimAllBlocks, resetTrack, startJob, cancelJob, claimJob, buyTapeUpgrade,
   claimEventRung, setLeaderboardOptOut,
+  claimContract, claimStreak,
 });
 
 export function applyAction(state, action, config, now, rng = Math.random) {
@@ -562,5 +637,16 @@ export function applyAction(state, action, config, now, rng = Math.random) {
   }
   const s = structuredClone(state);
   const result = handler(s, action, config, now, rng);
+  // Achievements unlock automatically, never by claim (spec §6.3). Sweeping
+  // here - after any SUCCESSFUL action - is what makes "unlocked in the
+  // reducer" true for everything a player does. A rejected action changed
+  // nothing, so there is nothing new to unlock and sweeping would only burn a
+  // goalCtx build on every bad request. The offline half (thresholds crossed
+  // by evaluate()'s accrual, which no action touches) is swept separately in
+  // server/stateService.js.
+  if (result && result.ok) {
+    const unlocked = checkAchievements(s, config, now);
+    if (unlocked.length > 0) result.unlockedAchievements = unlocked;
+  }
   return { state: s, result };
 }

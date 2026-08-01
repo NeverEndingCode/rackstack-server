@@ -168,6 +168,19 @@ export function setLeaderboardOptOut(optOut) {
   return postJSON('/api/me/leaderboard-opt-out', { optOut }, 'PUT');
 }
 
+// GET /api/leaderboard -> { generatedAt, boards: { <boardKey>: [row] } }
+//   where row is { userId, username, avatarUrl, value, badges: [achievementId] }
+//
+// Rows arrive already ranked, opt-out-filtered and capped server-side
+// (server/leaderboardService.js) - the client renders them in order and never
+// re-sorts. The payload is one shared in-memory server cache, so polling this
+// costs nothing beyond the request itself; it's still throttled client-side by
+// LEADERBOARD_REFRESH_THROTTLE_MS so a burst of reconciles can't turn into a
+// request each.
+export function fetchLeaderboard() {
+  return request('/api/leaderboard');
+}
+
 // ---------------------------------------------------------------------------
 // Event coordinator admin (role-gated server-side; Task 8 builds the UI that
 // consumes these - included here since api.js is this task's one designated
@@ -264,6 +277,11 @@ const IMMEDIATE = new Set([
   // Storage analogs in this set and needed a follow-up fix round - see the
   // block above - so this one goes in from the start.)
   'claimEventRung',
+  // Social (v1.5): both are reward claims exactly like claimGoal/
+  // claimEventRung above, and both are gated on a UTC calendar-day key - so an
+  // action left sitting in the queue across midnight is the difference between
+  // claimable and rejected. They go in from the start.
+  'claimContract', 'claimStreak',
 ]);
 
 // makeActionQueue({ onReconcile, onReject, onQueueError }) -> { dispatch, flush, pending }
@@ -277,7 +295,7 @@ const IMMEDIATE = new Set([
 // - flush(): POSTs the queued batch to /api/actions. Only one flush is ever
 //   in flight at a time - if one is already running, this is a no-op (and
 //   anything dispatched meanwhile just accumulates for the next flush).
-//   On success: calls onReconcile(state, results, serverTime), then
+//   On success: calls onReconcile(state, results, serverTime, unlockedAchievements), then
 //   onReject(result) for each per-action result with `ok: false`. Also
 //   resets the backoff below to its normal cadence.
 //   On batch-level failure (network error, or a non-2xx from the batch
@@ -366,8 +384,13 @@ export function makeActionQueue({ onReconcile, onReject, onQueueError, onBeaconF
     consecutiveFailures = 0;
     nextAllowedAttemptAt = 0;
 
-    const { state, results, serverTime } = res;
-    onReconcile(state, results, serverTime);
+    const { state, results, serverTime, unlockedAchievements } = res;
+    // `unlockedAchievements` (v1.5) is the merged set from BOTH server-side
+    // sweep sites for this request - the load path (an offline threshold
+    // crossed since the last visit) and each successful action - so passing
+    // it separately is not redundant with the per-result field of the same
+    // name, which only covers the action half.
+    onReconcile(state, results, serverTime, unlockedAchievements);
     for (const result of results || []) {
       if (!result.ok) onReject(result);
     }

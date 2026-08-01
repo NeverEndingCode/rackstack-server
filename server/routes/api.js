@@ -21,6 +21,7 @@ import {
   activateEvent, endEvent, resolvePlayerEvents, inClaimGrace,
 } from '../eventService.js';
 import { loadAndEvaluate, loadEvaluateAndSchedule, applyActions } from '../stateService.js';
+import { getLeaderboards, invalidateLeaderboards } from '../leaderboardService.js';
 import { minigameWafers } from '../../shared/gameRules.js';
 import { USERNAME_RE } from '../../shared/validation.js';
 import {
@@ -90,7 +91,7 @@ router.get('/api/me', requireAuth, (req, res) => {
 
 router.get('/api/state', requireAuth, (req, res) => {
   const now = Date.now();
-  const { state, gained, activeEvent } = loadAndEvaluate(req.user.sub, now);
+  const { state, gained, activeEvent, unlockedAchievements } = loadAndEvaluate(req.user.sub, now);
   const { version } = getConfig();
   const { current } = resolvePlayerEvents(state);
   const claimable = current && inClaimGrace(current.progress, now) ? current.event : null;
@@ -134,6 +135,11 @@ router.get('/api/state', requireAuth, (req, res) => {
       endsAt: activeEvent.ends_at,
     } : null,
     eventProgress: state.meta.eventProgress,
+    // Social (v1.5): achievements the load-path sweep unlocked on THIS
+    // request - typically thresholds crossed by offline accrual since the
+    // player was last seen. The client toasts them; meta.achievements above
+    // is the durable record either way.
+    unlockedAchievements,
   });
 });
 
@@ -143,8 +149,8 @@ router.post('/api/actions', requireAuth, (req, res) => {
     return res.status(400).json({ error: 'actions must be an array of at most 100 items' });
   }
   const now = Date.now();
-  const { state, results } = applyActions(req.user.sub, actions, now);
-  res.json({ state, results, serverTime: now });
+  const { state, results, unlockedAchievements } = applyActions(req.user.sub, actions, now);
+  res.json({ state, results, serverTime: now, unlockedAchievements });
 });
 
 // ---------------------------------------------------------------------------
@@ -453,6 +459,15 @@ router.put('/api/me/leaderboard-opt-out', requireAuth, (req, res) => {
   setLeaderboardOptOut(req.user.sub, optOut);
   applyActions(req.user.sub, [{ type: 'setLeaderboardOptOut', optOut }], Date.now());
 
+  // v1.5: the global boards are served from a ~60s in-memory cache, so
+  // without this a player who just asked to be hidden would keep appearing on
+  // them for up to a minute. The per-event leaderboard has always been
+  // immediate (it live-joins users.leaderboard_opt_out on every read - v1.4's
+  // "hard requirement 1"), and this control must not quietly mean something
+  // weaker just because the newer boards are cache-fronted. Opting out is a
+  // deliberate, low-frequency action, so paying for one rebuild is free.
+  invalidateLeaderboards();
+
   res.json({ ok: true, optOut });
 });
 
@@ -632,6 +647,20 @@ router.get('/api/admin/events/:id/participation', requireAuth, requireRole('even
   const event = getEvent(req.params.id);
   if (!event) return res.status(404).json({ error: 'not_found' });
   res.json({ participation: listParticipation(event.id) });
+});
+
+// ---------------------------------------------------------------------------
+// Leaderboards (v1.5)
+// ---------------------------------------------------------------------------
+
+// Every board at once, already ranked, opt-out-filtered and capped
+// server-side. The payload is a single shared in-memory cache
+// (server/leaderboardService.js), so this is cheap to poll - the client
+// throttles it anyway. Respects users.leaderboard_opt_out, the same live
+// column the per-event leaderboard filters on.
+router.get('/api/leaderboard', requireAuth, (req, res) => {
+  const { generatedAt, boards } = getLeaderboards(Date.now());
+  res.json({ generatedAt, boards });
 });
 
 // ---------------------------------------------------------------------------

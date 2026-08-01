@@ -2,17 +2,20 @@ import { useState, useEffect, useRef, useMemo } from 'react';
 
 import {
   TICK_MS, ANOMALY_LABELS, EVENT_REFRESH_THROTTLE_MS, CONFIG_POLL_MS,
+  LEADERBOARD_REFRESH_THROTTLE_MS,
 } from './game/constants.js';
-import { cardBorder, textDim, teal, amber, danger, inset } from './game/theme.js';
+import { cardBorder, textDim, textMain, teal, amber, danger, inset } from './game/theme.js';
 import { TABS } from './game/data/tabs.js';
 import {
   fetchState, fetchConfig, makeActionQueue, startMinigame, finishMinigame,
-  fetchEvent, setLeaderboardOptOut,
+  fetchEvent, setLeaderboardOptOut, fetchLeaderboard,
 } from './game/api.js';
 import { evaluate } from '@shared/state.js';
 import { applyAction, EVENT_CLAIM_GRACE_MS } from '@shared/reducer.js';
 import { computeMults, migrateGain, xpForLevel } from '@shared/gameRules.js';
 import { goalCtx } from '@shared/goals.js';
+import { achievementDef } from '@shared/achievements.js';
+import { achievementIcon, TIER_COLOR } from './game/data/achievementIcons.js';
 
 import HeaderBar from './game/components/HeaderBar.jsx';
 import StatsRow from './game/components/StatsRow.jsx';
@@ -28,6 +31,8 @@ import GoalsPanel from './game/components/GoalsPanel.jsx';
 import GamesPanel from './game/components/GamesPanel.jsx';
 import ColdStoragePanel from './game/components/ColdStoragePanel.jsx';
 import EventPanel from './game/components/EventPanel.jsx';
+import SocialPanel from './game/components/SocialPanel.jsx';
+import StreakBanner from './game/components/StreakBanner.jsx';
 import AnomalyToast from './game/components/AnomalyToast.jsx';
 import RushOverlay from './game/components/minigames/RushOverlay.jsx';
 import DebugOverlay from './game/components/minigames/DebugOverlay.jsx';
@@ -109,6 +114,17 @@ export default function RackStack({ user }) {
   // Unlike `activeEvent` these carry their own progress snapshot, because the
   // canonical meta.eventProgress has already moved on to the newer event.
   const [pendingClaims, setPendingClaims] = useState([]);
+  // Social (v1.5): the leaderboard payload (all six boards at once) from GET
+  // /api/leaderboard. Like the event leaderboard this isn't part of canonical
+  // state - contracts, streak and achievements all live in `meta` and arrive
+  // free on every reconcile, but cross-user boards can only come from the
+  // server.
+  const [leaderboards, setLeaderboards] = useState(null);
+  const [leaderboardLoading, setLeaderboardLoading] = useState(false);
+  // Achievement unlocks waiting to be shown, oldest first. Queued rather than
+  // rendered all at once so several landing together (common on the first
+  // load after a long absence) don't stack overlapping toasts.
+  const [achievementQueue, setAchievementQueue] = useState([]);
   // Local mirror of the display name so a successful username change (see
   // ProfileSettings) reflects in the header/profile immediately, without a
   // page reload or waiting on the next /api/me fetch (App.jsx's `user`
@@ -128,6 +144,15 @@ export default function RackStack({ user }) {
   // heartbeat effect below.
   const configKeyRef = useRef(null);
   const lastConfigPollAtRef = useRef(0);
+  const lastLeaderboardFetchAtRef = useRef(0);
+  // Social (v1.5): serverTime-minus-Date.now(), refreshed from every state
+  // load and every reconcile. Only the UTC day boundary needs this: the
+  // streak and the contracts board are gated on a calendar DAY, a hard cliff
+  // the server owns, so a client whose clock is off by minutes near midnight
+  // would otherwise render a Claim button the server rejects (or hide one it
+  // would accept). Countdowns elsewhere in this file keep using Date.now()
+  // directly - a few seconds of skew just shifts a displayed number.
+  const serverClockOffsetRef = useRef(0);
   const stateRef = useRef(null);
   const queueRef = useRef(null);
   const lastTickAtRef = useRef(Date.now());
@@ -218,7 +243,10 @@ export default function RackStack({ user }) {
     }
   }
 
-  function handleReconcile(serverState, results) {
+  function handleReconcile(serverState, results, serverTime, unlocked) {
+    if (typeof serverTime === 'number' && Number.isFinite(serverTime)) {
+      serverClockOffsetRef.current = serverTime - Date.now();
+    }
     const resultCids = new Set((results || []).map((r) => r._cid));
     pendingActionsRef.current = pendingActionsRef.current.filter((a) => !resultCids.has(a._cid));
 
@@ -227,6 +255,8 @@ export default function RackStack({ user }) {
       pendingAnomalyIdsRef.current.delete(result._cid);
       if (result.ok && result.reward) openAnomalyRewardModal(result.reward);
     }
+
+    queueAchievements(unlocked);
 
     let rungClaimed = false;
     for (const result of results || []) {
@@ -311,6 +341,14 @@ export default function RackStack({ user }) {
       setActiveTab('racks');
     }
   }, [state, activeTab, pendingClaims]);
+
+  // Drains the achievement queue one badge at a time, ~3.2s each, so a batch
+  // that lands together reads as a sequence rather than a pile.
+  useEffect(() => {
+    if (achievementQueue.length === 0) return undefined;
+    const t = setTimeout(() => setAchievementQueue((q) => q.slice(1)), 3200);
+    return () => clearTimeout(t);
+  }, [achievementQueue]);
 
   const REJECT_MESSAGES = {
     insufficient_credits: 'Not enough FLOPS',
@@ -405,6 +443,10 @@ export default function RackStack({ user }) {
       configRef.current = configRes.data;
       configKeyRef.current = configKeyOf(configRes);
       setConfig(configRes);
+      if (typeof stateRes.serverTime === 'number' && Number.isFinite(stateRes.serverTime)) {
+        serverClockOffsetRef.current = stateRes.serverTime - Date.now();
+      }
+      queueAchievements(stateRes.unlockedAchievements);
       const initial = { run: stateRes.run, meta: stateRes.meta, server: stateRes.server };
       stateRef.current = initial;
       setState(initial);
@@ -572,6 +614,42 @@ export default function RackStack({ user }) {
   // the optimistic flip is reverted - the reducer action is purely for
   // display, so it must not keep claiming an opt-out that didn't actually
   // persist server-side.
+  // Social (v1.5). Achievements unlock server-side with no claim step, so the
+  // only client-side job is telling the player it happened. Ids are appended
+  // (de-duplicated against what's already waiting) and drained one at a time
+  // by the effect below.
+  function queueAchievements(ids) {
+    if (!Array.isArray(ids) || ids.length === 0) return;
+    setAchievementQueue((q) => {
+      const seen = new Set(q);
+      return [...q, ...ids.filter((id) => !seen.has(id))];
+    });
+  }
+
+  // GET /api/leaderboard. Throttled because the Social tab's board section
+  // refetches on every open; the server serves one shared cached payload
+  // regardless, so this bounds client request volume rather than server work.
+  // `force` skips the throttle for the opt-out toggle, where the whole point
+  // is seeing yourself (dis)appear immediately.
+  async function refreshLeaderboard(force = false) {
+    const now = Date.now();
+    if (!force && now - lastLeaderboardFetchAtRef.current < LEADERBOARD_REFRESH_THROTTLE_MS) return;
+    lastLeaderboardFetchAtRef.current = now;
+    setLeaderboardLoading(true);
+    const res = await fetchLeaderboard();
+    setLeaderboardLoading(false);
+    if (!res || res.error) return;
+    setLeaderboards(res.boards || null);
+  }
+
+  function claimContract(index) {
+    dispatchAction({ type: 'claimContract', index });
+  }
+
+  function claimStreak() {
+    dispatchAction({ type: 'claimStreak' });
+  }
+
   function toggleLeaderboardOptOut(next) {
     dispatchAction({ type: 'setLeaderboardOptOut', optOut: next });
     (async () => {
@@ -584,6 +662,9 @@ export default function RackStack({ user }) {
         // next unrelated reconcile to refresh it.
         lastEventFetchAtRef.current = Date.now();
         refreshEventData();
+        // The same column gates the v1.5 global boards, so refresh those too
+        // (forced past the throttle for the same reason).
+        refreshLeaderboard(true);
       } else {
         dispatchAction({ type: 'setLeaderboardOptOut', optOut: !next });
       }
@@ -910,6 +991,11 @@ export default function RackStack({ user }) {
   // (isEventLive/isEventTabVisible are the module-scope helpers above the
   // component, shared with the activeTab-reset effect so this can't drift
   // from that check).
+  // Social (v1.5): wall-clock corrected to the server's clock, for the two
+  // displays gated on a UTC calendar DAY (the streak banner, the contracts
+  // rollover countdown). Everything else in this render keeps using `now`.
+  const serverNow = now + serverClockOffsetRef.current;
+
   const eventProgress = state.meta.eventProgress;
   const eventLive = isEventLive(eventProgress, now);
   const eventTabVisible = isEventTabVisible(eventProgress, pendingClaims, now);
@@ -950,6 +1036,13 @@ export default function RackStack({ user }) {
           {eventLive && activeEvent && (
             <EventBanner event={activeEvent} endsAt={eventProgress.endsAt} onOpen={() => setActiveTab('event')} />
           )}
+          <StreakBanner
+            streak={state.meta.streak}
+            serverTime={serverNow}
+            config={config.data}
+            ctx={ctx}
+            onClaim={claimStreak}
+          />
           <MigrateBar gain={gain} showCollectAll={anyManualOwned} collectDisabled={!anyReady} onMigrate={() => setModal({ type: 'migrate' })} onCollectAll={collectAll} />
           <TabBar tabs={visibleTabs} activeTab={activeTab} setActiveTab={setActiveTab} gridUnlocked={gridUnlocked} overclockUnlocked={overclockUnlocked} singularityUnlocked={singularityUnlocked} coldStorageUnlocked={coldStorageUnlocked} eventLive={eventLive} />
         </div>
@@ -1028,12 +1121,47 @@ export default function RackStack({ user }) {
         />
       )}
 
+      {activeTab === 'social' && (
+        <SocialPanel
+          meta={state.meta}
+          serverTime={serverNow}
+          userId={user && user.id}
+          boards={leaderboards}
+          leaderboardLoading={leaderboardLoading}
+          optOut={state.meta.leaderboardOptOut}
+          onClaimContract={claimContract}
+          onToggleOptOut={toggleLeaderboardOptOut}
+          onRefreshLeaderboard={refreshLeaderboard}
+        />
+      )}
+
       {minigame && minigame.type === 'rush' && <RushOverlay minigame={minigame} onTap={tapRush} onCancel={cancelMinigame} />}
       {minigame && minigame.type === 'debug' && <DebugOverlay minigame={minigame} onTap={tapDebugTile} onCancel={cancelMinigame} />}
       {minigame && minigame.type === 'match' && <MatchOverlay minigame={minigame} pairCount={config.data.minigames.match.pairCount} onTap={tapMatchTile} onCancel={cancelMinigame} />}
       {minigame && minigame.type === 'balance' && <BalanceOverlay minigame={minigame} balanceConfig={config.data.minigames.balance} onScore={balanceScore} onCancel={cancelMinigame} />}
 
       <AnomalyToast anomalyState={anomalyState} windowMs={config.data.anomaly.windowMs} onClaim={claimAnomaly} />
+
+      {achievementQueue.length > 0 && (() => {
+        const def = achievementDef(achievementQueue[0]);
+        if (!def) return null;
+        const Icon = achievementIcon(def.icon);
+        const accent = TIER_COLOR[def.tier];
+        return (
+          <div className="fixed left-4 right-4 bottom-4 z-20 max-w-sm mx-auto">
+            <div
+              className="w-full rounded-xl p-3 flex items-center gap-3 tier-card"
+              style={{ background: inset, border: `1px solid ${accent}`, boxShadow: '0 8px 24px rgba(0,0,0,0.45)' }}
+            >
+              <Icon size={22} color={accent} className="shrink-0" />
+              <div className="min-w-0">
+                <div className="text-xs font-mono" style={{ color: accent }}>Achievement unlocked</div>
+                <div className="text-sm font-semibold truncate" style={{ color: textMain }}>{def.name}</div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {rejectToast && (
         <div className="fixed left-4 right-4 top-4 z-20 max-w-sm mx-auto">
