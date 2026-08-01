@@ -12,19 +12,24 @@
 //   6. GET /api/config exposes heat.ventPercent and heat.overheatPopupMs, and
 //      no longer exposes heat.ventAmount.
 //   7. A `vent` action through POST /api/actions sheds 25% of capacity.
+//   8. A fresh player actually SEES the tour over the built client: the
+//      overlay renders, Next advances the counter and switches tabs.
+//   9. Skip closes it and persists, so a reload does not re-show it.
 //
 // Same harness shape as smoke-v15.mjs - boots a real `node server/index.js`
 // against a scratch SQLite file, seeds users/saves through server/db.js and
 // mints JWT cookies via server/auth.js - but deliberately WITHOUT Playwright:
-// every v1.6 assertion is a pure API invariant, so a plain authenticated
-// fetch is sufficient and keeps this suite runnable with no browser present.
+// checks 1-7 are pure API invariants, so a plain authenticated fetch is
+// sufficient for them. Checks 8-9 do need the real client, and use the same
+// Playwright resolution the other suites do; if no browser can be resolved
+// they are SKIPped rather than failed, so this suite still runs headless.
 //
 // Every check prints `PASS <name>` or `FAIL <name>: <reason>`. At the end:
 // `=== ERRORS ===` followed by each failure, or `NONE`. Exits non-zero if
 // anything failed. The server child process is always killed on the way out.
 
 import { spawn } from 'node:child_process';
-import { rmSync } from 'node:fs';
+import { rmSync, existsSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -89,6 +94,56 @@ async function startServer() {
     }
     // eslint-disable-next-line no-await-in-loop
     await new Promise((r) => setTimeout(r, 150));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Playwright resolution: plain import first, scratchpad fallback second.
+// Mirrors smoke-v12..v15 so this suite behaves the same way in CI.
+// ---------------------------------------------------------------------------
+
+function findScratchpadPlaywright() {
+  const found = [];
+  const tmp = '/tmp';
+  let claudeDirs = [];
+  try {
+    claudeDirs = readdirSync(tmp).filter((d) => d.startsWith('claude-') || d === 'e2e-verify');
+  } catch (e) {
+    return found;
+  }
+  function walk(dir, depth) {
+    if (depth > 6) return;
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch (e) {
+      return;
+    }
+    for (const ent of entries) {
+      if (!ent.isDirectory()) continue;
+      const full = path.join(dir, ent.name);
+      if (ent.name === 'playwright' && full.includes('node_modules')) {
+        const idx = path.join(full, 'index.mjs');
+        if (existsSync(idx)) found.push(idx);
+      }
+      if (ent.name !== 'playwright') walk(full, depth + 1);
+    }
+  }
+  for (const d of claudeDirs) walk(path.join(tmp, d), 0);
+  return found;
+}
+
+async function loadPlaywrightOrNull() {
+  try {
+    return await import('playwright');
+  } catch (e) {
+    for (const c of findScratchpadPlaywright()) {
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        return await import(`file://${c}`);
+      } catch (e2) { /* try the next candidate */ }
+    }
+    return null;
   }
 }
 
@@ -245,6 +300,88 @@ async function main() {
       `expected to shed ~${expected}, shed ${shed} (${startHeat} -> ${endHeat})`,
     );
   });
+
+  // --- 8-9: the tour over the real client ----------------------------------
+
+  const pw = await loadPlaywrightOrNull();
+  if (!pw) {
+    console.log('SKIP tour renders over the built client (no Playwright available)');
+    console.log('SKIP Skip persists across a reload (no Playwright available)');
+  } else {
+    const browser = await pw.chromium.launch();
+    try {
+      await check('a fresh player sees the tour, and Next advances it', async () => {
+        const u = seedUser();
+        const ctx = await browser.newContext();
+        await ctx.addCookies([{
+          name: COOKIE_NAME,
+          value: issueToken({ id: u.id, username: u.username, avatar_url: u.avatar_url }),
+          url: BASE_URL,
+        }]);
+        const page = await ctx.newPage();
+        await page.goto(BASE_URL);
+
+        // Step 1 is the centered welcome card.
+        const next = page.getByRole('button', { name: 'Next' });
+        await next.waitFor({ state: 'visible', timeout: 15000 });
+        const counter = page.locator('text=/^\\d+ \\/ \\d+$/').first();
+        const first = await counter.textContent();
+        assert(/^1 \//.test(first.trim()), `expected to start at step 1, got "${first}"`);
+        const total = Number(first.trim().split('/')[1]);
+        assert(total === 11, `expected 11 steps for a fresh account, got ${total}`);
+
+        await next.click();
+        const second = await counter.textContent();
+        assert(/^2 \//.test(second.trim()), `expected step 2, got "${second}"`);
+
+        // Step 3 targets the Racks buy row, so the tour must switch tabs and
+        // spotlight a real element rather than falling back to centered.
+        await next.click();
+        const third = await counter.textContent();
+        assert(/^3 \//.test(third.trim()), `expected step 3, got "${third}"`);
+        const holeCount = await page.locator('svg mask#tour-mask rect').count();
+        assert(holeCount >= 2, `expected a spotlight hole by step 3, got ${holeCount} mask rects`);
+
+        await ctx.close();
+      });
+
+      await check('Skip closes the tour and persists across a reload', async () => {
+        const u = seedUser();
+        const ctx = await browser.newContext();
+        await ctx.addCookies([{
+          name: COOKIE_NAME,
+          value: issueToken({ id: u.id, username: u.username, avatar_url: u.avatar_url }),
+          url: BASE_URL,
+        }]);
+        const page = await ctx.newPage();
+        await page.goto(BASE_URL);
+
+        // The X control is labelled "Skip tutorial", so match exactly.
+        const skip = page.getByRole('button', { name: 'Skip', exact: true });
+        await skip.waitFor({ state: 'visible', timeout: 15000 });
+        await skip.click();
+        await skip.waitFor({ state: 'detached', timeout: 5000 });
+
+        // The server write is optimistic, so give it a moment to land before
+        // asserting the reload does not re-show the tour.
+        await page.waitForTimeout(500);
+        const me = await api(u, '/api/me');
+        assert(
+          me.body.toursCompleted.includes(ONBOARDING_TOUR_ID),
+          `skip did not persist, got ${JSON.stringify(me.body.toursCompleted)}`,
+        );
+
+        await page.reload();
+        await page.waitForTimeout(1500);
+        const reshown = await page.getByRole('button', { name: 'Skip', exact: true }).count();
+        assert(reshown === 0, 'the tour re-appeared after being skipped');
+
+        await ctx.close();
+      });
+    } finally {
+      await browser.close();
+    }
+  }
 
   console.log('\n=== ERRORS ===');
   if (failures.length === 0) {
