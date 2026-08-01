@@ -50,3 +50,23 @@ describe('configSchema', () => {
     expect(v.ok).toBe(true);
   });
 });
+
+describe('social config section', () => {
+  it('every social leaf has a matching TUNABLES entry', () => {
+    const paths = new Set(TUNABLES.map((t) => t.path));
+    for (const key of Object.keys(DEFAULT_CONFIG.social)) {
+      expect(paths.has(`social.${key}`), `social.${key}`).toBe(true);
+    }
+  });
+  it('DEFAULT_CONFIG still validates with the new section', () => {
+    expect(validateConfig(DEFAULT_CONFIG)).toEqual({ ok: true });
+  });
+  it('every social default sits inside its declared range', () => {
+    for (const t of TUNABLES.filter((row) => row.path.startsWith('social.'))) {
+      const v = DEFAULT_CONFIG.social[t.path.slice('social.'.length)];
+      expect(v, t.path).toBeGreaterThanOrEqual(t.min);
+      expect(v, t.path).toBeLessThanOrEqual(t.max);
+      if (t.integer) expect(Number.isInteger(v), t.path).toBe(true);
+    }
+  });
+});

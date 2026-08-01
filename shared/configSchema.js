@@ -32,6 +32,30 @@ export const DEFAULT_CONFIG = {
     jobDurationIndexMs: 28800000,     // 8h
     jobDurationDeepMs: 86400000,      // 24h
   },
+  // v1.5 Social & Retention. Every leaf here is admin-tunable via the
+  // Balancing tab (which is TUNABLES-driven, so it needs no dashboard change)
+  // and overlayable by a live event's modifiers - a "double streak rewards"
+  // weekend is an authoring exercise, not a code change.
+  social: {
+    contractFlopsSeconds: 600,
+    contractFlopsMin: 500,
+    contractMinigamesTarget: 3,
+    contractBlocksTarget: 4,
+    contractTapesBase: 15,
+    contractTapesPerLevel: 1,
+    contractWafersBase: 5,
+    contractWafersGrowth: 1.15,
+    contractRewardWafers: 6,
+    contractRewardTapes: 4,
+    contractRewardLevelScalePct: 0.05,
+    streakMaxDay: 7,
+    streakFlopsSeconds: 300,
+    streakWaferBase: 4,
+    streakWaferPerDay: 2,
+    streakDay7Tapes: 25,
+    leaderboardCacheMs: 60000,
+    leaderboardLimit: 50,
+  },
 };
 
 export const TUNABLES = [
@@ -116,6 +140,29 @@ export const TUNABLES = [
   { path: 'batchQueue.jobDurationDefragMs', label: 'Job duration: Defrag Run (ms)', min: 60000, max: 604800000, integer: true },
   { path: 'batchQueue.jobDurationIndexMs', label: 'Job duration: Index Rebuild (ms)', min: 60000, max: 604800000, integer: true },
   { path: 'batchQueue.jobDurationDeepMs', label: 'Job duration: Deep Archive Scrub (ms)', min: 60000, max: 604800000, integer: true },
+
+  { path: 'social.contractFlopsSeconds', label: 'Contract FLOPS target (seconds of output)', min: 1, max: 86400, integer: true },
+  // A floor, never a cap: a player at zero output (a fresh save, or the
+  // instant after a Migrate) would otherwise get a target of 0, which is
+  // already met, and the contract would auto-complete for free. Set this to 0
+  // to deliberately restore that behaviour.
+  { path: 'social.contractFlopsMin', label: 'Contract FLOPS target floor', min: 0, max: 1e12, integer: false },
+  { path: 'social.contractMinigamesTarget', label: 'Contract target: minigames won', min: 1, max: 100, integer: true },
+  { path: 'social.contractBlocksTarget', label: 'Contract target: blocks claimed', min: 1, max: 100, integer: true },
+  { path: 'social.contractTapesBase', label: 'Contract target: tapes base', min: 1, max: 10000, integer: true },
+  { path: 'social.contractTapesPerLevel', label: 'Contract target: tapes per level', min: 0, max: 1000, integer: false },
+  { path: 'social.contractWafersBase', label: 'Contract target: wafers base', min: 1, max: 10000, integer: true },
+  { path: 'social.contractWafersGrowth', label: 'Contract target: wafers growth per level', min: 1, max: 3, integer: false },
+  { path: 'social.contractRewardWafers', label: 'Contract reward: wafers', min: 0, max: 10000, integer: true },
+  { path: 'social.contractRewardTapes', label: 'Contract reward: tapes', min: 0, max: 10000, integer: true },
+  { path: 'social.contractRewardLevelScalePct', label: 'Contract reward scaling per level', min: 0, max: 1, integer: false },
+  { path: 'social.streakMaxDay', label: 'Streak length (days)', min: 1, max: 30, integer: true },
+  { path: 'social.streakFlopsSeconds', label: 'Streak FLOPS reward (seconds of output)', min: 0, max: 86400, integer: true },
+  { path: 'social.streakWaferBase', label: 'Streak wafer reward base', min: 0, max: 10000, integer: true },
+  { path: 'social.streakWaferPerDay', label: 'Streak wafer reward per day', min: 0, max: 1000, integer: true },
+  { path: 'social.streakDay7Tapes', label: 'Streak final-day tape reward', min: 0, max: 10000, integer: true },
+  { path: 'social.leaderboardCacheMs', label: 'Leaderboard cache TTL (ms)', min: 0, max: 3600000, integer: true },
+  { path: 'social.leaderboardLimit', label: 'Leaderboard rows per board', min: 1, max: 500, integer: true },
 ];
 
 export function getAtPath(obj, path) {
