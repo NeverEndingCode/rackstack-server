@@ -20,7 +20,7 @@ export const {
   getConfigHistory, listEvents, getEvent, getActiveEvent, putEvent,
   setEventStatus, deleteEvent, upsertParticipation, getParticipation,
   updateParticipationProgress, listParticipation, setLeaderboardOptOut,
-  listLeaderboard, getLatestEventId, seedSeasonalEvents,
+  listLeaderboard, getLatestEventId, seedSeasonalEvents, listIdentities,
 } = driver;
 
 export { driver };

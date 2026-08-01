@@ -50,7 +50,7 @@ getOpenMinigameSession, finishMinigameSession, getConfigRow, putConfigRow,
 getConfigHistory, listEvents, getEvent, getActiveEvent, putEvent,
 setEventStatus, deleteEvent, upsertParticipation, getParticipation,
 updateParticipationProgress, listParticipation, setLeaderboardOptOut,
-listLeaderboard, getLatestEventId, seedSeasonalEvents
+listLeaderboard, getLatestEventId, seedSeasonalEvents, listIdentities
 ```
 
 `tests/db.interface.test.js` asserts this exact list is exported as
@@ -73,12 +73,20 @@ these breaks every consumer.
 - `putEvent` / `upsertParticipation` accept either camelCase or snake_case
   keys on their input, via `shared.js`'s `normalizeEventRow` /
   `normalizeParticipationRow`.
+- `users.id` (the literal string `provider:providerId`) never changes once
+  assigned — it's the target of 3 foreign keys and the value operators put
+  in `SUPER_ADMIN_IDS`. Login methods live in `identities`, keyed
+  `(provider, provider_id)` with a `user_id` FK back to `users`; `upsertUser`
+  resolves through it. `getAllUsersWithSaves()` still exposes a `provider`
+  field — the user's *primary* identity (earliest `created_at`, ties broken
+  by provider name), not necessarily their only one.
 
 ## Schema versioning
 
 `schema_migrations(version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL)`
 tracks which numbered migrations have run. `appliedVersions(db)` returns the
-applied set; `markApplied(db, version)` records one. Not yet consumed by
-`applySchema` itself (which still runs its full, idempotent DDL/guarded-ALTER
-sequence on every boot) — Task 5 is expected to be the first real consumer of
-version-gated migrations.
+applied set; `markApplied(db, version)` records one. Still not consumed by
+`applySchema` — Task 5 (the identities split) turned out not to need it:
+both schemas self-guard their one-time migration step directly (SQLite via
+`PRAGMA table_info`, Postgres via `information_schema.columns`), the same
+pattern `guardedAddColumn` already used for every column added since v1.2.

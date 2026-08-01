@@ -242,18 +242,21 @@ describe('dedupeUsernames', () => {
     // outright. Drop it to simulate the pre-index state dedupeUsernames is
     // meant to clean up, then recreate it (each backend's own DDL)
     // afterward.
+    // users no longer carries provider/provider_id (v1.7 moved those to
+    // identities) - dedupeUsernames only ever reads id/username/created_at,
+    // so these rows only need those columns.
     const rows = [
-      { id: 'x:1', provider: 'x', provider_id: '1', username: 'Duplicate', avatar_url: null, created_at: 100 },
-      { id: 'x:2', provider: 'x', provider_id: '2', username: 'duplicate', avatar_url: null, created_at: 200 },
-      { id: 'x:3', provider: 'x', provider_id: '3', username: 'DUPLICATE', avatar_url: null, created_at: 300 },
+      { id: 'x:1', username: 'Duplicate', avatar_url: null, created_at: 100 },
+      { id: 'x:2', username: 'duplicate', avatar_url: null, created_at: 200 },
+      { id: 'x:3', username: 'DUPLICATE', avatar_url: null, created_at: 300 },
       // A pre-existing user already squats the first suffix candidate.
-      { id: 'x:4', provider: 'x', provider_id: '4', username: 'duplicate-2', avatar_url: null, created_at: 50 },
+      { id: 'x:4', username: 'duplicate-2', avatar_url: null, created_at: 50 },
     ];
     if (driver.__backend === 'sqlite') {
       db.exec('DROP INDEX IF EXISTS idx_users_username');
       const insert = db.prepare(`
-        INSERT INTO users (id, provider, provider_id, username, avatar_url, created_at)
-        VALUES (@id, @provider, @provider_id, @username, @avatar_url, @created_at)
+        INSERT INTO users (id, username, avatar_url, created_at)
+        VALUES (@id, @username, @avatar_url, @created_at)
       `);
       for (const row of rows) insert.run(row);
     } else {
@@ -261,8 +264,8 @@ describe('dedupeUsernames', () => {
       for (const row of rows) {
         // eslint-disable-next-line no-await-in-loop
         await db.query(
-          'INSERT INTO users (id, provider, provider_id, username, avatar_url, created_at) VALUES ($1, $2, $3, $4, $5, $6)',
-          [row.id, row.provider, row.provider_id, row.username, row.avatar_url, row.created_at],
+          'INSERT INTO users (id, username, avatar_url, created_at) VALUES ($1, $2, $3, $4)',
+          [row.id, row.username, row.avatar_url, row.created_at],
         );
       }
     }

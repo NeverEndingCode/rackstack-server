@@ -20,7 +20,7 @@ const INTERFACE = [
   'getConfigHistory', 'listEvents', 'getEvent', 'getActiveEvent', 'putEvent',
   'setEventStatus', 'deleteEvent', 'upsertParticipation', 'getParticipation',
   'updateParticipationProgress', 'listParticipation', 'setLeaderboardOptOut',
-  'listLeaderboard', 'getLatestEventId', 'seedSeasonalEvents',
+  'listLeaderboard', 'getLatestEventId', 'seedSeasonalEvents', 'listIdentities',
 ];
 
 describe('db facade', () => {

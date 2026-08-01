@@ -35,6 +35,86 @@ function guardedAddColumn(db, sql) {
   }
 }
 
+/**
+ * v1.7 identities split: login methods (provider/provider_id) move out of
+ * `users` into their own `identities` table, keyed (provider, provider_id),
+ * so a later release can attach more than one login method to the same
+ * `users.id`. `users.id` itself (the literal string `provider:providerId`)
+ * never changes here - it's the target of 3 foreign keys and the value
+ * operators put in SUPER_ADMIN_IDS.
+ *
+ * The CREATE TABLE users statement above is intentionally left untouched -
+ * same "keep the original DDL, evolve via guarded steps that run on every
+ * boot" convention guardedAddColumn uses above. That means a genuinely
+ * fresh :memory: database still gets a `provider` column for one instant
+ * before this function immediately migrates it away in the same boot - a
+ * deliberate choice: it means every single test run in this suite exercises
+ * the real migration path, not just the dedicated upgrade-path test.
+ *
+ * SQLite refuses DROP COLUMN while the column participates in a
+ * table-level UNIQUE constraint (users has UNIQUE(provider, provider_id)),
+ * so the columns can't just be ALTERed away - the whole table has to be
+ * rebuilt. Guarded on PRAGMA table_info so it's a no-op after the first
+ * boot that runs it, whether that's against a genuinely fresh table or a
+ * pre-v1.7 database holding real player data.
+ */
+export async function migrateIdentities(db) {
+  const cols = db.prepare('PRAGMA table_info(users)').all().map((c) => c.name);
+  if (!cols.includes('provider')) return; // already migrated
+
+  db.pragma('foreign_keys = OFF');
+  const tx = db.transaction(() => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS identities (
+        provider TEXT NOT NULL,
+        provider_id TEXT NOT NULL,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        supertokens_user_id TEXT UNIQUE,
+        created_at INTEGER NOT NULL,
+        last_login_at INTEGER,
+        PRIMARY KEY (provider, provider_id)
+      );
+
+      INSERT OR IGNORE INTO identities (provider, provider_id, user_id, created_at)
+        SELECT provider, provider_id, id, created_at FROM users;
+
+      CREATE TABLE users_new (
+        id TEXT PRIMARY KEY,
+        username TEXT,
+        avatar_url TEXT,
+        created_at INTEGER NOT NULL,
+        roles TEXT DEFAULT '[]',
+        custom_username INTEGER DEFAULT 0,
+        leaderboard_opt_out INTEGER DEFAULT 0,
+        tours_completed TEXT DEFAULT '[]'
+      );
+
+      INSERT INTO users_new (id, username, avatar_url, created_at, roles,
+                             custom_username, leaderboard_opt_out, tours_completed)
+        SELECT id, username, avatar_url, created_at,
+               COALESCE(roles, '[]'), COALESCE(custom_username, 0),
+               COALESCE(leaderboard_opt_out, 0), COALESCE(tours_completed, '[]')
+        FROM users;
+
+      DROP TABLE users;
+      ALTER TABLE users_new RENAME TO users;
+    `);
+    // The unique index lived on the dropped table - recreate it.
+    db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username COLLATE NOCASE)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_identities_user ON identities (user_id)');
+  });
+  tx();
+  db.pragma('foreign_keys = ON');
+
+  // saves/minigame_sessions/event_participation declare their foreign keys
+  // against the *name* `users`, so the rename re-points them. Verify rather
+  // than assume - a violation here means orphaned saves.
+  const violations = db.pragma('foreign_key_check');
+  if (violations.length > 0) {
+    throw new Error(`identities migration left ${violations.length} FK violations`);
+  }
+}
+
 export async function applySchema(db) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -128,7 +208,13 @@ export async function applySchema(db) {
     );
   `);
 
+  // Dedupe BEFORE the identities rebuild: migrateIdentities recreates
+  // idx_users_username as part of the same transaction that builds the new
+  // `users` table, so any leftover case-duplicate usernames on a database
+  // upgrading straight from a very old pre-index version must be resolved
+  // first, or that CREATE UNIQUE INDEX would fail.
   await dedupeUsernames(db);
+  await migrateIdentities(db);
 
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username COLLATE NOCASE)');
 }

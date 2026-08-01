@@ -53,15 +53,26 @@ export async function createPgDriver({ url }) {
     __raw: pool,
 
     async upsertUser({ provider, providerId, username, avatarUrl }) {
-      const id = `${provider}:${providerId}`;
-      const existing = await one('SELECT * FROM users WHERE id = $1', [id]);
-      if (existing) {
+      // Resolution goes through identities now, not a direct lookup by
+      // users.id - a later release attaching a second login method to the
+      // same account will only add a row here, never touch users.id.
+      const identity = await one(
+        'SELECT * FROM identities WHERE provider = $1 AND provider_id = $2', [provider, providerId],
+      );
+
+      if (identity) {
+        const existing = await one('SELECT * FROM users WHERE id = $1', [identity.user_id]);
+        await run(
+          'UPDATE identities SET last_login_at = $1 WHERE provider = $2 AND provider_id = $3',
+          [Date.now(), provider, providerId],
+        );
+
         // A user who has set a custom username keeps it on re-login; only the
         // avatar (which the user doesn't control) is refreshed from the profile.
         const desiredUsername = existing.custom_username ? existing.username : username;
         let nextUsername = desiredUsername;
         try {
-          await run('UPDATE users SET username = $1, avatar_url = $2 WHERE id = $3', [nextUsername, avatarUrl, id]);
+          await run('UPDATE users SET username = $1, avatar_url = $2 WHERE id = $3', [nextUsername, avatarUrl, existing.id]);
         } catch (e) {
           // The provider-supplied name can change between logins (e.g. the user
           // renamed their display name on the OAuth provider) and collide
@@ -74,20 +85,22 @@ export async function createPgDriver({ url }) {
           if (e.code !== '23505') throw e; // unique_violation
           nextUsername = await findAvailableUsername(
             desiredUsername,
-            (name) => isUsernameTakenByOtherUser(name, id),
+            (name) => isUsernameTakenByOtherUser(name, existing.id),
           );
-          await run('UPDATE users SET username = $1, avatar_url = $2 WHERE id = $3', [nextUsername, avatarUrl, id]);
+          await run('UPDATE users SET username = $1, avatar_url = $2 WHERE id = $3', [nextUsername, avatarUrl, existing.id]);
         }
         return { ...existing, username: nextUsername, avatar_url: avatarUrl };
       }
 
+      const id = `${provider}:${providerId}`;
+      const now = Date.now();
       const user = {
-        id, provider, provider_id: providerId, username, avatar_url: avatarUrl, created_at: Date.now(),
+        id, username, avatar_url: avatarUrl, created_at: now,
       };
       try {
         await run(
-          'INSERT INTO users (id, provider, provider_id, username, avatar_url, created_at) VALUES ($1, $2, $3, $4, $5, $6)',
-          [user.id, user.provider, user.provider_id, user.username, user.avatar_url, user.created_at],
+          'INSERT INTO users (id, username, avatar_url, created_at) VALUES ($1, $2, $3, $4)',
+          [user.id, user.username, user.avatar_url, user.created_at],
         );
       } catch (e) {
         // Two different brand-new OAuth accounts can independently supply the
@@ -100,10 +113,14 @@ export async function createPgDriver({ url }) {
         if (e.code !== '23505') throw e; // unique_violation
         user.username = await findAvailableUsername(username, isUsernameTakenInDb);
         await run(
-          'INSERT INTO users (id, provider, provider_id, username, avatar_url, created_at) VALUES ($1, $2, $3, $4, $5, $6)',
-          [user.id, user.provider, user.provider_id, user.username, user.avatar_url, user.created_at],
+          'INSERT INTO users (id, username, avatar_url, created_at) VALUES ($1, $2, $3, $4)',
+          [user.id, user.username, user.avatar_url, user.created_at],
         );
       }
+      await run(
+        'INSERT INTO identities (provider, provider_id, user_id, created_at) VALUES ($1, $2, $3, $4)',
+        [provider, providerId, id, now],
+      );
       return user;
     },
 
@@ -111,15 +128,35 @@ export async function createPgDriver({ url }) {
       return one('SELECT * FROM users WHERE id = $1', [id]);
     },
 
+    /**
+     * `provider` is the user's PRIMARY identity - earliest created_at, ties
+     * broken by provider name - not necessarily their only one. Since no
+     * user has more than one identity yet, this is identical to the
+     * pre-split `users.provider` column for every existing row.
+     */
     async getAllUsersWithSaves() {
       return all(`
-        SELECT u.id, u.provider, u.username, u.avatar_url, u.created_at,
+        SELECT u.id, u.username, u.avatar_url, u.created_at,
                u.leaderboard_opt_out,
-               s.data, s.last_save
+               s.data, s.last_save,
+               (SELECT i.provider FROM identities i
+                 WHERE i.user_id = u.id
+                 ORDER BY i.created_at ASC, i.provider ASC
+                 LIMIT 1) AS provider
         FROM users u
         LEFT JOIN saves s ON s.user_id = u.id
         ORDER BY u.created_at DESC, u.id ASC
       `);
+    },
+
+    /**
+     * Every login method attached to `userId`, earliest first. Not yet
+     * consumed anywhere in this codebase - a thin read added ahead of v1.8,
+     * which will use it to let a player see (and eventually link) every
+     * provider they've logged in with.
+     */
+    async listIdentities(userId) {
+      return all('SELECT * FROM identities WHERE user_id = $1 ORDER BY created_at ASC', [userId]);
     },
 
     async getSave(userId) {

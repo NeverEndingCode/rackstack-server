@@ -32,8 +32,13 @@ export async function createSqliteDriver({ path: dbPath }) {
   }
 
   const insertUserStmt = db.prepare(`
-    INSERT INTO users (id, provider, provider_id, username, avatar_url, created_at)
-    VALUES (@id, @provider, @provider_id, @username, @avatar_url, @created_at)
+    INSERT INTO users (id, username, avatar_url, created_at)
+    VALUES (@id, @username, @avatar_url, @created_at)
+  `);
+
+  const insertIdentityStmt = db.prepare(`
+    INSERT INTO identities (provider, provider_id, user_id, created_at)
+    VALUES (@provider, @provider_id, @user_id, @created_at)
   `);
 
   const putEventStmt = db.prepare(`
@@ -70,15 +75,26 @@ export async function createSqliteDriver({ path: dbPath }) {
     __raw: db,
 
     async upsertUser({ provider, providerId, username, avatarUrl }) {
-      const id = `${provider}:${providerId}`;
-      const existing = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
-      if (existing) {
+      // Resolution goes through identities now, not a direct lookup by
+      // users.id - a later release attaching a second login method to the
+      // same account will only add a row here, never touch users.id.
+      const identity = db.prepare(
+        'SELECT * FROM identities WHERE provider = ? AND provider_id = ?',
+      ).get(provider, providerId);
+
+      if (identity) {
+        const existing = db.prepare('SELECT * FROM users WHERE id = ?').get(identity.user_id);
+        db.prepare(
+          'UPDATE identities SET last_login_at = ? WHERE provider = ? AND provider_id = ?',
+        ).run(Date.now(), provider, providerId);
+
         // A user who has set a custom username keeps it on re-login; only the
         // avatar (which the user doesn't control) is refreshed from the profile.
         const desiredUsername = existing.custom_username ? existing.username : username;
         let nextUsername = desiredUsername;
         try {
-          db.prepare('UPDATE users SET username = ?, avatar_url = ? WHERE id = ?').run(nextUsername, avatarUrl, id);
+          db.prepare('UPDATE users SET username = ?, avatar_url = ? WHERE id = ?')
+            .run(nextUsername, avatarUrl, existing.id);
         } catch (e) {
           // The provider-supplied name can change between logins (e.g. the user
           // renamed their display name on the OAuth provider) and collide
@@ -91,15 +107,18 @@ export async function createSqliteDriver({ path: dbPath }) {
           if (e.code !== 'SQLITE_CONSTRAINT_UNIQUE' && e.code !== 'SQLITE_CONSTRAINT') throw e;
           nextUsername = await findAvailableUsername(
             desiredUsername,
-            (name) => isUsernameTakenByOtherUser(name, id),
+            (name) => isUsernameTakenByOtherUser(name, existing.id),
           );
-          db.prepare('UPDATE users SET username = ?, avatar_url = ? WHERE id = ?').run(nextUsername, avatarUrl, id);
+          db.prepare('UPDATE users SET username = ?, avatar_url = ? WHERE id = ?')
+            .run(nextUsername, avatarUrl, existing.id);
         }
         return { ...existing, username: nextUsername, avatar_url: avatarUrl };
       }
 
+      const id = `${provider}:${providerId}`;
+      const now = Date.now();
       const user = {
-        id, provider, provider_id: providerId, username, avatar_url: avatarUrl, created_at: Date.now(),
+        id, username, avatar_url: avatarUrl, created_at: now,
       };
       try {
         insertUserStmt.run(user);
@@ -115,6 +134,9 @@ export async function createSqliteDriver({ path: dbPath }) {
         user.username = await findAvailableUsername(username, isUsernameTakenInDb);
         insertUserStmt.run(user);
       }
+      insertIdentityStmt.run({
+        provider, provider_id: providerId, user_id: id, created_at: now,
+      });
       return user;
     },
 
@@ -122,15 +144,35 @@ export async function createSqliteDriver({ path: dbPath }) {
       return db.prepare('SELECT * FROM users WHERE id = ?').get(id);
     },
 
+    /**
+     * `provider` is the user's PRIMARY identity - earliest created_at, ties
+     * broken by provider name - not necessarily their only one. Since no
+     * user has more than one identity yet, this is identical to the
+     * pre-split `users.provider` column for every existing row.
+     */
     async getAllUsersWithSaves() {
       return db.prepare(`
-        SELECT u.id, u.provider, u.username, u.avatar_url, u.created_at,
+        SELECT u.id, u.username, u.avatar_url, u.created_at,
                u.leaderboard_opt_out,
-               s.data, s.last_save
+               s.data, s.last_save,
+               (SELECT i.provider FROM identities i
+                 WHERE i.user_id = u.id
+                 ORDER BY i.created_at ASC, i.provider ASC
+                 LIMIT 1) AS provider
         FROM users u
         LEFT JOIN saves s ON s.user_id = u.id
         ORDER BY u.created_at DESC
       `).all();
+    },
+
+    /**
+     * Every login method attached to `userId`, earliest first. Not yet
+     * consumed anywhere in this codebase - a thin read added ahead of v1.8,
+     * which will use it to let a player see (and eventually link) every
+     * provider they've logged in with.
+     */
+    async listIdentities(userId) {
+      return db.prepare('SELECT * FROM identities WHERE user_id = ? ORDER BY created_at ASC').all(userId);
     },
 
     async getSave(userId) {
