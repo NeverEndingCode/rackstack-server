@@ -23,11 +23,21 @@
 // than hand-constructing a config object, unlike tests/reducer.events.test.js
 // - hand-building config.__activeEvent directly is exactly why the original
 // bug was invisible to the existing suite (Task 7 report).
-process.env.DB_PATH = ':memory:';
+import { describe, it, expect, afterAll } from 'vitest';
+import { provisionDatabase } from './helpers/backend.js';
 
-import { describe, it, expect } from 'vitest';
+// Provision before importing the facade: DATABASE_URL/DB_PATH must be set
+// before the dynamic import below, since the facade resolves its driver at
+// module-evaluation time.
+const provisioned = await provisionDatabase();
+if (provisioned.backend === 'pg') process.env.DATABASE_URL = provisioned.url;
+else process.env.DB_PATH = provisioned.path;
 
 const dbMod = await import('../server/db.js');
+afterAll(async () => {
+  if (dbMod.driver.__backend === 'pg') await dbMod.driver.__raw.end();
+  await provisioned.cleanup();
+});
 const {
   upsertUser, putEvent, putSave,
 } = dbMod;

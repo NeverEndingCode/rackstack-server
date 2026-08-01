@@ -1,16 +1,23 @@
-process.env.DB_PATH = ':memory:';
-
-import { describe, it, expect, beforeEach } from 'vitest';
+import {
+  describe, it, expect, beforeEach, afterAll,
+} from 'vitest';
 import { validateModifiers, validateLadder } from '../shared/events.js';
+import { provisionDatabase } from './helpers/backend.js';
 
-// Dynamic import, deferred until after DB_PATH is set above: a static
-// `import { driver } from ...` would be hoisted by the ESM spec above the
-// process.env assignment and stand up the driver against the real on-disk
-// DB_PATH default instead of :memory:.
+// Provision before importing the facade: DATABASE_URL/DB_PATH must be set
+// before the dynamic import below, since the facade resolves its driver at
+// module-evaluation time - a static `import { driver } from ...` would be
+// hoisted by the ESM spec above the provisioning call and stand up the
+// driver against the wrong backend/path.
+const provisioned = await provisionDatabase();
+if (provisioned.backend === 'pg') process.env.DATABASE_URL = provisioned.url;
+else process.env.DB_PATH = provisioned.path;
+
 const dbMod = await import('../server/db.js');
 const {
   driver,
   upsertUser,
+  getUserById,
   listEvents,
   getEvent,
   getActiveEvent,
@@ -25,14 +32,34 @@ const {
 } = dbMod;
 const { SEASONAL_EVENTS } = await import('../server/data/seasonalEvents.js');
 
+afterAll(async () => {
+  if (driver.__backend === 'pg') await driver.__raw.end();
+  await provisioned.cleanup();
+});
+
 // Schema/table-existence assertions below are inherently backend-specific
-// (sqlite_master, PRAGMA table_info); route them through the driver handle
-// rather than a module-level `db` export so the intent stays explicit. The
-// pg variant of these assertions is added in Task 4.
+// (sqlite_master/PRAGMA table_info vs. pg_tables/information_schema); route
+// them through the driver handle rather than a module-level `db` export so
+// the intent stays explicit.
 const db = driver.__raw;
 
-function tableNames() {
-  return db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().map((r) => r.name);
+async function tableNames() {
+  if (driver.__backend === 'sqlite') {
+    return db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().map((r) => r.name);
+  }
+  const { rows } = await db.query("SELECT tablename AS name FROM pg_tables WHERE schemaname = 'public'");
+  return rows.map((r) => r.name);
+}
+
+async function columnNames(table) {
+  if (driver.__backend === 'sqlite') {
+    return db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+  }
+  const { rows } = await db.query(
+    'SELECT column_name AS name FROM information_schema.columns WHERE table_name = $1',
+    [table],
+  );
+  return rows.map((r) => r.name);
 }
 
 function sampleEvent(overrides = {}) {
@@ -56,17 +83,19 @@ function sampleEvent(overrides = {}) {
 
 describe('db schema v1.4', () => {
   it('creates live_events and event_participation tables', async () => {
-    const names = tableNames();
+    const names = await tableNames();
     expect(names).toContain('live_events');
     expect(names).toContain('event_participation');
   });
 
   it('adds leaderboard_opt_out column to users', async () => {
-    const cols = db.prepare('PRAGMA table_info(users)').all().map((c) => c.name);
+    const cols = await columnNames('users');
     expect(cols).toContain('leaderboard_opt_out');
   });
 
-  it('re-running the guarded ALTER does not throw on a second boot', async () => {
+  // SQLite-only: see the equivalent skip in tests/db.test.js - guarded ALTER
+  // is a SQLite-specific mechanism schema.pg.js has no counterpart for.
+  it.runIf(driver.__backend === 'sqlite')('re-running the guarded ALTER does not throw on a second boot', async () => {
     expect(() => {
       try {
         db.exec('ALTER TABLE users ADD COLUMN leaderboard_opt_out INTEGER DEFAULT 0');
@@ -190,15 +219,13 @@ describe('event_participation', () => {
 
   it('setLeaderboardOptOut round-trips on the users table', async () => {
     const u = await upsertUser({ provider: 'discord', providerId: 'ep5', username: 'participant5', avatarUrl: null });
-    const before = db.prepare('SELECT leaderboard_opt_out FROM users WHERE id = ?').get(u.id);
-    expect(before.leaderboard_opt_out).toBe(0);
+    expect((await getUserById(u.id)).leaderboard_opt_out).toBe(0);
 
     await setLeaderboardOptOut(u.id, true);
-    const after = db.prepare('SELECT leaderboard_opt_out FROM users WHERE id = ?').get(u.id);
-    expect(after.leaderboard_opt_out).toBe(1);
+    expect((await getUserById(u.id)).leaderboard_opt_out).toBe(1);
 
     await setLeaderboardOptOut(u.id, false);
-    expect(db.prepare('SELECT leaderboard_opt_out FROM users WHERE id = ?').get(u.id).leaderboard_opt_out).toBe(0);
+    expect((await getUserById(u.id)).leaderboard_opt_out).toBe(0);
   });
 });
 

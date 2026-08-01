@@ -1,27 +1,38 @@
 process.env.JWT_SECRET = 'test-secret-for-supertest';
-process.env.DB_PATH = ':memory:';
 process.env.SUPER_ADMIN_IDS = 'test:owner';
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterAll } from 'vitest';
 import request from 'supertest';
 import jwt from 'jsonwebtoken';
 import { readFileSync } from 'node:fs';
 import { DEFAULT_CONFIG } from '../shared/configSchema.js';
 import { initialState } from '../shared/state.js';
+import { provisionDatabase } from './helpers/backend.js';
 
-// Dynamic imports: server/auth.js reads JWT_SECRET (and server/db.js reads
-// DB_PATH) at module-evaluation time. Static imports get hoisted above the
-// process.env assignments above per ES module semantics, so - same trick as
+// Provision before importing the facade: DATABASE_URL/DB_PATH must be set
+// before the dynamic import below. Dynamic imports: server/auth.js reads
+// JWT_SECRET (and server/db.js reads DB_PATH/DATABASE_URL) at
+// module-evaluation time. Static imports get hoisted above the process.env
+// assignments above per ES module semantics, so - same trick as
 // tests/db.test.js - these have to be dynamic to see the env vars set here.
+const provisioned = await provisionDatabase();
+if (provisioned.backend === 'pg') process.env.DATABASE_URL = provisioned.url;
+else process.env.DB_PATH = provisioned.path;
+
 const { buildApp } = await import('../server/app.js');
 const { ensureConfig } = await import('../server/configService.js');
-const { upsertUser, putSave, setRoles, createMinigameSession } = await import('../server/db.js');
+const { upsertUser, putSave, setRoles, createMinigameSession, driver } = await import('../server/db.js');
 const { COOKIE_NAME } = await import('../server/auth.js');
 
 const v11Fixture = JSON.parse(readFileSync(new URL('./fixtures/v11-save.json', import.meta.url)));
 
 await ensureConfig();
 const app = buildApp();
+
+afterAll(async () => {
+  if (driver.__backend === 'pg') await driver.__raw.end();
+  await provisioned.cleanup();
+});
 
 let seq = 0;
 async function makeUser(overrides = {}) {

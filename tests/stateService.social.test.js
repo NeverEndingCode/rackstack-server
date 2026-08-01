@@ -1,15 +1,27 @@
-process.env.DB_PATH = ':memory:';
 process.env.JWT_SECRET = 'test-secret-social-state';
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterAll } from 'vitest';
+import { provisionDatabase } from './helpers/backend.js';
 
-const { upsertUser, putSave, getSave } = await import('../server/db.js');
+// Provision before importing the facade: DATABASE_URL/DB_PATH must be set
+// before the dynamic import below, since the facade resolves its driver at
+// module-evaluation time.
+const provisioned = await provisionDatabase();
+if (provisioned.backend === 'pg') process.env.DATABASE_URL = provisioned.url;
+else process.env.DB_PATH = provisioned.path;
+
+const { upsertUser, putSave, getSave, driver } = await import('../server/db.js');
 const { ensureConfig } = await import('../server/configService.js');
 const { loadAndEvaluate } = await import('../server/stateService.js');
 const { initialState } = await import('../shared/state.js');
 const { utcDateKey } = await import('../shared/daily.js');
 
 await ensureConfig();
+
+afterAll(async () => {
+  if (driver.__backend === 'pg') await driver.__raw.end();
+  await provisioned.cleanup();
+});
 
 let seq = 0;
 async function makeUser() {

@@ -7,29 +7,37 @@ directly.
 
 ## Layout
 
-- `index.js` — the facade. Picks a driver at boot (currently always SQLite;
-  Task 4 adds a `DATABASE_URL`-gated Postgres branch) and re-exports every
-  interface function as a top-level named export, plus `driver` itself.
+- `index.js` — the facade. Picks a driver at boot (`createPgDriver` when
+  `DATABASE_URL` is set, `createSqliteDriver` otherwise) and re-exports
+  every interface function as a top-level named export, plus `driver`
+  itself.
 - `driver.sqlite.js` — `createSqliteDriver({ path }) → Promise<Driver>`.
   Owns every `better-sqlite3`-specific query.
+- `driver.pg.js` — `createPgDriver({ url }) → Promise<Driver>`. Owns every
+  `pg`-specific query, and registers the `int8` type parser (BIGINT ->
+  number) at module scope, before any query runs.
 - `schema.sqlite.js` — DDL and schema-version bookkeeping for the SQLite
   backend: `applySchema(db)`, `appliedVersions(db)`, `markApplied(db, version)`.
-- `shared.js` — dialect-free helpers used by (eventually) every driver:
-  username-suffixing, event-row JSON parsing, and the camelCase/snake_case
-  row normalizers for `putEvent`/`upsertParticipation`. No SQL lives here.
+- `schema.pg.js` — the Postgres equivalent DDL and bookkeeping:
+  `applySchema(pool)`, `appliedVersions(pool)`, `markApplied(pool, version)`.
+  Unlike `schema.sqlite.js`, there's no guarded-ALTER history to replay -
+  every column ships in its `CREATE TABLE` from the start.
+- `shared.js` — dialect-free helpers used by every driver: username-suffixing,
+  event-row JSON parsing, and the camelCase/snake_case row normalizers for
+  `putEvent`/`upsertParticipation`. No SQL lives here.
 
 ## The `Driver` contract
 
-`createSqliteDriver` (and, from Task 4, its Postgres counterpart) resolves
-to an object with exactly these keys:
+`createSqliteDriver` and `createPgDriver` each resolve to an object with
+exactly these keys:
 
-- `__backend` — `'sqlite'` or `'postgres'`. Test-only; used to skip
-  backend-specific assertions (e.g. `sqlite_master` introspection) under the
-  other driver.
+- `__backend` — `'sqlite'` or `'pg'`. Test-only; used to skip
+  backend-specific assertions (e.g. `sqlite_master`/`PRAGMA` introspection
+  vs. `pg_tables`/`information_schema`) under the other driver.
 - `__raw` — the underlying driver handle (`better-sqlite3`'s `Database`, or
-  Postgres's pool/client). Test-only, for schema assertions. Application
-  code must never touch `__raw`; only the facade and driver files interact
-  with the underlying database.
+  the `pg.Pool`). Test-only, for schema assertions. Application code must
+  never touch `__raw`; only the facade and driver files interact with the
+  underlying database.
 - Every interface function below, all `async`.
 
 ### Interface functions

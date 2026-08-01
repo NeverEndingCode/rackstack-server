@@ -4,23 +4,35 @@
 // are covered in tests/e2e/smoke-v14.mjs, because asserting only through the
 // API is precisely how all six of these shipped green.
 process.env.JWT_SECRET = 'test-secret-for-supertest-finalfix';
-process.env.DB_PATH = ':memory:';
 process.env.SUPER_ADMIN_IDS = 'test:finalfix-owner';
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterAll } from 'vitest';
 import request from 'supertest';
 import jwt from 'jsonwebtoken';
+import { provisionDatabase } from './helpers/backend.js';
+
+// Provision before importing the facade: DATABASE_URL/DB_PATH must be set
+// before the dynamic import below, since the facade resolves its driver at
+// module-evaluation time.
+const provisioned = await provisionDatabase();
+if (provisioned.backend === 'pg') process.env.DATABASE_URL = provisioned.url;
+else process.env.DB_PATH = provisioned.path;
 
 const { buildApp } = await import('../server/app.js');
 const { ensureConfig } = await import('../server/configService.js');
 const {
-  upsertUser, setRoles, putEvent, setEventStatus, getSave, putSave,
+  upsertUser, setRoles, putEvent, setEventStatus, getSave, putSave, driver,
 } = await import('../server/db.js');
 const { COOKIE_NAME } = await import('../server/auth.js');
 const { activateEvent, endEvent } = await import('../server/eventService.js');
 
 await ensureConfig();
 const app = buildApp();
+
+afterAll(async () => {
+  if (driver.__backend === 'pg') await driver.__raw.end();
+  await provisioned.cleanup();
+});
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 let seq = 0;

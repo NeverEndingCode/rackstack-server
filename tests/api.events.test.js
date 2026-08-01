@@ -1,20 +1,30 @@
 process.env.JWT_SECRET = 'test-secret-for-supertest-events';
-process.env.DB_PATH = ':memory:';
 process.env.SUPER_ADMIN_IDS = 'test:events-owner';
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterAll } from 'vitest';
 import request from 'supertest';
 import jwt from 'jsonwebtoken';
+import { provisionDatabase } from './helpers/backend.js';
 
-// Dynamic imports: server/auth.js reads JWT_SECRET (and server/db.js reads
-// DB_PATH) at module-evaluation time - same trick as tests/api.test.js.
+// Provision before importing the facade: DATABASE_URL/DB_PATH must be set
+// before the dynamic import below, since the facade resolves its driver at
+// module-evaluation time - same trick as tests/api.test.js.
+const provisioned = await provisionDatabase();
+if (provisioned.backend === 'pg') process.env.DATABASE_URL = provisioned.url;
+else process.env.DB_PATH = provisioned.path;
+
 const { buildApp } = await import('../server/app.js');
 const { ensureConfig, getEffectiveConfig } = await import('../server/configService.js');
-const { upsertUser, setRoles } = await import('../server/db.js');
+const { upsertUser, setRoles, driver } = await import('../server/db.js');
 const { COOKIE_NAME } = await import('../server/auth.js');
 
 await ensureConfig();
 const app = buildApp();
+
+afterAll(async () => {
+  if (driver.__backend === 'pg') await driver.__raw.end();
+  await provisioned.cleanup();
+});
 
 let seq = 0;
 async function makeUser(overrides = {}) {

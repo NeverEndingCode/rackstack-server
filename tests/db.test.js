@@ -1,11 +1,17 @@
-process.env.DB_PATH = ':memory:';
+import {
+  describe, it, expect, beforeEach, afterAll,
+} from 'vitest';
+import { provisionDatabase } from './helpers/backend.js';
 
-import { describe, it, expect, beforeEach } from 'vitest';
+// Provision before importing the facade: DATABASE_URL/DB_PATH must be set
+// before the dynamic import below, since the facade resolves its driver at
+// module-evaluation time - a static `import { driver } from ...` would be
+// hoisted by the ESM spec above the provisioning call and stand up the
+// driver against the wrong backend/path.
+const provisioned = await provisionDatabase();
+if (provisioned.backend === 'pg') process.env.DATABASE_URL = provisioned.url;
+else process.env.DB_PATH = provisioned.path;
 
-// Dynamic import, deferred until after DB_PATH is set above: a static
-// `import { driver } from ...` would be hoisted by the ESM spec above the
-// process.env assignment and stand up the driver against the real on-disk
-// DB_PATH default instead of :memory:.
 const dbMod = await import('../server/db.js');
 const {
   driver,
@@ -25,19 +31,39 @@ const {
   getConfigHistory,
 } = dbMod;
 
+afterAll(async () => {
+  if (driver.__backend === 'pg') await driver.__raw.end();
+  await provisioned.cleanup();
+});
+
 // Schema/table-existence assertions below are inherently backend-specific
-// (sqlite_master, PRAGMA table_info); route them through the driver handle
-// rather than a module-level `db` export so the intent stays explicit. The
-// pg variant of these assertions is added in Task 4.
+// (sqlite_master/PRAGMA table_info vs. pg_tables/information_schema); route
+// them through the driver handle rather than a module-level `db` export so
+// the intent stays explicit.
 const db = driver.__raw;
 
-function tableNames() {
-  return db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().map((r) => r.name);
+async function tableNames() {
+  if (driver.__backend === 'sqlite') {
+    return db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().map((r) => r.name);
+  }
+  const { rows } = await db.query("SELECT tablename AS name FROM pg_tables WHERE schemaname = 'public'");
+  return rows.map((r) => r.name);
+}
+
+async function columnNames(table) {
+  if (driver.__backend === 'sqlite') {
+    return db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+  }
+  const { rows } = await db.query(
+    'SELECT column_name AS name FROM information_schema.columns WHERE table_name = $1',
+    [table],
+  );
+  return rows.map((r) => r.name);
 }
 
 describe('db schema v1.2', () => {
   it('creates config, config_history, and minigame_sessions tables', async () => {
-    const names = tableNames();
+    const names = await tableNames();
     expect(names).toContain('users');
     expect(names).toContain('saves');
     expect(names).toContain('config');
@@ -46,12 +72,20 @@ describe('db schema v1.2', () => {
   });
 
   it('adds roles and custom_username columns to users', async () => {
-    const cols = db.prepare('PRAGMA table_info(users)').all().map((c) => c.name);
+    const cols = await columnNames('users');
     expect(cols).toContain('roles');
     expect(cols).toContain('custom_username');
   });
 
-  it('re-importing (guarded ALTER) does not throw on a second boot', async () => {
+  // SQLite-only: this pins the guarded-ALTER duplicate-column path
+  // (schema.sqlite.js's guardedAddColumn), which exists because SQLite has
+  // no "ADD COLUMN IF NOT EXISTS" and the SQLite schema accreted these
+  // columns via ALTER across several versions. schema.pg.js has no
+  // equivalent - every column ships in its CREATE TABLE from the start, and
+  // Postgres's own idempotency (IF NOT EXISTS / ON CONFLICT DO NOTHING) is
+  // exercised directly by seedSeasonalEvents' and applySchema's own
+  // idempotency tests elsewhere in this suite.
+  it.runIf(driver.__backend === 'sqlite')('re-importing (guarded ALTER) does not throw on a second boot', async () => {
     // Simulates a second server boot against the same DB file: the module
     // already ran its ALTERs once for this connection: rerun the exact same
     // guarded statements directly to prove the duplicate-column path is safe.
@@ -183,21 +217,35 @@ describe('upsertUser username collisions on first login', () => {
 
 describe('dedupeUsernames', () => {
   it('suffixes later-created duplicates (case-insensitive), keeping the earliest untouched', async () => {
-    // The unique index (created at module init, after dedupeUsernames' first
-    // boot-time run) would reject these constructed duplicates outright.
-    // Drop it to simulate the pre-index state dedupeUsernames is meant to
-    // clean up, then let the module recreate it afterward.
-    db.exec('DROP INDEX IF EXISTS idx_users_username');
-
-    const insert = db.prepare(`
-      INSERT INTO users (id, provider, provider_id, username, avatar_url, created_at)
-      VALUES (@id, @provider, @provider_id, @username, @avatar_url, @created_at)
-    `);
-    insert.run({ id: 'x:1', provider: 'x', provider_id: '1', username: 'Duplicate', avatar_url: null, created_at: 100 });
-    insert.run({ id: 'x:2', provider: 'x', provider_id: '2', username: 'duplicate', avatar_url: null, created_at: 200 });
-    insert.run({ id: 'x:3', provider: 'x', provider_id: '3', username: 'DUPLICATE', avatar_url: null, created_at: 300 });
-    // A pre-existing user already squats the first suffix candidate.
-    insert.run({ id: 'x:4', provider: 'x', provider_id: '4', username: 'duplicate-2', avatar_url: null, created_at: 50 });
+    // The unique index (created at driver init, after dedupeUsernames' first
+    // boot-time run on SQLite) would reject these constructed duplicates
+    // outright. Drop it to simulate the pre-index state dedupeUsernames is
+    // meant to clean up, then recreate it (each backend's own DDL)
+    // afterward.
+    const rows = [
+      { id: 'x:1', provider: 'x', provider_id: '1', username: 'Duplicate', avatar_url: null, created_at: 100 },
+      { id: 'x:2', provider: 'x', provider_id: '2', username: 'duplicate', avatar_url: null, created_at: 200 },
+      { id: 'x:3', provider: 'x', provider_id: '3', username: 'DUPLICATE', avatar_url: null, created_at: 300 },
+      // A pre-existing user already squats the first suffix candidate.
+      { id: 'x:4', provider: 'x', provider_id: '4', username: 'duplicate-2', avatar_url: null, created_at: 50 },
+    ];
+    if (driver.__backend === 'sqlite') {
+      db.exec('DROP INDEX IF EXISTS idx_users_username');
+      const insert = db.prepare(`
+        INSERT INTO users (id, provider, provider_id, username, avatar_url, created_at)
+        VALUES (@id, @provider, @provider_id, @username, @avatar_url, @created_at)
+      `);
+      for (const row of rows) insert.run(row);
+    } else {
+      await db.query('DROP INDEX IF EXISTS idx_users_username');
+      for (const row of rows) {
+        // eslint-disable-next-line no-await-in-loop
+        await db.query(
+          'INSERT INTO users (id, provider, provider_id, username, avatar_url, created_at) VALUES ($1, $2, $3, $4, $5, $6)',
+          [row.id, row.provider, row.provider_id, row.username, row.avatar_url, row.created_at],
+        );
+      }
+    }
 
     await dedupeUsernames();
 
@@ -206,7 +254,11 @@ describe('dedupeUsernames', () => {
     expect((await getUserById('x:3')).username).toBe('DUPLICATE-4');
     expect((await getUserById('x:4')).username).toBe('duplicate-2');
 
-    db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username COLLATE NOCASE)');
+    if (driver.__backend === 'sqlite') {
+      db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username COLLATE NOCASE)');
+    } else {
+      await db.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users (lower(username))');
+    }
   });
 });
 
@@ -275,7 +327,7 @@ describe('config', () => {
 
 describe('db schema v1.6: tours_completed', () => {
   it('adds the tours_completed column to users', async () => {
-    const cols = db.prepare('PRAGMA table_info(users)').all().map((c) => c.name);
+    const cols = await columnNames('users');
     expect(cols).toContain('tours_completed');
   });
 
@@ -296,7 +348,11 @@ describe('db schema v1.6: tours_completed', () => {
 
   it('returns [] rather than throwing on corrupt JSON', async () => {
     const u = await upsertUser({ provider: 'discord', providerId: 'tour3', username: 'tour3', avatarUrl: null });
-    db.prepare('UPDATE users SET tours_completed = ? WHERE id = ?').run('{not json', u.id);
+    if (driver.__backend === 'sqlite') {
+      db.prepare('UPDATE users SET tours_completed = ? WHERE id = ?').run('{not json', u.id);
+    } else {
+      await db.query('UPDATE users SET tours_completed = $1 WHERE id = $2', ['{not json', u.id]);
+    }
     expect(await getToursCompleted(u.id)).toEqual([]);
   });
 });

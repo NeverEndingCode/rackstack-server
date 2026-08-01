@@ -11,22 +11,34 @@
 // (not a hand-built config/state), same supertest conventions as
 // tests/api.events.test.js.
 process.env.JWT_SECRET = 'test-secret-for-hotfix-events';
-process.env.DB_PATH = ':memory:';
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterAll } from 'vitest';
 import request from 'supertest';
 import jwt from 'jsonwebtoken';
+import { provisionDatabase } from './helpers/backend.js';
+
+// Provision before importing the facade: DATABASE_URL/DB_PATH must be set
+// before the dynamic import below, since the facade resolves its driver at
+// module-evaluation time.
+const provisioned = await provisionDatabase();
+if (provisioned.backend === 'pg') process.env.DATABASE_URL = provisioned.url;
+else process.env.DB_PATH = provisioned.path;
 
 const { buildApp } = await import('../server/app.js');
 const { ensureConfig } = await import('../server/configService.js');
 const {
-  upsertUser, setRoles, putEvent, getParticipation,
+  upsertUser, setRoles, putEvent, getParticipation, driver,
 } = await import('../server/db.js');
 const { activateEvent } = await import('../server/eventService.js');
 const { COOKIE_NAME } = await import('../server/auth.js');
 
 await ensureConfig();
 const app = buildApp();
+
+afterAll(async () => {
+  if (driver.__backend === 'pg') await driver.__raw.end();
+  await provisioned.cleanup();
+});
 
 let seq = 0;
 async function makeUser() {

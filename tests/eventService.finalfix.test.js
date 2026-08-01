@@ -3,12 +3,22 @@
 // the pre-fix behaviour actually was - all six were reproduced against a real
 // server before being fixed, and all six were invisible to the pre-existing
 // suites.
-process.env.DB_PATH = ':memory:';
+import { describe, it, expect, afterAll } from 'vitest';
+import { provisionDatabase } from './helpers/backend.js';
 
-import { describe, it, expect } from 'vitest';
+// Provision before importing the facade: DATABASE_URL/DB_PATH must be set
+// before the dynamic import below, since the facade resolves its driver at
+// module-evaluation time.
+const provisioned = await provisionDatabase();
+if (provisioned.backend === 'pg') process.env.DATABASE_URL = provisioned.url;
+else process.env.DB_PATH = provisioned.path;
 
 const dbMod = await import('../server/db.js');
 const { upsertUser, putEvent, getEvent, setEventStatus } = dbMod;
+afterAll(async () => {
+  if (dbMod.driver.__backend === 'pg') await dbMod.driver.__raw.end();
+  await provisioned.cleanup();
+});
 const { ensureConfig } = await import('../server/configService.js');
 const eventService = await import('../server/eventService.js');
 const {

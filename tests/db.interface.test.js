@@ -1,5 +1,18 @@
-process.env.DB_PATH = ':memory:';
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterAll } from 'vitest';
+import { provisionDatabase } from './helpers/backend.js';
+
+// Provision before importing the facade: DATABASE_URL/DB_PATH must be set
+// before the dynamic import below, since the facade resolves its driver at
+// module-evaluation time.
+const provisioned = await provisionDatabase();
+if (provisioned.backend === 'pg') process.env.DATABASE_URL = provisioned.url;
+else process.env.DB_PATH = provisioned.path;
+
+afterAll(async () => {
+  const mod = await import('../server/db/index.js');
+  if (mod.driver.__backend === 'pg') await mod.driver.__raw.end();
+  await provisioned.cleanup();
+});
 
 const INTERFACE = [
   'upsertUser', 'getUserById', 'getAllUsersWithSaves', 'getSave', 'putSave',
