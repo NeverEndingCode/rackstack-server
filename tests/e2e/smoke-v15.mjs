@@ -114,7 +114,8 @@ process.env.SUPER_ADMIN_IDS = OWNER_ID;
 process.env.DB_PATH = DB_PATH;
 process.env.NODE_ENV = 'test';
 
-const { upsertUser, putSave, getSave, setLeaderboardOptOut, db } = await import(path.join(REPO_ROOT, 'server', 'db.js'));
+const { upsertUser, putSave, getSave, setLeaderboardOptOut, setToursCompleted, db } = await import(path.join(REPO_ROOT, 'server', 'db.js'));
+const { TOUR_IDS } = await import(path.join(REPO_ROOT, 'shared', 'tours.js'));
 const { issueToken, COOKIE_NAME } = await import(path.join(REPO_ROOT, 'server', 'auth.js'));
 const { initialState } = await import(path.join(REPO_ROOT, 'shared', 'state.js'));
 const { DEFAULT_CONFIG } = await import(path.join(REPO_ROOT, 'shared', 'configSchema.js'));
@@ -198,6 +199,11 @@ function seedUser(mutate) {
   const s = initialState();
   if (mutate) mutate(s);
   putSave(user.id, s, Date.now());
+  // v1.6: this suite exercises v1.5 features over the built client, so the
+  // player starts with the guided tours already completed - otherwise the
+  // onboarding tour auto-starts and its overlay swallows the clicks these
+  // checks depend on. New-player tour behaviour is covered by smoke-v16.
+  setToursCompleted(user.id, TOUR_IDS);
   return user;
 }
 

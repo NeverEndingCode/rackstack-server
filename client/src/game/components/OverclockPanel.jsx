@@ -3,11 +3,11 @@ import { costAt, costForN, maxAffordable, milestoneMult, nextMilestone, tierRate
 import { cardBg, cardBorder, inset, textMain, textDim, amber, teal, danger, buyBtnStyle } from '../theme.js';
 import { OVERCLOCK_DEFS } from '../data/tiers.js';
 
-export default function OverclockPanel({ run, overclockMult, thresholds, onBuy, onVent, ventDisabled, heatColor, onCooldown, cooldownSecondsLeft }) {
+export default function OverclockPanel({ run, overclockMult, thresholds, onBuy, onVent, ventDisabled, heatColor, onCooldown, cooldownSecondsLeft, ventPercent, overheatCooldownMs }) {
   const ventBlocked = ventDisabled || onCooldown;
   return (
     <div className="max-w-2xl mx-auto px-4 py-4 flex flex-col gap-3">
-      <div className="rounded-xl p-4" style={{ background: cardBg, border: `1px solid ${heatColor}` }}>
+      <div className="rounded-xl p-4" style={{ background: cardBg, border: `1px solid ${heatColor}` }} data-tour="overclock-heat">
         <div className="flex items-center justify-between mb-1">
           <div className="flex items-center gap-2 text-sm font-semibold" style={{ color: textMain }}><Flame size={16} color={heatColor} /> Heat</div>
           <div className="font-mono text-sm" style={{ color: heatColor }}>{Math.round(run.heat)}%</div>
@@ -25,12 +25,12 @@ export default function OverclockPanel({ run, overclockMult, thresholds, onBuy, 
             <AlertTriangle size={12} /> Overclock lane frozen after meltdown &mdash; {cooldownSecondsLeft}s left
           </div>
         )}
-        <button onClick={onVent} disabled={ventBlocked} className="mt-3 w-full rounded-lg py-2 text-sm font-semibold flex items-center justify-center gap-2" style={{ background: ventBlocked ? cardBg : teal, color: ventBlocked ? textDim : '#0E141B', border: `1px solid ${cardBorder}`, cursor: ventBlocked ? 'not-allowed' : 'pointer' }}>
-          <Snowflake size={16} /> Vent Heat
+        <button onClick={onVent} disabled={ventBlocked} data-tour="overclock-vent" className="mt-3 w-full rounded-lg py-2 text-sm font-semibold flex items-center justify-center gap-2" style={{ background: ventBlocked ? cardBg : teal, color: ventBlocked ? textDim : '#0E141B', border: `1px solid ${cardBorder}`, cursor: ventBlocked ? 'not-allowed' : 'pointer' }}>
+          <Snowflake size={16} /> Vent Heat (-{Math.round(ventPercent)}%)
         </button>
       </div>
       <div className="rounded-lg p-3 text-xs" style={{ background: cardBg, border: `1px solid ${cardBorder}`, color: textDim }}>
-        Overclock nodes run on their own like the Grid, but generate heat. Let it hit 100% and the lane freezes for 10s while it cools down - no nodes are ever lost. Keep venting to avoid the lockout.
+        Overclock nodes run on their own like the Grid, but generate heat. Let it hit 100% and the lane freezes for {Math.round(overheatCooldownMs / 1000)}s while it cools down - no nodes are ever lost. Venting sheds {Math.round(ventPercent)}% of your heat capacity, so keep venting to avoid the lockout.
       </div>
       {OVERCLOCK_DEFS.map((def, i) => {
         const o = run.overclock[i];

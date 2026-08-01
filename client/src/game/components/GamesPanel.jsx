@@ -33,7 +33,7 @@ function GameCard({ Icon, iconColor, title, desc, btnColor, btnTextColor, onPlay
 export default function GamesPanel({ onStartRush, onStartDebug, onStartMatch, onStartBalance, cooldowns, minigamesConfig }) {
   const { rush, debug, match, balance } = minigamesConfig;
   return (
-    <div className="max-w-2xl mx-auto px-4 py-4 flex flex-col gap-3">
+    <div className="max-w-2xl mx-auto px-4 py-4 flex flex-col gap-3" data-tour="games-list">
       <GameCard Icon={Zap} iconColor={amber} title="Overclock Rush" desc={`Tap as fast as you can for ${rush.durationSec} seconds.`} btnColor={amber} btnTextColor="#0E141B" onPlay={onStartRush} cooldownUntil={cooldowns.rush} />
       <GameCard Icon={Bug} iconColor={teal} title="Debug Sprint" desc={`Squash the highlighted bugs before they hide - up to ${debug.maxLit} can appear at once. ${debug.durationSec} seconds.`} btnColor={teal} btnTextColor="#0E141B" onPlay={onStartDebug} cooldownUntil={cooldowns.debug} />
       <GameCard Icon={Cable} iconColor={violet} title="Cable Match" desc={`Find all ${match.pairCount} matching pairs - the round ends the instant you finish. Only a full match pays out. ${match.durationSec} seconds.`} btnColor={violet} btnTextColor="#0E141B" onPlay={onStartMatch} cooldownUntil={cooldowns.match} />

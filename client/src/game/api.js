@@ -168,6 +168,16 @@ export function setLeaderboardOptOut(optOut) {
   return postJSON('/api/me/leaderboard-opt-out', { optOut }, 'PUT');
 }
 
+// PUT /api/me/tours { tourId, completed } -> { ok, toursCompleted }
+//   | 400 { error: 'invalid_request' }  (unregistered tourId, bad types)
+// `completed: false` is the replay path. Completing 'onboarding' marks every
+// registered tour complete server-side (spec §4.7), so the response's
+// toursCompleted is authoritative - callers should adopt it rather than
+// predicting the new set locally.
+export function setTourCompleted(tourId, completed) {
+  return postJSON('/api/me/tours', { tourId, completed }, 'PUT');
+}
+
 // GET /api/leaderboard -> { generatedAt, boards: { <boardKey>: [row] } }
 //   where row is { userId, username, avatarUrl, value, badges: [achievementId] }
 //

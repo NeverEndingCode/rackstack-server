@@ -41,7 +41,7 @@ export default function ColdStoragePanel({ meta, config, onClaimBlock, onClaimAl
   const jobDone = job && job.accruedOfflineSec >= jobDurSec;
 
   return (
-    <div className="max-w-2xl mx-auto px-4 py-4 flex flex-col gap-3">
+    <div className="max-w-2xl mx-auto px-4 py-4 flex flex-col gap-3" data-tour="coldstorage-track">
       <div className="rounded-lg p-3 flex items-center justify-between" style={{ background: cardBg, border: `1px solid ${cardBorder}` }}>
         <div className="flex items-center gap-2 text-sm font-semibold" style={{ color: textMain }}>
           <CassetteTape size={16} color={teal} /> Tapes

@@ -5,7 +5,7 @@ import { UPGRADE_DEFS } from '../data/upgrades.js';
 
 export default function UpgradesPanel({ meta, onBuy }) {
   return (
-    <div className="max-w-2xl mx-auto px-4 py-4 flex flex-col gap-3">
+    <div className="max-w-2xl mx-auto px-4 py-4 flex flex-col gap-3" data-tour="upgrades-list">
       <div className="rounded-lg p-3 text-xs" style={{ background: cardBg, border: `1px solid ${cardBorder}`, color: textDim }}>
         Bought with Silicon Wafers, earned from Goals and minigames. These upgrades survive Migrate.
       </div>

@@ -3,7 +3,7 @@ import { amber, cardBg, inset, cardBorder, textDim, textMain } from '../theme.js
 
 export default function MigrateBar({ gain, showCollectAll, collectDisabled, onMigrate, onCollectAll }) {
   return (
-    <div className="mt-3 flex gap-2">
+    <div className="mt-3 flex gap-2" data-tour="migrate-bar">
       <button
         onClick={onMigrate}
         disabled={gain <= 0}

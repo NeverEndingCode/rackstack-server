@@ -1,10 +1,11 @@
 import { useState } from 'react';
-import { LogOut } from 'lucide-react';
-import { textMain, textDim, danger, teal, inset, cardBorder, amber } from '../../theme.js';
+import { LogOut, GraduationCap } from 'lucide-react';
+import { textMain, textDim, danger, teal, inset, cardBorder, cardBg, amber } from '../../theme.js';
 import DangerZone from './DangerZone.jsx';
 import AdminPanel from './AdminPanel.jsx';
 import { setUsername } from '../../api.js';
 import { USERNAME_RE } from '@shared/validation.js';
+import { TOURS } from '@shared/tours.js';
 
 // Same rule the server enforces (server/routes/api.js, via shared/validation.js).
 // Used here purely for instant inline feedback; the server's regex is still
@@ -73,7 +74,7 @@ function UsernameForm({ displayName, onUsernameChanged }) {
   );
 }
 
-export default function ProfileSettings({ user, displayName, onUsernameChanged, onLogout, onOpenReset, onConfigSaved }) {
+export default function ProfileSettings({ user, displayName, onUsernameChanged, onLogout, onOpenReset, onConfigSaved, toursCompleted = [], onStartTour }) {
   // Admin-panel UI visibility - the real gate is server-side (server/auth.js
   // requireRole per route), this only decides whether to show the section at
   // all. /api/me now returns the caller's effective roles (owners implicitly
@@ -94,6 +95,33 @@ export default function ProfileSettings({ user, displayName, onUsernameChanged, 
       <button onClick={onLogout} className="w-full rounded-lg py-2 text-sm font-semibold flex items-center justify-center gap-2" style={{ background: inset, border: `1px solid ${cardBorder}`, color: textMain }}>
         <LogOut size={16} /> Log out
       </button>
+      {onStartTour && (
+        <div className="rounded-xl p-3" style={{ background: cardBg, border: `1px solid ${cardBorder}` }}>
+          <div className="flex items-center gap-2 text-sm font-semibold mb-2" style={{ color: textMain }}>
+            <GraduationCap size={16} /> Tutorials
+          </div>
+          {TOURS.map((t) => {
+            const done = toursCompleted.includes(t.id);
+            return (
+              <div key={t.id} className="flex items-center justify-between gap-3 py-1.5">
+                <div className="min-w-0">
+                  <div className="text-sm truncate" style={{ color: textMain }}>{t.label}</div>
+                  <div className="text-xs" style={{ color: textDim }}>
+                    {done ? 'Completed' : 'Not seen yet'} · {t.description}
+                  </div>
+                </div>
+                <button
+                  onClick={() => onStartTour(t.id)}
+                  className="rounded-lg px-3 py-1.5 text-xs font-semibold shrink-0"
+                  style={{ background: teal, color: '#0E141B' }}
+                >
+                  Replay
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
       <DangerZone onOpenReset={onOpenReset} />
       {canSeeAdminPanel && <AdminPanel user={user} onConfigSaved={onConfigSaved} />}
     </div>

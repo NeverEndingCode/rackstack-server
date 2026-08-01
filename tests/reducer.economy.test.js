@@ -4,6 +4,7 @@ import { TIER_DEFS, GRID_DEFS, OVERCLOCK_DEFS } from '../shared/gameData.js';
 import { costForN, maxAffordable } from '../shared/gameRules.js';
 import { initialState } from '../shared/state.js';
 import { applyAction } from '../shared/reducer.js';
+import { computeColdStorageEffects } from '../shared/coldStorage.js';
 
 const NOW = 1_000_000;
 
@@ -270,5 +271,36 @@ describe('reducer: vent', () => {
     expect(b.result.error).toBe('cooldown_active');
     s.run.heatCooldownUntil = NOW + 5000;
     expect(applyAction(s, { type: 'vent' }, DEFAULT_CONFIG, NOW).result.error).toBe('cooldown_active');
+  });
+
+  // v1.6: the two cases above are unchanged from v1.5 on purpose - 25% of the
+  // default 2000 capacity is exactly the 500 flat amount it replaced, so the
+  // unit change is balance-neutral at stock settings. What follows is what
+  // actually changed.
+  it('scales with a raised heat capacity', () => {
+    const cfg = { ...DEFAULT_CONFIG, heat: { ...DEFAULT_CONFIG.heat, capacity: 4000 } };
+    const s = initialState();
+    s.run.heat = 3000;
+    const { state: s2 } = applyAction(s, { type: 'vent' }, cfg, NOW);
+    // 25% of 4000 = 1000, where the old flat 500 would have been diluted
+    expect(s2.run.heat).toBe(2000);
+  });
+
+  it('includes the Cold Storage heatCapacityBonus in the capacity it vents against', () => {
+    const s = initialState();
+    s.meta.coldStorage.upgrades.heatsinktapes = 4;   // +100 capacity per level
+    expect(computeColdStorageEffects(s.meta, DEFAULT_CONFIG).heatCapacityBonus).toBe(400);
+    s.run.heat = 1000;
+    const { state: s2 } = applyAction(s, { type: 'vent' }, DEFAULT_CONFIG, NOW);
+    // 25% of (2000 + 400) = 600
+    expect(s2.run.heat).toBe(400);
+  });
+
+  it('never goes negative even at a 100% vent', () => {
+    const cfg = { ...DEFAULT_CONFIG, heat: { ...DEFAULT_CONFIG.heat, ventPercent: 100 } };
+    const s = initialState();
+    s.run.heat = 50;
+    const { state: s2 } = applyAction(s, { type: 'vent' }, cfg, NOW);
+    expect(s2.run.heat).toBe(0);
   });
 });

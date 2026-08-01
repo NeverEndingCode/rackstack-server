@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 
 import {
   TICK_MS, ANOMALY_LABELS, EVENT_REFRESH_THROTTLE_MS, CONFIG_POLL_MS,
@@ -8,7 +8,7 @@ import { cardBorder, textDim, textMain, teal, amber, danger, inset } from './gam
 import { TABS } from './game/data/tabs.js';
 import {
   fetchState, fetchConfig, makeActionQueue, startMinigame, finishMinigame,
-  fetchEvent, setLeaderboardOptOut, fetchLeaderboard,
+  fetchEvent, setLeaderboardOptOut, fetchLeaderboard, setTourCompleted,
 } from './game/api.js';
 import { evaluate } from '@shared/state.js';
 import { applyAction, EVENT_CLAIM_GRACE_MS } from '@shared/reducer.js';
@@ -40,6 +40,10 @@ import MatchOverlay from './game/components/minigames/MatchOverlay.jsx';
 import BalanceOverlay from './game/components/minigames/BalanceOverlay.jsx';
 import ModalRoot from './game/components/modals/ModalRoot.jsx';
 import ProfileView from './game/components/profile/ProfileView.jsx';
+import TutorialOverlay from './game/components/TutorialOverlay.jsx';
+import { CLIENT_TOURS } from './game/data/tours/index.js';
+import { selectTour, resolveSteps } from './game/tourSelection.js';
+import { TOURS, TOUR_IDS } from '@shared/tours.js';
 
 /*
   RACKSTACK - idle infrastructure tycoon
@@ -76,6 +80,22 @@ function isEventTabVisible(eventProgress, pendingClaims, now) {
   return Array.isArray(pendingClaims) && pendingClaims.length > 0;
 }
 
+// v1.6: the tour's unlock context. Module scope so the auto-start effect
+// (which must live above RackStack's early return, per the rules of hooks)
+// and the render path below it share ONE definition of "unlocked" and cannot
+// drift apart.
+function buildTourCtx(state, now) {
+  if (!state) return null;
+  return {
+    gridUnlocked: state.run.tiers[2].owned >= 1,
+    overclockUnlocked: state.run.tiers[3].owned >= 1,
+    singularityUnlocked: state.meta.legacyCores >= 50
+      || state.meta.stats.singularities > 0 || state.meta.singularityShards > 0,
+    coldStorageUnlocked: state.run.tiers[4].owned >= 1,   // Server Room
+    eventLive: isEventLive(state.meta.eventProgress, now),
+  };
+}
+
 // Identity of the EFFECTIVE gameplay config. The stored config's `version`
 // alone is not enough: activating or ending a live event changes the numbers
 // the server evaluates with (its modifiers are overlaid on the baseline)
@@ -100,6 +120,16 @@ export default function RackStack({ user }) {
   const [activeTab, setActiveTab] = useState('racks');
   const [minigame, setMinigame] = useState(null);
   const [profileOpen, setProfileOpen] = useState(false);
+  // v1.6 guided tours. `toursCompleted` mirrors users.tours_completed, which
+  // arrives on the `user` prop from App.jsx's /api/me fetch; `activeTour` is
+  // { id, steps } once one is running.
+  const [toursCompleted, setToursCompleted] = useState(
+    () => (Array.isArray(user?.toursCompleted) ? user.toursCompleted : null),
+  );
+  const [activeTour, setActiveTour] = useState(null);
+  // Spec 4.6: after a tour ends, don't auto-start another until the next app
+  // load, so a player is never carpet-bombed with several tours in a row.
+  const tourRanThisLoadRef = useRef(false);
   // Live Events (v1.4): the currently (or most-recently, through grace -
   // see refreshEventData below) active event's identity/ladder, and the
   // opt-out-filtered leaderboard for it. Neither is part of canonical
@@ -946,6 +976,43 @@ export default function RackStack({ user }) {
     setMinigameSynced(null);
   }
 
+  // ---- v1.6 guided tours -------------------------------------------------
+  // These hooks must stay ABOVE the early return below.
+  useEffect(() => {
+    if (!state || !toursCompleted || activeTour || tourRanThisLoadRef.current || modal) return;
+    const ctx = buildTourCtx(state, Date.now());
+    const autoStartById = Object.fromEntries(TOURS.map((t) => [t.id, t.autoStart]));
+    const sel = selectTour(CLIENT_TOURS, TOUR_IDS, toursCompleted, ctx, autoStartById);
+    if (sel) {
+      tourRanThisLoadRef.current = true;
+      setActiveTour(sel);
+    }
+  }, [state, toursCompleted, activeTour, modal]);
+
+  // Finishing and skipping are the same write: a player who skipped made a
+  // choice, and re-showing a dismissed tour is the worse failure mode.
+  // Optimistic - the overlay closes immediately and a failed write only costs
+  // the tour re-offering next load, which beats blocking on the network.
+  const endTour = useCallback((tourId) => {
+    setActiveTour(null);
+    setToursCompleted((cur) => (cur && cur.includes(tourId) ? cur : [...(cur || []), tourId]));
+    setTourCompleted(tourId, true).then((res) => {
+      if (res && Array.isArray(res.toursCompleted)) setToursCompleted(res.toursCompleted);
+    }).catch(() => {});
+  }, []);
+
+  // Profile -> Tutorials -> Replay. Bypasses the once-per-load rule: the
+  // player explicitly asked for it.
+  const startTour = useCallback((tourId) => {
+    const tour = CLIENT_TOURS[tourId];
+    if (!tour || !stateRef.current) return;
+    const steps = resolveSteps(tour, buildTourCtx(stateRef.current, Date.now()));
+    if (steps.length === 0) return;
+    setActiveTour({ id: tourId, steps });
+    setToursCompleted((cur) => (cur || []).filter((id) => id !== tourId));
+    setTourCompleted(tourId, false).catch(() => {});
+  }, []);
+
   if (!loaded || !state || !config) {
     return (
       <div style={{ minHeight: '100vh', background: '#0E141B', color: textDim, display: 'flex', alignItems: 'center', justifyContent: 'center' }} className="font-mono text-sm">
@@ -975,10 +1042,8 @@ export default function RackStack({ user }) {
   const gain = migrateGain(state.run.lifetimeRun, eff.legacyGainMult);
   const singularityGain = Math.floor(Math.sqrt(state.meta.legacyCores || 0));
 
-  const gridUnlocked = state.run.tiers[2].owned >= 1;
-  const overclockUnlocked = state.run.tiers[3].owned >= 1;
-  const singularityUnlocked = state.meta.legacyCores >= 50 || state.meta.stats.singularities > 0 || state.meta.singularityShards > 0;
-  const coldStorageUnlocked = state.run.tiers[4].owned >= 1; // Server Room
+  // Single source of truth with the tour's auto-start effect above.
+  const { gridUnlocked, overclockUnlocked, singularityUnlocked, coldStorageUnlocked } = buildTourCtx(state, now);
   const anyReady = state.run.tiers.some((ts) => !ts.manager && ts.ready > 0.01);
   const anyManualOwned = state.run.tiers.some((ts) => ts.owned > 0 && !ts.manager);
 
@@ -1067,6 +1132,8 @@ export default function RackStack({ user }) {
           heatColor={heatColor}
           onCooldown={heatOnCooldown}
           cooldownSecondsLeft={cooldownSecondsLeft}
+          ventPercent={config.data.heat.ventPercent}
+          overheatCooldownMs={config.data.heat.overheatCooldownMs}
         />
       )}
 
@@ -1182,6 +1249,8 @@ export default function RackStack({ user }) {
           onLogout={logout}
           onOpenReset={() => setModal({ type: 'reset' })}
           onConfigSaved={handleConfigSaved}
+          toursCompleted={toursCompleted || []}
+          onStartTour={(tourId) => { setProfileOpen(false); startTour(tourId); }}
         />
       )}
 
@@ -1194,7 +1263,17 @@ export default function RackStack({ user }) {
         onMigrate={doMigrate}
         onSingularity={doSingularity}
         onHardReset={hardReset}
+        meltdownAutoDismissMs={config.data.heat.overheatPopupMs}
       />
+
+      {activeTour && (
+        <TutorialOverlay
+          steps={activeTour.steps}
+          onStepChange={setActiveTab}
+          onFinish={() => endTour(activeTour.id)}
+          onSkip={() => endTour(activeTour.id)}
+        />
+      )}
     </div>
   );
 }

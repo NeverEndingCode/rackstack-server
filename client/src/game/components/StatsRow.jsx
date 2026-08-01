@@ -5,7 +5,7 @@ import { fmt } from '../helpers.js';
 export default function StatsRow({ run, meta, totalOutputPerSec, xpNeeded, boost, boostMultNow }) {
   return (
     <>
-      <div className="mt-3 grid grid-cols-2 gap-3">
+      <div className="mt-3 grid grid-cols-2 gap-3" data-tour="header-stats">
         <div className="rounded-lg p-3" style={{ background: cardBg, border: `1px solid ${cardBorder}` }}>
           <div className="text-xs uppercase tracking-wide" style={{ color: textDim }}>Compute Balance</div>
           <div className="font-mono text-2xl tabular-nums" style={{ color: amber }}>{fmt(run.credits)} <span className="text-sm">F</span></div>

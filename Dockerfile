@@ -38,7 +38,7 @@ ENV DB_PATH=/app/data/rackstack.db
 LABEL org.opencontainers.image.source="https://github.com/NeverEndingCode/rackstack-server"
 LABEL org.opencontainers.image.description="RackStack self-hosted server"
 LABEL org.opencontainers.image.licenses="MIT"
-LABEL org.opencontainers.image.version="1.5.0"
+LABEL org.opencontainers.image.version="1.6.0"
 
 VOLUME ["/app/data"]
 EXPOSE 3000

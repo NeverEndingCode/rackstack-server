@@ -29,7 +29,7 @@ export default function RacksPanel({ run, unlockedUpTo, racksMult, thresholds, e
                   <div className="font-mono text-xs" style={{ color: textDim }}>&times;{ts.owned}</div>
                 </div>
                 <div className="text-xs font-mono" style={{ color: textDim }}>
-                  {fmt(rate)} F/s{ts.manager ? ' &middot; automated' : ''}
+                  {fmt(rate)} F/s{ts.manager ? ' · automated' : ''}
                   {msMult > 1 && <span style={{ color: teal }}> &middot; &times;{msMult} milestone</span>}
                 </div>
               </div>
@@ -54,19 +54,30 @@ export default function RacksPanel({ run, unlockedUpTo, racksMult, thresholds, e
             )}
 
             <div className="flex items-center gap-2 mt-3">
-              {!ts.manager && ts.ready > 0.01 && (
-                <button onClick={() => onCollect(i)} className="collect-pop rounded-lg px-3 py-2 text-xs font-semibold flex-1" style={{ background: teal, color: '#0E141B' }}>
+              {/* v1.6: stays mounted until the tier is automated, so it no
+                  longer vanishes for a frame after each collect - the
+                  "nothing banked yet" test moved onto `disabled`. */}
+              {!ts.manager && ts.owned >= 1 && (
+                <button
+                  data-tour={i === 0 ? 'racks-collect' : undefined}
+                  onClick={() => onCollect(i)}
+                  disabled={ts.ready <= 0.01}
+                  className="collect-pop rounded-lg px-3 py-2 text-xs font-semibold flex-1"
+                  style={ts.ready > 0.01
+                    ? { background: teal, color: '#0E141B' }
+                    : { ...buyBtnStyle(false), cursor: 'not-allowed' }}
+                >
                   Collect {fmt(ts.ready)}
                 </button>
               )}
               {!ts.manager && ts.owned >= 1 && (
-                <button onClick={() => onHire(i)} disabled={run.credits < managerCost} className="rounded-lg px-3 py-2 text-xs font-semibold" style={buyBtnStyle(run.credits >= managerCost)}>
+                <button data-tour={i === 0 ? 'racks-automate' : undefined} onClick={() => onHire(i)} disabled={run.credits < managerCost} className="rounded-lg px-3 py-2 text-xs font-semibold" style={buyBtnStyle(run.credits >= managerCost)}>
                   Automate ({fmt(managerCost)})
                 </button>
               )}
             </div>
 
-            <div className="grid grid-cols-3 gap-2 mt-2">
+            <div className="grid grid-cols-3 gap-2 mt-2" data-tour={i === 0 ? 'racks-buy' : undefined}>
               <button onClick={() => onBuy(i, 1)} disabled={!affordable1} className="rounded-lg py-2 text-xs font-mono" style={buyBtnStyle(affordable1)}>
                 +1 &middot; {fmt(cost1)}
               </button>
