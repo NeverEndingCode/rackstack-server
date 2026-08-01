@@ -129,7 +129,7 @@ export default function EventPanel({
 
   if (!hasCurrent) {
     return (
-      <div className="max-w-2xl mx-auto px-4 py-4 flex flex-col gap-3">
+      <div className="max-w-2xl mx-auto px-4 py-4 flex flex-col gap-3" data-tour="event-ladder">
         {pending.map((entry) => (
           <PendingClaimCard key={entry.event.id} entry={entry} onClaim={onClaimRung} />
         ))}
@@ -149,7 +149,7 @@ export default function EventPanel({
   const graceMsLeft = Math.max(0, (eventProgress.endsAt + EVENT_CLAIM_GRACE_MS) - now);
 
   return (
-    <div className="max-w-2xl mx-auto px-4 py-4 flex flex-col gap-3">
+    <div className="max-w-2xl mx-auto px-4 py-4 flex flex-col gap-3" data-tour="event-ladder">
       <div className="rounded-xl p-4" style={{ background: cardBg, border: `1px solid ${accent}` }}>
         <div className="flex items-center gap-2">
           {icon ? <span className="text-2xl leading-none">{icon}</span> : <Trophy size={22} color={accent} />}

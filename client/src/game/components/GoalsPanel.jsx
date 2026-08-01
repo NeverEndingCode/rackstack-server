@@ -7,7 +7,7 @@ export default function GoalsPanel({ ctx, meta, onClaimGoal, onClaimRepeatable }
   const [showCompleted, setShowCompleted] = useState(false);
   const completedCount = Object.keys(meta.goalsCompleted).length;
   return (
-    <div className="max-w-2xl mx-auto px-4 py-4 flex flex-col gap-2">
+    <div className="max-w-2xl mx-auto px-4 py-4 flex flex-col gap-2" data-tour="goals-list">
       <div className="flex items-center justify-between text-xs font-mono mb-1" style={{ color: textDim }}>
         <span>{completedCount}/{GOAL_DEFS.length} completed</span>
         <button onClick={() => setShowCompleted((s) => !s)} style={{ color: violet }}>{showCompleted ? 'Hide completed' : 'Show completed'}</button>

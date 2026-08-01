@@ -7,7 +7,7 @@ export default function OverclockPanel({ run, overclockMult, thresholds, onBuy, 
   const ventBlocked = ventDisabled || onCooldown;
   return (
     <div className="max-w-2xl mx-auto px-4 py-4 flex flex-col gap-3">
-      <div className="rounded-xl p-4" style={{ background: cardBg, border: `1px solid ${heatColor}` }}>
+      <div className="rounded-xl p-4" style={{ background: cardBg, border: `1px solid ${heatColor}` }} data-tour="overclock-heat">
         <div className="flex items-center justify-between mb-1">
           <div className="flex items-center gap-2 text-sm font-semibold" style={{ color: textMain }}><Flame size={16} color={heatColor} /> Heat</div>
           <div className="font-mono text-sm" style={{ color: heatColor }}>{Math.round(run.heat)}%</div>
@@ -25,7 +25,7 @@ export default function OverclockPanel({ run, overclockMult, thresholds, onBuy, 
             <AlertTriangle size={12} /> Overclock lane frozen after meltdown &mdash; {cooldownSecondsLeft}s left
           </div>
         )}
-        <button onClick={onVent} disabled={ventBlocked} className="mt-3 w-full rounded-lg py-2 text-sm font-semibold flex items-center justify-center gap-2" style={{ background: ventBlocked ? cardBg : teal, color: ventBlocked ? textDim : '#0E141B', border: `1px solid ${cardBorder}`, cursor: ventBlocked ? 'not-allowed' : 'pointer' }}>
+        <button onClick={onVent} disabled={ventBlocked} data-tour="overclock-vent" className="mt-3 w-full rounded-lg py-2 text-sm font-semibold flex items-center justify-center gap-2" style={{ background: ventBlocked ? cardBg : teal, color: ventBlocked ? textDim : '#0E141B', border: `1px solid ${cardBorder}`, cursor: ventBlocked ? 'not-allowed' : 'pointer' }}>
           <Snowflake size={16} /> Vent Heat (-{Math.round(ventPercent)}%)
         </button>
       </div>

@@ -4,7 +4,7 @@ import { GRID_DEFS } from '../data/tiers.js';
 
 export default function GridPanel({ run, gridMult, thresholds, onBuy }) {
   return (
-    <div className="max-w-2xl mx-auto px-4 py-4 flex flex-col gap-3">
+    <div className="max-w-2xl mx-auto px-4 py-4 flex flex-col gap-3" data-tour="grid-buy">
       <div className="rounded-lg p-3 text-xs" style={{ background: cardBg, border: `1px solid ${cardBorder}`, color: textDim }}>
         The Grid runs on its own &mdash; no automation needed. Volunteers contribute FLOPS straight to your total, all the time.
       </div>

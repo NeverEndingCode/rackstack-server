@@ -4,7 +4,7 @@ import { SINGULARITY_DEFS } from '../data/upgrades.js';
 
 export default function SingularityPanel({ meta, singularityGain, onOpenSingularityConfirm, onBuyShard }) {
   return (
-    <div className="max-w-2xl mx-auto px-4 py-4 flex flex-col gap-3">
+    <div className="max-w-2xl mx-auto px-4 py-4 flex flex-col gap-3" data-tour="singularity-list">
       <div className="rounded-xl p-4" style={{ background: cardBg, border: `1px solid ${violet}` }}>
         <div className="flex items-center gap-2 mb-1">
           <Sparkles size={16} color={violet} />

@@ -30,7 +30,7 @@ export default function SocialPanel({
   }, [section, onRefreshLeaderboard]);
 
   return (
-    <div className="max-w-2xl mx-auto px-4 py-4 flex flex-col gap-3">
+    <div className="max-w-2xl mx-auto px-4 py-4 flex flex-col gap-3" data-tour="social-sections">
       <div className="flex gap-1 rounded-lg p-1" style={{ background: '#0E141B' }}>
         {SECTIONS.map((s) => {
           const active = section === s.id;
