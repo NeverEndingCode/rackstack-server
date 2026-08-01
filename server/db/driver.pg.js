@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { applySchema } from './schema.pg.js';
 import { SEASONAL_EVENTS } from '../data/seasonalEvents.js';
 import {
-  findAvailableUsername, parseEventRow, normalizeEventRow, normalizeParticipationRow,
+  findAvailableUsername, parseEventRow, normalizeEventRow, normalizeParticipationRow, dedupeUsernameRows,
 } from './shared.js';
 
 // pg returns int8/BIGINT as a STRING by default, to avoid precision loss
@@ -118,7 +118,7 @@ export async function createPgDriver({ url }) {
                s.data, s.last_save
         FROM users u
         LEFT JOIN saves s ON s.user_id = u.id
-        ORDER BY u.created_at DESC
+        ORDER BY u.created_at DESC, u.id ASC
       `);
     },
 
@@ -195,25 +195,26 @@ export async function createPgDriver({ url }) {
 
     /**
      * Duplicate usernames (case-insensitively) can exist from before the
-     * unique index was introduced. Applied on every boot inside applySchema
-     * (schema.pg.js does not currently call this - kept here so callers of
-     * the driver's dedupeUsernames() get the same on-demand cleanup path
-     * available on the SQLite driver).
+     * unique index was introduced. Unlike the SQLite driver, schema.pg.js's
+     * applySchema does NOT call this on every boot - a fresh Postgres
+     * deployment has no pre-index history to clean up, since every write
+     * path into `users` already goes through this driver's own
+     * collision-checked upsertUser/setUsername. Kept as an interface method
+     * so callers (and a future bulk migrator, which would need to dedupe
+     * in-memory before inserting rather than relying on this) have the same
+     * on-demand cleanup path available on the SQLite driver. The suffixing
+     * walk itself lives in shared.js's dedupeUsernameRows so the two drivers
+     * can't drift on the -2/-3 convention; this method only owns the read
+     * and writes.
      */
     async dedupeUsernames() {
       const rows = await all(
         'SELECT id, username, created_at FROM users WHERE username IS NOT NULL ORDER BY created_at ASC, id ASC',
       );
-      const taken = new Set();
-      for (const row of rows) {
-        const lower = row.username.toLowerCase();
-        if (!taken.has(lower)) {
-          taken.add(lower);
-          continue;
-        }
-        const candidate = await findAvailableUsername(row.username, (name) => taken.has(name.toLowerCase()));
-        await run('UPDATE users SET username = $1 WHERE id = $2', [candidate, row.id]);
-        taken.add(candidate.toLowerCase());
+      const renames = await dedupeUsernameRows(rows);
+      for (const { id, username } of renames) {
+        // eslint-disable-next-line no-await-in-loop
+        await run('UPDATE users SET username = $1 WHERE id = $2', [username, id]);
       }
     },
 
@@ -293,7 +294,7 @@ export async function createPgDriver({ url }) {
     },
 
     async listEvents() {
-      return (await all('SELECT * FROM live_events ORDER BY created_at ASC')).map(parseEventRow);
+      return (await all('SELECT * FROM live_events ORDER BY created_at ASC, id ASC')).map(parseEventRow);
     },
 
     async getEvent(id) {

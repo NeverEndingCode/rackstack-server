@@ -16,8 +16,6 @@ import { provisionDatabase } from './helpers/backend.js';
 // assignments above per ES module semantics, so - same trick as
 // tests/db.test.js - these have to be dynamic to see the env vars set here.
 const provisioned = await provisionDatabase();
-if (provisioned.backend === 'pg') process.env.DATABASE_URL = provisioned.url;
-else process.env.DB_PATH = provisioned.path;
 
 const { buildApp } = await import('../server/app.js');
 const { ensureConfig } = await import('../server/configService.js');

@@ -1,15 +1,19 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, afterAll } from 'vitest';
 import { provisionDatabase } from './helpers/backend.js';
 
 // Provision before importing the facade: DATABASE_URL/DB_PATH must be set
 // before the dynamic import below, since the facade resolves its driver at
 // module-evaluation time (a static import would be hoisted above this).
 const provisioned = await provisionDatabase();
-if (provisioned.backend === 'pg') process.env.DATABASE_URL = provisioned.url;
-else process.env.DB_PATH = provisioned.path;
 
-let db;
-beforeAll(async () => { db = await import('../server/db/index.js'); });
+// Top-level await, not beforeAll: if the import below throws (e.g. the RED
+// step of this task, where driver.pg.js didn't exist yet), a beforeAll-set
+// `db` would still be undefined when afterAll ran, throwing a TypeError on
+// `db.driver` that masks the real error and skips cleanup() - leaking the
+// provisioned database. A top-level await fails the whole module before
+// afterAll is ever registered, so vitest's own teardown for a failed-to-load
+// file applies instead.
+const db = await import('../server/db/index.js');
 afterAll(async () => {
   // Close the pg pool before dropping its database: DROP DATABASE ... FORCE
   // terminates any live connections, which the pool would otherwise surface

@@ -9,8 +9,6 @@ import { provisionDatabase } from './helpers/backend.js';
 // hoisted by the ESM spec above the provisioning call and stand up the
 // driver against the wrong backend/path.
 const provisioned = await provisionDatabase();
-if (provisioned.backend === 'pg') process.env.DATABASE_URL = provisioned.url;
-else process.env.DB_PATH = provisioned.path;
 
 const dbMod = await import('../server/db.js');
 const {
@@ -81,10 +79,11 @@ describe('db schema v1.2', () => {
   // (schema.sqlite.js's guardedAddColumn), which exists because SQLite has
   // no "ADD COLUMN IF NOT EXISTS" and the SQLite schema accreted these
   // columns via ALTER across several versions. schema.pg.js has no
-  // equivalent - every column ships in its CREATE TABLE from the start, and
-  // Postgres's own idempotency (IF NOT EXISTS / ON CONFLICT DO NOTHING) is
-  // exercised directly by seedSeasonalEvents' and applySchema's own
-  // idempotency tests elsewhere in this suite.
+  // equivalent - every column ships in its CREATE TABLE from the start. The
+  // backend-agnostic second-boot idempotency claim this comment used to make
+  // (that Postgres's own idempotency was "exercised elsewhere in this
+  // suite") wasn't actually true - see the real cross-backend test below,
+  // which replaces that claim with a test that does what it described.
   it.runIf(driver.__backend === 'sqlite')('re-importing (guarded ALTER) does not throw on a second boot', async () => {
     // Simulates a second server boot against the same DB file: the module
     // already ran its ALTERs once for this connection: rerun the exact same
@@ -96,6 +95,27 @@ describe('db schema v1.2', () => {
         if (!/duplicate column name/i.test(err.message)) throw err;
       }
     }).not.toThrow();
+  });
+
+  // Both backends: the production restart path is applySchema() running a
+  // SECOND time against an already-populated database (the driver
+  // constructor already ran it once, on the first import above). SQLite's
+  // idempotency here is the guarded-ALTER test just above; Postgres's is
+  // `IF NOT EXISTS` / `CREATE UNIQUE INDEX IF NOT EXISTS`, which was
+  // previously only claimed, not tested, anywhere in this suite - this
+  // proves it directly rather than relying on an inference from
+  // seedSeasonalEvents' unrelated ON CONFLICT DO NOTHING idempotency.
+  it('re-applying the full schema a second time does not throw (second-boot idempotency)', async () => {
+    const schemaMod = driver.__backend === 'sqlite'
+      ? await import('../server/db/schema.sqlite.js')
+      : await import('../server/db/schema.pg.js');
+    await schemaMod.applySchema(db);
+    // And the schema is still fully intact and usable afterward.
+    const names = await tableNames();
+    expect(names).toContain('users');
+    expect(names).toContain('live_events');
+    const cols = await columnNames('users');
+    expect(cols).toContain('custom_username');
   });
 });
 

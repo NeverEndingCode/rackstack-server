@@ -10,9 +10,22 @@
 import pg from 'pg';
 import { randomUUID } from 'node:crypto';
 
+// Also responsible for setting the env var(s) server/db/index.js's facade
+// reads to pick its driver (DATABASE_URL for pg, DB_PATH for sqlite), so
+// that logic lives in exactly one place rather than being repeated (and
+// risking drift) at the top of every db-touching test file. In particular:
+// server/db/index.js checks DATABASE_URL *first*, so an ambient value left
+// over from a developer's shell (or set per Task 8's docs, since it's the
+// production config var) would otherwise silently redirect a "sqlite"
+// backend run at a real Postgres database instead of :memory: - this
+// function's sqlite branch is the one place that guards against that, and
+// its pg branch is the *only* place in the codebase allowed to set
+// DATABASE_URL, so there's a single point of truth for both directions.
 export async function provisionDatabase() {
   const backend = process.env.TEST_BACKEND === 'sqlite' ? 'sqlite' : 'pg';
   if (backend === 'sqlite') {
+    delete process.env.DATABASE_URL;
+    process.env.DB_PATH = ':memory:';
     return { backend, path: ':memory:', cleanup: async () => {} };
   }
 
@@ -30,6 +43,7 @@ export async function provisionDatabase() {
 
   const url = new URL(adminUrl);
   url.pathname = `/${name}`;
+  process.env.DATABASE_URL = url.toString();
   return {
     backend,
     url: url.toString(),

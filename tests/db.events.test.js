@@ -10,8 +10,6 @@ import { provisionDatabase } from './helpers/backend.js';
 // hoisted by the ESM spec above the provisioning call and stand up the
 // driver against the wrong backend/path.
 const provisioned = await provisionDatabase();
-if (provisioned.backend === 'pg') process.env.DATABASE_URL = provisioned.url;
-else process.env.DB_PATH = provisioned.path;
 
 const dbMod = await import('../server/db.js');
 const {

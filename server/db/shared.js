@@ -27,6 +27,35 @@ export async function findAvailableUsername(desiredName, isTaken) {
   return candidate;
 }
 
+/**
+ * The bulk-cleanup half of dedupeUsernames, factored out so both drivers
+ * share one implementation of the suffixing walk instead of each carrying
+ * its own copy that has to be kept in lockstep by hand. Takes `rows` (every
+ * user with a non-null username, already ordered earliest-created first -
+ * `ORDER BY created_at ASC, id ASC` on both backends, so the earliest holder
+ * of a name is never the one renamed) and returns the subset that need to
+ * change: `[{ id, username }]`, each `username` already run through
+ * findAvailableUsername against an in-memory Set of names claimed so far.
+ * Callers write these back (an UPDATE per entry) and leave every other row
+ * untouched; the read (SELECT ... ORDER BY) and the writes stay
+ * driver-specific since they're plain SQL, not dialect-free logic.
+ */
+export async function dedupeUsernameRows(rows) {
+  const taken = new Set();
+  const renames = [];
+  for (const row of rows) {
+    const lower = row.username.toLowerCase();
+    if (!taken.has(lower)) {
+      taken.add(lower);
+      continue;
+    }
+    const candidate = await findAvailableUsername(row.username, (name) => taken.has(name.toLowerCase()));
+    renames.push({ id: row.id, username: candidate });
+    taken.add(candidate.toLowerCase());
+  }
+  return renames;
+}
+
 // --- Live Events (v1.4) -----------------------------------------------
 //
 // Unlike getSave/getConfigRow (which hand back their JSON columns as raw

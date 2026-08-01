@@ -1,4 +1,4 @@
-import { findAvailableUsername } from './shared.js';
+import { dedupeUsernameRows } from './shared.js';
 
 /**
  * Duplicate usernames (case-insensitively) can exist from before the unique
@@ -6,27 +6,21 @@ import { findAvailableUsername } from './shared.js';
  * that statement would fail on any pre-existing collision. No-op when there
  * are no duplicates, so it's cheap to run unconditionally on every boot.
  *
- * findAvailableUsername is async (its Postgres counterpart needs an async
- * predicate), so this function is too - awaited by applySchema before it
- * creates the unique index, and by driver.sqlite.js's `dedupeUsernames`
- * interface method (a thin delegation to this). The isTaken predicate here
- * is itself sync (an in-memory Set check); awaiting a non-promise value is
- * harmless.
+ * The suffixing walk itself lives in shared.js's dedupeUsernameRows (async,
+ * since its Postgres counterpart needs an async predicate) so the two
+ * drivers can't drift on the -2/-3 convention - this function only owns the
+ * SQLite-specific read and writes. Awaited by applySchema before it creates
+ * the unique index, and by driver.sqlite.js's `dedupeUsernames` interface
+ * method (a thin delegation to this).
  */
 export async function dedupeUsernames(db) {
   const rows = db.prepare(
     'SELECT id, username, created_at FROM users WHERE username IS NOT NULL ORDER BY created_at ASC, id ASC',
   ).all();
-  const taken = new Set();
-  for (const row of rows) {
-    const lower = row.username.toLowerCase();
-    if (!taken.has(lower)) {
-      taken.add(lower);
-      continue;
-    }
-    const candidate = await findAvailableUsername(row.username, (name) => taken.has(name.toLowerCase()));
-    db.prepare('UPDATE users SET username = ? WHERE id = ?').run(candidate, row.id);
-    taken.add(candidate.toLowerCase());
+  const renames = await dedupeUsernameRows(rows);
+  const update = db.prepare('UPDATE users SET username = ? WHERE id = ?');
+  for (const { id, username } of renames) {
+    update.run(username, id);
   }
 }
 

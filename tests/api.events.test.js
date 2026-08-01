@@ -10,8 +10,6 @@ import { provisionDatabase } from './helpers/backend.js';
 // before the dynamic import below, since the facade resolves its driver at
 // module-evaluation time - same trick as tests/api.test.js.
 const provisioned = await provisionDatabase();
-if (provisioned.backend === 'pg') process.env.DATABASE_URL = provisioned.url;
-else process.env.DB_PATH = provisioned.path;
 
 const { buildApp } = await import('../server/app.js');
 const { ensureConfig, getEffectiveConfig } = await import('../server/configService.js');
