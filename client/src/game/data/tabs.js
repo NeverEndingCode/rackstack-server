@@ -1,4 +1,4 @@
-import { Layers, Network, Flame, ShoppingBag, Sparkles, ListChecks, Gamepad2, Archive, Trophy } from 'lucide-react';
+import { Layers, Network, Flame, ShoppingBag, Sparkles, ListChecks, Gamepad2, Archive, Trophy, Users } from 'lucide-react';
 
 export const TABS = [
   { id: 'racks', label: 'Racks', Icon: Layers },
@@ -9,6 +9,11 @@ export const TABS = [
   { id: 'goals', label: 'Goals', Icon: ListChecks },
   { id: 'games', label: 'Games', Icon: Gamepad2 },
   { id: 'coldstorage', label: 'Cold Storage', Icon: Archive },
+  // Social (v1.5): contracts, leaderboards and the badge case. Unlike
+  // grid/overclock/singularity/coldstorage, this one is never locked - the
+  // daily contracts board and the streak both work from level 0, so there's
+  // no progression gate to render it disabled behind (see TabBar.jsx).
+  { id: 'social', label: 'Social', Icon: Users },
   // Live Events (v1.4): unlike every other tab above (which is locked-but-
   // always-rendered until progression clears it, see TabBar.jsx), this one
   // is entirely absent from the bar outside its window - RackStack.jsx
