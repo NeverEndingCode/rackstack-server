@@ -3,10 +3,13 @@ process.env.DB_PATH = ':memory:';
 import { describe, it, expect, beforeEach } from 'vitest';
 import { validateModifiers, validateLadder } from '../shared/events.js';
 
-import { driver } from '../server/db/index.js';
-
+// Dynamic import, deferred until after DB_PATH is set above: a static
+// `import { driver } from ...` would be hoisted by the ESM spec above the
+// process.env assignment and stand up the driver against the real on-disk
+// DB_PATH default instead of :memory:.
 const dbMod = await import('../server/db.js');
 const {
+  driver,
   upsertUser,
   listEvents,
   getEvent,
