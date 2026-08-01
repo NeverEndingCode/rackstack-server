@@ -22,7 +22,7 @@ export default function AchievementsSection({ achievements }) {
         {unlockedCount}/{ACHIEVEMENT_DEFS.length} unlocked
       </div>
 
-      <div className="grid grid-cols-2 gap-2">
+      <div className="grid grid-cols-2 gap-2" data-testid="badge-case">
         {ACHIEVEMENT_DEFS.map((def) => {
           const at = held[def.id];
           const unlocked = Object.prototype.hasOwnProperty.call(held, def.id);

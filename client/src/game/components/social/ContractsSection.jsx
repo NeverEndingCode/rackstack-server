@@ -69,6 +69,7 @@ export default function ContractsSection({ meta, serverTime, onClaim }) {
               {!c.claimed && met && (
                 <button
                   onClick={() => onClaim(c.index)}
+                  data-testid="contract-claim"
                   className="rounded-lg px-3 py-2 text-xs font-semibold shrink-0"
                   style={{ background: amber, color: '#0E141B' }}
                 >

@@ -108,6 +108,34 @@ describe('GET /api/leaderboard', () => {
     expect(fresh.body.boards.allTimeFlops[0].value).toBe(1e15);
   });
 
+  // Regression: the boards are cache-fronted, so opting out through the route
+  // has to drop that cache or a player who just asked to be hidden keeps
+  // appearing for up to social.leaderboardCacheMs (60s by default). The
+  // per-event leaderboard has always been immediate - it live-joins
+  // users.leaderboard_opt_out on every read (v1.4's "hard requirement 1") -
+  // and this control must not silently mean something weaker on the newer
+  // boards. Caught by tests/e2e/smoke-v15.mjs before it was fixed.
+  it('opting out through the route takes effect immediately, not after the cache TTL', async () => {
+    const shy = seedPlayer({ flops: 7e14 });
+    const observer = seedPlayer({ flops: 3 });
+    invalidateLeaderboards();
+
+    const before = await request(app).get('/api/leaderboard').set('Cookie', cookieFor(observer));
+    expect(before.body.boards.allTimeFlops.map((r) => r.userId)).toContain(shy.id);
+
+    const optOut = await request(app)
+      .put('/api/me/leaderboard-opt-out')
+      .set('Cookie', cookieFor(shy))
+      .send({ optOut: true });
+    expect(optOut.status).toBe(200);
+
+    // No invalidateLeaderboards() here on purpose - the route must have done it.
+    const after = await request(app).get('/api/leaderboard').set('Cookie', cookieFor(observer));
+    for (const [key, rows] of Object.entries(after.body.boards)) {
+      expect(rows.map((r) => r.userId), key).not.toContain(shy.id);
+    }
+  });
+
   it('skips users with no save row without throwing', async () => {
     const u = seedPlayer({ flops: 1 });
     upsertUser({

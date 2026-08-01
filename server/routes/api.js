@@ -21,7 +21,7 @@ import {
   activateEvent, endEvent, resolvePlayerEvents, inClaimGrace,
 } from '../eventService.js';
 import { loadAndEvaluate, loadEvaluateAndSchedule, applyActions } from '../stateService.js';
-import { getLeaderboards } from '../leaderboardService.js';
+import { getLeaderboards, invalidateLeaderboards } from '../leaderboardService.js';
 import { minigameWafers } from '../../shared/gameRules.js';
 import { USERNAME_RE } from '../../shared/validation.js';
 import {
@@ -458,6 +458,15 @@ router.put('/api/me/leaderboard-opt-out', requireAuth, (req, res) => {
 
   setLeaderboardOptOut(req.user.sub, optOut);
   applyActions(req.user.sub, [{ type: 'setLeaderboardOptOut', optOut }], Date.now());
+
+  // v1.5: the global boards are served from a ~60s in-memory cache, so
+  // without this a player who just asked to be hidden would keep appearing on
+  // them for up to a minute. The per-event leaderboard has always been
+  // immediate (it live-joins users.leaderboard_opt_out on every read - v1.4's
+  // "hard requirement 1"), and this control must not quietly mean something
+  // weaker just because the newer boards are cache-fronted. Opting out is a
+  // deliberate, low-frequency action, so paying for one rebuild is free.
+  invalidateLeaderboards();
 
   res.json({ ok: true, optOut });
 });
