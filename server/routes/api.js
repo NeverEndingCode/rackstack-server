@@ -13,6 +13,7 @@ import {
   finishMinigameSession, putSave,
   listEvents, getEvent, getActiveEvent, putEvent, setEventStatus, deleteEvent,
   listParticipation, listLeaderboard, setLeaderboardOptOut,
+  getToursCompleted, setToursCompleted,
 } from '../db.js';
 import {
   getConfig, getEffectiveConfig, updateConfig, rollbackConfig, getHistory, invalidateEffectiveConfig,
@@ -27,6 +28,7 @@ import { USERNAME_RE } from '../../shared/validation.js';
 import {
   validateModifiers, validateLadder, validateRecurrence, rungProgress,
 } from '../../shared/events.js';
+import { TOUR_IDS, ONBOARDING_TOUR_ID, isValidTourId } from '../../shared/tours.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const router = express.Router();
@@ -82,6 +84,7 @@ router.get('/api/me', requireAuth, (req, res) => {
     memberSince: dbUser ? dbUser.created_at : null,
     roles: getEffectiveRoles(req.user.sub),
     isOwner: isOwner(req.user.sub),
+    toursCompleted: getToursCompleted(req.user.sub),
   });
 });
 
@@ -469,6 +472,34 @@ router.put('/api/me/leaderboard-opt-out', requireAuth, (req, res) => {
   invalidateLeaderboards();
 
   res.json({ ok: true, optOut });
+});
+
+// v1.6 guided tours. A pure UI preference: unlike the leaderboard opt-out
+// above it is NOT mirrored into the save document and has no reducer action,
+// because it has no game-state implications.
+//
+// `completed: false` is the replay path (Profile -> Tutorials -> Replay).
+// Ids the current build doesn't know about are preserved rather than dropped:
+// a rolled-back deployment must not erase a completion recorded by a newer one.
+router.put('/api/me/tours', requireAuth, (req, res) => {
+  const { tourId, completed } = req.body || {};
+  if (!isValidTourId(tourId) || typeof completed !== 'boolean') {
+    return res.status(400).json({ error: 'invalid_request' });
+  }
+
+  const current = new Set(getToursCompleted(req.user.sub));
+  if (completed) {
+    // Spec §4.7: onboarding is always a superset of the feature tours, so
+    // finishing (or skipping) it clears the whole queue.
+    if (tourId === ONBOARDING_TOUR_ID) for (const id of TOUR_IDS) current.add(id);
+    else current.add(tourId);
+  } else {
+    current.delete(tourId);
+  }
+
+  const toursCompleted = [...current];
+  setToursCompleted(req.user.sub, toursCompleted);
+  res.json({ ok: true, toursCompleted });
 });
 
 // --- Coordinator CRUD (requireRole('event_coordinator') - 'admin' implies
