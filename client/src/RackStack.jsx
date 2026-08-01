@@ -1067,6 +1067,8 @@ export default function RackStack({ user }) {
           heatColor={heatColor}
           onCooldown={heatOnCooldown}
           cooldownSecondsLeft={cooldownSecondsLeft}
+          ventPercent={config.data.heat.ventPercent}
+          overheatCooldownMs={config.data.heat.overheatCooldownMs}
         />
       )}
 
@@ -1194,6 +1196,7 @@ export default function RackStack({ user }) {
         onMigrate={doMigrate}
         onSingularity={doSingularity}
         onHardReset={hardReset}
+        meltdownAutoDismissMs={config.data.heat.overheatPopupMs}
       />
     </div>
   );

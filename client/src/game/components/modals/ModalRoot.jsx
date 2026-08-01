@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { cardBg, cardBorder } from '../../theme.js';
 import MessageModal from './MessageModal.jsx';
 import MigrateConfirmModal from './MigrateConfirmModal.jsx';
@@ -8,7 +9,20 @@ import ResetTypeConfirmModal from './ResetTypeConfirmModal.jsx';
 const NON_DISMISSIBLE = ['migrate', 'reset', 'resetConfirmType', 'singularity', 'minigameResult'];
 const MESSAGE_TYPES = ['welcome', 'eventClaim', 'minigameResult', 'goalClaim', 'levelUp', 'singularityDone', 'meltdown'];
 
-export default function ModalRoot({ modal, setModal, meta, gain, singularityGain, onMigrate, onSingularity, onHardReset }) {
+export default function ModalRoot({ modal, setModal, meta, gain, singularityGain, onMigrate, onSingularity, onHardReset, meltdownAutoDismissMs = 0 }) {
+  // v1.6: the Overheat popup dismisses itself after config.heat.overheatPopupMs
+  // (0 = stays until dismissed by hand, the pre-v1.6 behaviour). The functional
+  // setModal re-checks that the meltdown modal is STILL the one showing, so a
+  // modal that changed underneath the timer is never closed by it.
+  const isMeltdown = modal?.type === 'meltdown';
+  useEffect(() => {
+    if (!isMeltdown || !(meltdownAutoDismissMs > 0)) return undefined;
+    const t = setTimeout(() => {
+      setModal((cur) => (cur?.type === 'meltdown' ? null : cur));
+    }, meltdownAutoDismissMs);
+    return () => clearTimeout(t);
+  }, [isMeltdown, meltdownAutoDismissMs, setModal]);
+
   if (!modal) return null;
   return (
     <div
