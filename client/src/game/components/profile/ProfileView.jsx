@@ -8,7 +8,7 @@ import { fetchChangelog } from '../../api.js';
 // Rendered above minigame overlays (z-30) but below ModalRoot (z-40) so the
 // reset confirmation modals launched from the Danger Zone always stack above
 // this view.
-export default function ProfileView({ user, meta, memberSince, displayName, onUsernameChanged, onClose, onLogout, onOpenReset, onConfigSaved }) {
+export default function ProfileView({ user, meta, memberSince, displayName, onUsernameChanged, onClose, onLogout, onOpenReset, onConfigSaved, toursCompleted, onStartTour }) {
   const [tab, setTab] = useState('stats');
   // Changelog text is fetched lazily on first tap of the version footer and
   // cached here for the lifetime of this view (no need to re-fetch on
@@ -64,6 +64,8 @@ export default function ProfileView({ user, meta, memberSince, displayName, onUs
             onLogout={onLogout}
             onOpenReset={onOpenReset}
             onConfigSaved={onConfigSaved}
+            toursCompleted={toursCompleted}
+            onStartTour={onStartTour}
           />
         )}
 

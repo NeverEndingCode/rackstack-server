@@ -1249,6 +1249,8 @@ export default function RackStack({ user }) {
           onLogout={logout}
           onOpenReset={() => setModal({ type: 'reset' })}
           onConfigSaved={handleConfigSaved}
+          toursCompleted={toursCompleted || []}
+          onStartTour={(tourId) => { setProfileOpen(false); startTour(tourId); }}
         />
       )}
 
