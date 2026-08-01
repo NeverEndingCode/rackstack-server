@@ -1,6 +1,6 @@
 export const DEFAULT_CONFIG = {
   schemaVersion: 1,
-  heat: { capacity: 2000, ventAmount: 500, ventCooldownMs: 2500, overheatCooldownMs: 10000 },
+  heat: { capacity: 2000, ventPercent: 25, ventCooldownMs: 2500, overheatCooldownMs: 10000, overheatPopupMs: 15000 },
   minigames: {
     winCooldownMs: 30000,
     rush:  { durationSec: 10, waferDivisor: 4, maxTapsPerSec: 15 },
@@ -60,9 +60,14 @@ export const DEFAULT_CONFIG = {
 
 export const TUNABLES = [
   { path: 'heat.capacity', label: 'Heat capacity', min: 100, max: 100000, integer: true },
-  { path: 'heat.ventAmount', label: 'Vent amount', min: 1, max: 100000, integer: true },
+  // v1.6: venting is a percentage of effective capacity, not a flat amount,
+  // so it isn't diluted by a raised heat.capacity (Summer Surge overlays
+  // 4000) or the Cold Storage heatCapacityBonus. 25% of the default 2000
+  // capacity is 500 - identical strength to the flat value it replaces.
+  { path: 'heat.ventPercent', label: 'Vent amount (% of capacity)', min: 1, max: 100 },
   { path: 'heat.ventCooldownMs', label: 'Vent cooldown (ms)', min: 0, max: 60000, integer: true },
   { path: 'heat.overheatCooldownMs', label: 'Overheat lockout (ms)', min: 0, max: 600000, integer: true },
+  { path: 'heat.overheatPopupMs', label: 'Overheat popup duration (ms)', min: 0, max: 600000, integer: true },
   { path: 'minigames.winCooldownMs', label: 'Minigame win cooldown (ms)', min: 0, max: 3600000, integer: true },
 
   { path: 'minigames.rush.durationSec', label: 'Rush duration (s)', min: 1, max: 600, integer: true },

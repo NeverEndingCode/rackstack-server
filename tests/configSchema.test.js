@@ -5,7 +5,9 @@ describe('configSchema', () => {
   it('has the spec §3.6 defaults', () => {
     expect(DEFAULT_CONFIG.schemaVersion).toBe(1);
     expect(DEFAULT_CONFIG.heat.capacity).toBe(2000);
-    expect(DEFAULT_CONFIG.heat.ventAmount).toBe(500);
+    expect(DEFAULT_CONFIG.heat.ventPercent).toBe(25);
+    expect(DEFAULT_CONFIG.heat.overheatPopupMs).toBe(15000);
+    expect(DEFAULT_CONFIG.heat.ventAmount).toBeUndefined();
     expect(DEFAULT_CONFIG.heat.ventCooldownMs).toBe(2500);
     expect(DEFAULT_CONFIG.heat.overheatCooldownMs).toBe(10000);
     expect(DEFAULT_CONFIG.minigames.balance).toMatchObject({
@@ -68,5 +70,32 @@ describe('social config section', () => {
       expect(v, t.path).toBeLessThanOrEqual(t.max);
       if (t.integer) expect(Number.isInteger(v), t.path).toBe(true);
     }
+  });
+});
+
+describe('v1.6 heat tunables', () => {
+  it('exposes ventPercent and overheatPopupMs with the documented bounds', () => {
+    const pct = TUNABLES.find((t) => t.path === 'heat.ventPercent');
+    expect(pct).toMatchObject({ min: 1, max: 100 });
+    expect(pct.integer).toBeFalsy();
+
+    const popup = TUNABLES.find((t) => t.path === 'heat.overheatPopupMs');
+    expect(popup).toMatchObject({ min: 0, max: 600000, integer: true });
+  });
+
+  it('no longer exposes ventAmount as a tunable', () => {
+    expect(TUNABLES.find((t) => t.path === 'heat.ventAmount')).toBeUndefined();
+  });
+
+  // upgradeConfig rebuilds from DEFAULT_CONFIG and copies only TUNABLES
+  // paths, so a pre-v1.6 stored document migrates with no migration code.
+  it('drops a stored ventAmount and adopts the ventPercent default', () => {
+    const legacy = { heat: { capacity: 4000, ventAmount: 900, ventCooldownMs: 3000 } };
+    const out = upgradeConfig(legacy);
+    expect(out.heat.ventAmount).toBeUndefined();
+    expect(out.heat.ventPercent).toBe(25);
+    expect(out.heat.overheatPopupMs).toBe(15000);
+    expect(out.heat.capacity).toBe(4000);      // tuned values still carry over
+    expect(out.heat.ventCooldownMs).toBe(3000);
   });
 });
