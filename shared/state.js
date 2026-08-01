@@ -32,7 +32,24 @@ export function initialState() {
         migrates: 0, minigamesWon: 0, singularities: 0, totalWafersEarned: 0, lifetimeFlopsAllTime: 0,
         blocksClaimedLifetime: 0, jobsCompletedLifetime: 0, deepJobsCompletedLifetime: 0,
         tapesEarnedLifetime: 0,
+        contractsCompletedLifetime: 0, bestStreak: 0, eventTopRungs: 0,
       },
+      // v1.5 Social: the day's three contract TYPE IDS are deliberately not
+      // stored - they're re-derived from `dateKey` by shared/contracts.js's
+      // dailyContractTypes(), which is what guarantees the client and server
+      // agree on them without a sync step. `targets` and `baseline` ARE
+      // stored, because both are snapshotted at rollover: recomputing a
+      // rate-scaled target on every read would move the goalposts every time
+      // the player bought a rack.
+      contracts: {
+        dateKey: null,
+        targets: [0, 0, 0],
+        baseline: {},
+        claimed: [false, false, false],
+      },
+      // Pure prestige - no payout, ever (spec §6.3). { [id]: unlockedAtMs }.
+      achievements: {},
+      streak: { count: 0, lastClaimDate: null },
       eventProgress: null,
       // Live Events (v1.4): personal windows that were force-ended early by
       // a NEW event going active (spec §5.2) but whose 48h claim grace
@@ -121,6 +138,31 @@ export function migrateSave(raw) {
     ...srcCS,
     blocksClaimed: padBoolArray(srcCS.blocksClaimed, TOTAL_BLOCKS, false),
     upgrades: { ...base.meta.coldStorage.upgrades, ...(srcCS.upgrades || {}) },
+  };
+
+  // v1.5: every field below is defaulted AND shape-checked. A corrupt or
+  // hand-edited save must never hand a non-array to claimContract's
+  // validIndex path, or a non-object to the baseline lookup - same reasoning
+  // as pendingEventClaims' explicit array pinning above.
+  const isPlainObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
+  const srcContracts = isPlainObject(srcMeta.contracts) ? srcMeta.contracts : {};
+  const padTo3 = (arr, fill) => {
+    const list = Array.isArray(arr) ? arr.slice(0, 3) : [];
+    while (list.length < 3) list.push(fill);
+    return list;
+  };
+  meta.contracts = {
+    dateKey: typeof srcContracts.dateKey === 'string' ? srcContracts.dateKey : null,
+    targets: padTo3(srcContracts.targets, 0)
+      .map((n) => (typeof n === 'number' && Number.isFinite(n) ? n : 0)),
+    baseline: isPlainObject(srcContracts.baseline) ? { ...srcContracts.baseline } : {},
+    claimed: padTo3(srcContracts.claimed, false).map((b) => b === true),
+  };
+  meta.achievements = isPlainObject(srcMeta.achievements) ? { ...srcMeta.achievements } : {};
+  const srcStreak = isPlainObject(srcMeta.streak) ? srcMeta.streak : {};
+  meta.streak = {
+    count: typeof srcStreak.count === 'number' && Number.isFinite(srcStreak.count) ? srcStreak.count : 0,
+    lastClaimDate: typeof srcStreak.lastClaimDate === 'string' ? srcStreak.lastClaimDate : null,
   };
 
   const server = {
