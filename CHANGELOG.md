@@ -1,5 +1,44 @@
 # Changelog
 
+## v1.6.0
+
+Onboarding & quality of life: a guided tour for new and existing players,
+plus four fixes to things that were quietly wrong.
+
+- Guided tour: a spotlight walkthrough that dims the screen, highlights the
+  real control it is describing, and steps through the whole rack - racks,
+  Grid, Overclock and heat, upgrades, goals, minigames, Cold Storage, Social,
+  Singularity, Migrate, and a live event if one is running. It is
+  unlock-aware, so a brand-new account sees 11 steps covering only what it
+  can actually reach, and a fully-unlocked account sees all 17. Skip is on
+  every step, and Escape works too.
+- It runs once for existing players as well as new ones, then never again.
+  Replay it any time from Profile -> Settings -> Tutorials.
+- Under the hood this is a tour *framework*, not a single tutorial. Completion
+  is tracked per named tour, so a future release can ship a short tour
+  covering only its new feature and show it to existing players without
+  anyone sitting through the full tutorial a second time. A feature tour's
+  steps are the same array the full tutorial composes, so the copy is only
+  ever written once.
+- The Overheat popup now dismisses itself after 15 seconds instead of waiting
+  for a click. Tunable from the Balancing tab (`heat.overheatPopupMs`); set
+  it to 0 to restore the old click-to-dismiss behaviour.
+- Venting now sheds a **percentage** of your heat capacity rather than a flat
+  amount, so it is no longer quietly weakened by anything that raises
+  capacity - Summer Surge's `heat.capacity: 4000` overlay, or Heat-Sink Tapes.
+  The Vent button and the Overclock explainer both show the live numbers
+  instead of hardcoded ones.
+  **Admin note:** `heat.ventAmount` is replaced by `heat.ventPercent`
+  (default 25). At stock settings this is exactly balance-neutral - 25% of the
+  default 2000 capacity is the 500 it replaced - but if you had tuned
+  `ventAmount` away from 500, that tuning is reset to 25% and will need
+  re-tuning in the Balancing tab.
+- The Racks "Collect" button now stays visible until the tier is automated,
+  greying out when there is nothing banked, instead of vanishing for a moment
+  after every collect.
+- Fixed a literal `&middot;` showing up next to automated racks in the Racks
+  tab.
+
 ## v1.5.0
 
 Social & Retention: a daily contracts board, global leaderboards,

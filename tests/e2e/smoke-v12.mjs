@@ -116,7 +116,8 @@ process.env.NODE_ENV = 'test';
 // reasoning as tests/api.test.js and tests/db.test.js: server/db.js reads
 // DB_PATH and server/auth.js reads JWT_SECRET/SUPER_ADMIN_IDS at
 // module-evaluation time.
-const { upsertUser, putSave, db } = await import(path.join(REPO_ROOT, 'server', 'db.js'));
+const { upsertUser, putSave, setToursCompleted, db } = await import(path.join(REPO_ROOT, 'server', 'db.js'));
+const { TOUR_IDS } = await import(path.join(REPO_ROOT, 'shared', 'tours.js'));
 const { issueToken, COOKIE_NAME } = await import(path.join(REPO_ROOT, 'server', 'auth.js'));
 const { initialState } = await import(path.join(REPO_ROOT, 'shared', 'state.js'));
 const { fmt } = await import(path.join(REPO_ROOT, 'shared', 'gameRules.js'));
@@ -198,9 +199,15 @@ function assert(cond, message) {
 // ---------------------------------------------------------------------------
 
 let seq = 0;
+// v1.6: these suites exercise pre-v1.6 features, so their seeded players
+// start with the guided tours already completed - otherwise the onboarding
+// tour auto-starts over the built client and its overlay swallows the clicks
+// these checks depend on. New-player tour behaviour is covered by smoke-v16.
 function seedUser({ provider, providerId, username }) {
   seq += 1;
-  return upsertUser({ provider, providerId, username, avatarUrl: null });
+  const user = upsertUser({ provider, providerId, username, avatarUrl: null });
+  setToursCompleted(user.id, TOUR_IDS);
+  return user;
 }
 
 function tokenFor(user) {
@@ -448,7 +455,9 @@ async function main() {
     await econPage.getByRole('button', { name: 'Understood', exact: true }).click();
     await econPage.getByRole('button', { name: 'Overclock', exact: true }).click();
     await econPage.getByText(/Overclock lane frozen after meltdown/).waitFor({ timeout: 3000 });
-    const ventBtn = econPage.getByRole('button', { name: 'Vent Heat', exact: true });
+    // v1.6: the label carries the live vent percentage ("Vent Heat (-25%)"),
+    // so match the prefix rather than the whole string.
+    const ventBtn = econPage.getByRole('button', { name: /^Vent Heat/ });
     assert(await ventBtn.isDisabled(), 'expected Vent Heat to be disabled during the meltdown lockout');
 
     // Non-admin heat-bar rescale: nameUser1's raw heat (50) never changed;
