@@ -5,6 +5,8 @@ import {
 } from './db.js';
 import { getEffectiveConfig } from './configService.js';
 import { joinEventIfEligible, resolvePlayerEvents } from './eventService.js';
+import { rolloverContracts } from '../shared/contracts.js';
+import { checkAchievements } from '../shared/achievements.js';
 
 function safeParse(text, userId) {
   try {
@@ -100,14 +102,31 @@ export function loadEvaluateAndSchedule(userId, now) {
     }));
   }
 
-  return { state, gained, config, activeEvent };
+  // v1.5: roll the contracts board to today's UTC day. Runs AFTER evaluate()
+  // (so goalCtx's totalOutputPerSec reflects the gap just closed, and the
+  // rate-scaled FLOPS target is computed against the player's real current
+  // output) and AFTER joinEventIfEligible (so an active event's config
+  // overlay is already in force when targets are computed). Idempotent - a
+  // no-op on every load within the same UTC day.
+  rolloverContracts(state, config, now);
+
+  // v1.5: the offline half of the achievement sweep. shared/reducer.js's
+  // applyAction sweeps after every successful ACTION, which covers everything
+  // a player does - but the lifetime-FLOPS tiers are crossed by evaluate()'s
+  // accrual during a gap, which no action touches. Without this, a player who
+  // crossed 1T FLOPS while asleep wouldn't unlock until their next successful
+  // action. Both call sites write to the same meta.achievements bag and
+  // checkAchievements never re-stamps a held id, so a double sweep is free.
+  const unlockedAchievements = checkAchievements(state, config, now);
+
+  return { state, gained, config, activeEvent, unlockedAchievements };
 }
 
 /** Loads, evaluates, persists, and returns { state, gained, activeEvent } for GET /api/state. */
 export function loadAndEvaluate(userId, now = Date.now()) {
-  const { state, gained, activeEvent } = loadEvaluateAndSchedule(userId, now);
+  const { state, gained, activeEvent, unlockedAchievements } = loadEvaluateAndSchedule(userId, now);
   putSave(userId, state, now);
-  return { state, gained, activeEvent };
+  return { state, gained, activeEvent, unlockedAchievements };
 }
 
 /**
@@ -122,7 +141,9 @@ export function loadAndEvaluate(userId, now = Date.now()) {
  * here instead used to silently clobber those actions' own id client-side.
  */
 export function applyActions(userId, actions, now = Date.now()) {
-  const { state: loaded, config } = loadEvaluateAndSchedule(userId, now);
+  const {
+    state: loaded, config, unlockedAchievements: loadUnlocked,
+  } = loadEvaluateAndSchedule(userId, now);
 
   let state = loaded;
   const results = [];
@@ -166,5 +187,16 @@ export function applyActions(userId, actions, now = Date.now()) {
     }
   }
 
-  return { state, results };
+  // v1.5: everything unlocked during THIS request, from either sweep site -
+  // the load path (an offline threshold crossed since the last visit) and each
+  // successful action. Merged and de-duplicated so the client can toast the
+  // set once; a batch that both crosses an offline threshold and unlocks
+  // something by acting must not drop either half. `unlockedAchievements` is
+  // left on the individual results too, for callers that want attribution.
+  const unlockedAchievements = [...new Set([
+    ...(loadUnlocked || []),
+    ...results.flatMap((r) => r.unlockedAchievements || []),
+  ])];
+
+  return { state, results, unlockedAchievements };
 }

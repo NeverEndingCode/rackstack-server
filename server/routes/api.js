@@ -90,7 +90,7 @@ router.get('/api/me', requireAuth, (req, res) => {
 
 router.get('/api/state', requireAuth, (req, res) => {
   const now = Date.now();
-  const { state, gained, activeEvent } = loadAndEvaluate(req.user.sub, now);
+  const { state, gained, activeEvent, unlockedAchievements } = loadAndEvaluate(req.user.sub, now);
   const { version } = getConfig();
   const { current } = resolvePlayerEvents(state);
   const claimable = current && inClaimGrace(current.progress, now) ? current.event : null;
@@ -134,6 +134,11 @@ router.get('/api/state', requireAuth, (req, res) => {
       endsAt: activeEvent.ends_at,
     } : null,
     eventProgress: state.meta.eventProgress,
+    // Social (v1.5): achievements the load-path sweep unlocked on THIS
+    // request - typically thresholds crossed by offline accrual since the
+    // player was last seen. The client toasts them; meta.achievements above
+    // is the durable record either way.
+    unlockedAchievements,
   });
 });
 
@@ -143,8 +148,8 @@ router.post('/api/actions', requireAuth, (req, res) => {
     return res.status(400).json({ error: 'actions must be an array of at most 100 items' });
   }
   const now = Date.now();
-  const { state, results } = applyActions(req.user.sub, actions, now);
-  res.json({ state, results, serverTime: now });
+  const { state, results, unlockedAchievements } = applyActions(req.user.sub, actions, now);
+  res.json({ state, results, serverTime: now, unlockedAchievements });
 });
 
 // ---------------------------------------------------------------------------
