@@ -112,7 +112,15 @@ function vent(s, action, config, now) {
   if (now < s.server.lastVentAt + config.heat.ventCooldownMs) return err('cooldown_active');
   if (s.run.heatCooldownUntil && now < s.run.heatCooldownUntil) return err('cooldown_active');
 
-  s.run.heat = Math.max(0, s.run.heat - config.heat.ventAmount);
+  // v1.6: vent a percentage of EFFECTIVE capacity rather than a flat amount,
+  // so venting isn't diluted by a raised heat.capacity (Summer Surge overlays
+  // 4000) or by Heat-Sink Tapes. The capacity expression here must stay
+  // identical to the overheat threshold in shared/state.js - venting measured
+  // against a different ceiling than the one that triggers a meltdown would
+  // be a silent balance bug.
+  const csEff = computeColdStorageEffects(s.meta, config);
+  const capacity = config.heat.capacity + csEff.heatCapacityBonus;
+  s.run.heat = Math.max(0, s.run.heat - (capacity * config.heat.ventPercent) / 100);
   s.server.lastVentAt = now;
   return { ok: true };
 }
