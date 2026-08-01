@@ -48,6 +48,10 @@ guardedAddColumn('ALTER TABLE users ADD COLUMN custom_username INTEGER DEFAULT 0
 // v1.4 Live Events: the opt-out ships here (spec §5.2) and is reused by
 // v1.5's global leaderboards - it's a per-user preference, not event-scoped.
 guardedAddColumn('ALTER TABLE users ADD COLUMN leaderboard_opt_out INTEGER DEFAULT 0');
+// v1.6 tours: a JSON array of completed tour ids (shared/tours.js owns the id
+// list). Existing players default to '[]' - an empty completed-set is exactly
+// what makes the onboarding tour fire once for them.
+guardedAddColumn("ALTER TABLE users ADD COLUMN tours_completed TEXT DEFAULT '[]'");
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS config (
@@ -261,6 +265,27 @@ export function getRoles(userId) {
 
 export function setRoles(userId, roles) {
   db.prepare('UPDATE users SET roles = ? WHERE id = ?').run(JSON.stringify(roles), userId);
+}
+
+/**
+ * Completed guided tours, stored as a JSON array string in
+ * users.tours_completed (default '[]') - the same shape and defensive-read
+ * contract as users.roles above. Callers treat it as a plain set; the route
+ * layer owns validation against shared/tours.js.
+ */
+export function getToursCompleted(userId) {
+  const row = db.prepare('SELECT tours_completed FROM users WHERE id = ?').get(userId);
+  if (!row || !row.tours_completed) return [];
+  try {
+    const parsed = JSON.parse(row.tours_completed);
+    return Array.isArray(parsed) ? parsed.filter((id) => typeof id === 'string') : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+export function setToursCompleted(userId, ids) {
+  db.prepare('UPDATE users SET tours_completed = ? WHERE id = ?').run(JSON.stringify(ids), userId);
 }
 
 /**

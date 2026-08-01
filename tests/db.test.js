@@ -9,6 +9,8 @@ const {
   getUserById,
   getRoles,
   setRoles,
+  getToursCompleted,
+  setToursCompleted,
   setUsername,
   dedupeUsernames,
   createMinigameSession,
@@ -258,5 +260,33 @@ describe('config', () => {
     // newest-first
     expect(history[0].version).toBe(2);
     expect(history[1].version).toBe(1);
+  });
+});
+
+describe('db schema v1.6: tours_completed', () => {
+  it('adds the tours_completed column to users', () => {
+    const cols = db.prepare('PRAGMA table_info(users)').all().map((c) => c.name);
+    expect(cols).toContain('tours_completed');
+  });
+
+  it('defaults a fresh user to an empty set', () => {
+    const u = upsertUser({ provider: 'discord', providerId: 'tour1', username: 'tour1', avatarUrl: null });
+    expect(getToursCompleted(u.id)).toEqual([]);
+  });
+
+  it('round-trips a set of tour ids', () => {
+    const u = upsertUser({ provider: 'discord', providerId: 'tour2', username: 'tour2', avatarUrl: null });
+    setToursCompleted(u.id, ['onboarding', 'v17-widgets']);
+    expect(getToursCompleted(u.id)).toEqual(['onboarding', 'v17-widgets']);
+  });
+
+  it('returns [] for an unknown user', () => {
+    expect(getToursCompleted('no-such-user')).toEqual([]);
+  });
+
+  it('returns [] rather than throwing on corrupt JSON', () => {
+    const u = upsertUser({ provider: 'discord', providerId: 'tour3', username: 'tour3', avatarUrl: null });
+    db.prepare('UPDATE users SET tours_completed = ? WHERE id = ?').run('{not json', u.id);
+    expect(getToursCompleted(u.id)).toEqual([]);
   });
 });
