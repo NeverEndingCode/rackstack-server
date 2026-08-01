@@ -17,8 +17,20 @@ const {
 const { initialState } = await import('../shared/state.js');
 const { applyAction, EVENT_CLAIM_GRACE_MS } = await import('../shared/reducer.js');
 const { validateRecurrence } = await import('../shared/events.js');
+const { DEFAULT_CONFIG } = await import('../shared/configSchema.js');
 
 ensureConfig();
+
+// applyAction needs a FULL config document, not just the __claimableEvent /
+// __pendingClaimables runtime fields these tests care about: v1.5's automatic
+// achievement sweep runs goalCtx() after every successful action, and that
+// reads real tunables (config.offline.*, config.production.*, ...). The bare
+// `{ __claimableEvent }` objects these tests used to hand-build threw on the
+// first successful claim once that sweep landed. Same convention
+// tests/reducer.events.test.js's activeConfig() helper already uses.
+function withDefaults(runtimeFields) {
+  return { ...structuredClone(DEFAULT_CONFIG), ...runtimeFields };
+}
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 let seq = 0;
@@ -229,14 +241,14 @@ describe('joinEventIfEligible: superseding preserves the claim right', () => {
 
     // Exactly what stateService attaches for this player.
     const { current, pending } = resolvePlayerEvents(state);
-    const config = {
+    const config = withDefaults({
       __claimableEvent: {
         id: current.event.id, ladder: current.event.ladder, endsAt: current.event.ends_at,
       },
       __pendingClaimables: pending.map(({ event }) => ({
         id: event.id, ladder: event.ladder, endsAt: event.ends_at,
       })),
-    };
+    });
 
     // Pre-fix this returned not_met with eventProgress already replaced and
     // the 20 wafers gone for good.
@@ -287,14 +299,14 @@ describe('joinEventIfEligible: superseding preserves the claim right', () => {
     state.meta.stats.lifetimeFlopsAllTime += 20000;
 
     const { current, pending } = resolvePlayerEvents(state);
-    const config = {
+    const config = withDefaults({
       __claimableEvent: {
         id: current.event.id, ladder: current.event.ladder, endsAt: current.event.ends_at,
       },
       __pendingClaimables: pending.map(({ event }) => ({
         id: event.id, ladder: event.ladder, endsAt: event.ends_at,
       })),
-    };
+    });
 
     const late = applyAction(
       state, { type: 'claimEventRung', index: 1, eventId: eventA.id }, config, now,

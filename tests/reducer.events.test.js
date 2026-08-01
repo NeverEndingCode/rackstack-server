@@ -42,7 +42,11 @@ describe('reducer: claimEventRung', () => {
     // `eventId` echoes which event's ladder the rung came from - a claim may
     // target a superseded window from meta.pendingEventClaims, so callers
     // (stateService's participation sync) can't infer it from eventProgress.
-    expect(result).toEqual({
+    // toMatchObject, not toEqual: v1.5's automatic achievement sweep also
+    // attaches `unlockedAchievements` to any successful result (here
+    // 'event_joined', since joinedState sets meta.eventProgress). The four
+    // fields below are what this test is actually pinning.
+    expect(result).toMatchObject({
       ok: true, reward: { flops: 50 }, rungIndex: 0, eventId: 'ev1',
     });
     expect(s2.run.credits).toBe(10 + 50); // initial 10 + flops reward
