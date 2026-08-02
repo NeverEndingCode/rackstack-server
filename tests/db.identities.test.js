@@ -20,14 +20,46 @@ afterAll(async () => {
   await provisioned.cleanup();
 });
 
-// Renames `identities` away and back, per-backend, so a test can force the
-// second write of upsertUser's insert path to fail without touching real
-// constraint machinery.
-async function renameIdentitiesTable(from, to) {
+// Forces INSERT INTO identities to fail for one specific provider_id, while
+// leaving SELECT (the identity lookup at the top of upsertUser) completely
+// unaffected - a trigger, not renaming the table away. Renaming the table
+// breaks the lookup too, so upsertUser throws before ever reaching the
+// users insert, and no write of either kind happens - that "passes" a
+// naive rollback assertion for the wrong reason (nothing to roll back) and
+// does not exercise the atomicity fix at all. This targets only the
+// second write, after the first (INSERT INTO users) has already run, which
+// is the actual failure mode the fix addresses.
+async function blockIdentityInsert(providerId) {
   if (driver.__backend === 'sqlite') {
-    driver.__raw.exec(`ALTER TABLE ${from} RENAME TO ${to}`);
+    driver.__raw.exec(`
+      CREATE TRIGGER block_test_identity_insert BEFORE INSERT ON identities
+      WHEN NEW.provider_id = '${providerId}'
+      BEGIN SELECT RAISE(ABORT, 'forced failure for atomicity test'); END;
+    `);
   } else {
-    await driver.__raw.query(`ALTER TABLE ${from} RENAME TO ${to}`);
+    await driver.__raw.query(`
+      CREATE OR REPLACE FUNCTION block_test_identity_insert() RETURNS trigger AS $$
+      BEGIN
+        IF NEW.provider_id = '${providerId}' THEN
+          RAISE EXCEPTION 'forced failure for atomicity test';
+        END IF;
+        RETURN NEW;
+      END;
+      $$ LANGUAGE plpgsql;
+      CREATE TRIGGER block_test_identity_insert_trigger BEFORE INSERT ON identities
+      FOR EACH ROW EXECUTE FUNCTION block_test_identity_insert();
+    `);
+  }
+}
+
+async function unblockIdentityInsert() {
+  if (driver.__backend === 'sqlite') {
+    driver.__raw.exec('DROP TRIGGER IF EXISTS block_test_identity_insert');
+  } else {
+    await driver.__raw.query(`
+      DROP TRIGGER IF EXISTS block_test_identity_insert_trigger ON identities;
+      DROP FUNCTION IF EXISTS block_test_identity_insert();
+    `);
   }
 }
 
@@ -109,14 +141,15 @@ describe('identities split', () => {
   });
 
   it('rolls back the whole write if the identities insert fails, leaving no orphaned users row', async () => {
-    // Forces upsertUser's second write (INSERT INTO identities) to fail by
-    // renaming the table out from under it, simulating any failure on that
-    // write. Before the writes were made transactional, this state (a users
-    // row with no matching identity) was a *permanent* lockout: the next
-    // login attempt's identity lookup would miss, retry INSERT INTO users
-    // with the same primary key, and raise a constraint code neither retry
-    // guard recognizes.
-    await renameIdentitiesTable('identities', 'identities_moved');
+    // Forces upsertUser's SECOND write (INSERT INTO identities) to fail,
+    // specifically after the FIRST write (INSERT INTO users) has already
+    // run - the actual failure mode the fix addresses. Before the writes
+    // were made transactional, this state (a users row with no matching
+    // identity) was a *permanent* lockout: the next login attempt's
+    // identity lookup would miss (the row IS there to find), retry INSERT
+    // INTO users with the same primary key, and raise a constraint code
+    // neither retry guard recognizes.
+    await blockIdentityInsert('atomic-1');
     try {
       await expect(upsertUser({
         provider: 'github', providerId: 'atomic-1', username: 'atomicuser', avatarUrl: null,
@@ -126,10 +159,10 @@ describe('identities split', () => {
       // identities insert - not left as an orphan.
       expect(await getUserById('github:atomic-1')).toBeUndefined();
     } finally {
-      await renameIdentitiesTable('identities_moved', 'identities');
+      await unblockIdentityInsert();
     }
 
-    // With identities restored, the exact same login must now succeed
+    // With the block lifted, the exact same login must now succeed
     // cleanly - proving the earlier failure didn't leave any partial state
     // (e.g. a half-written users row) behind to trip up a retry.
     const user = await upsertUser({
