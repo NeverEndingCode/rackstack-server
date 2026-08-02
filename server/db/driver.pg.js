@@ -48,6 +48,40 @@ export async function createPgDriver({ url }) {
     ).then(Boolean);
   }
 
+  // A brand-new login writes both `users` and `identities`. Run on a single
+  // checked-out client wrapped in BEGIN/COMMIT so a failure on the second
+  // write rolls back the first - without this, a users row with no
+  // matching identity is invisible to the identity lookup at the top of
+  // upsertUser, so the very next login attempt would retry INSERT INTO
+  // users with the same primary key, raising SQLSTATE 23505 (the same code
+  // a username collision raises) and misdiagnosing it as one, burning a
+  // findAvailableUsername retry that still fails and permanently locking
+  // the account out.
+  async function insertUserAndIdentity(user, identityRow) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(
+        'INSERT INTO users (id, username, avatar_url, created_at) VALUES ($1, $2, $3, $4)',
+        [user.id, user.username, user.avatar_url, user.created_at],
+      );
+      await client.query(
+        `INSERT INTO identities (provider, provider_id, user_id, created_at, last_login_at)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [
+          identityRow.provider, identityRow.provider_id, identityRow.user_id,
+          identityRow.created_at, identityRow.last_login_at,
+        ],
+      );
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK');
+      throw e;
+    } finally {
+      client.release();
+    }
+  }
+
   const driver = {
     __backend: 'pg',
     __raw: pool,
@@ -97,11 +131,11 @@ export async function createPgDriver({ url }) {
       const user = {
         id, username, avatar_url: avatarUrl, created_at: now,
       };
+      const identityRow = {
+        provider, provider_id: providerId, user_id: id, created_at: now, last_login_at: now,
+      };
       try {
-        await run(
-          'INSERT INTO users (id, username, avatar_url, created_at) VALUES ($1, $2, $3, $4)',
-          [user.id, user.username, user.avatar_url, user.created_at],
-        );
+        await insertUserAndIdentity(user, identityRow);
       } catch (e) {
         // Two different brand-new OAuth accounts can independently supply the
         // same (or case-variant) username - the unique functional index on
@@ -112,15 +146,8 @@ export async function createPgDriver({ url }) {
         // the same suffixing convention as dedupeUsernames and retry once.
         if (e.code !== '23505') throw e; // unique_violation
         user.username = await findAvailableUsername(username, isUsernameTakenInDb);
-        await run(
-          'INSERT INTO users (id, username, avatar_url, created_at) VALUES ($1, $2, $3, $4)',
-          [user.id, user.username, user.avatar_url, user.created_at],
-        );
+        await insertUserAndIdentity(user, identityRow);
       }
-      await run(
-        'INSERT INTO identities (provider, provider_id, user_id, created_at) VALUES ($1, $2, $3, $4)',
-        [provider, providerId, id, now],
-      );
       return user;
     },
 
@@ -141,7 +168,7 @@ export async function createPgDriver({ url }) {
                s.data, s.last_save,
                (SELECT i.provider FROM identities i
                  WHERE i.user_id = u.id
-                 ORDER BY i.created_at ASC, i.provider ASC
+                 ORDER BY i.created_at ASC, i.provider ASC, i.provider_id ASC
                  LIMIT 1) AS provider
         FROM users u
         LEFT JOIN saves s ON s.user_id = u.id

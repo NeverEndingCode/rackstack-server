@@ -20,11 +20,12 @@
 // Unlike schema.sqlite.js's guarded ALTER history (roles, custom_username,
 // leaderboard_opt_out, tours_completed all arrived that way across
 // v1.2-v1.6), every column below ships in its CREATE TABLE from the start -
-// this schema didn't exist before those columns did. The one exception is
-// v1.7's identities split (see migrateIdentities, below): `provider`/
-// `provider_id` still ship in users' CREATE TABLE and are migrated out on
-// every boot, mirroring schema.sqlite.js's evolve-via-guarded-step
-// convention now that there's a real migration to run.
+// this schema didn't exist before those columns did. `users` ships in its
+// final, post-v1.7 shape too: `provider`/`provider_id` are NOT declared
+// here. Only a database that predates the identities split (see
+// migrateIdentities, below) still has them - this CREATE TABLE is only ever
+// a no-op (IF NOT EXISTS) against such a database, never the statement that
+// creates its shape.
 export async function applySchema(pool) {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -34,16 +35,13 @@ export async function applySchema(pool) {
 
     CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY,
-      provider TEXT NOT NULL,
-      provider_id TEXT NOT NULL,
       username TEXT,
       avatar_url TEXT,
       created_at BIGINT NOT NULL,
       roles TEXT DEFAULT '[]',
       custom_username SMALLINT DEFAULT 0,
       leaderboard_opt_out SMALLINT DEFAULT 0,
-      tours_completed TEXT DEFAULT '[]',
-      UNIQUE (provider, provider_id)
+      tours_completed TEXT DEFAULT '[]'
     );
 
     CREATE TABLE IF NOT EXISTS saves (
@@ -123,15 +121,13 @@ export async function applySchema(pool) {
  * never changes here - it's the target of 3 foreign keys and the value
  * operators put in SUPER_ADMIN_IDS.
  *
- * The CREATE TABLE users statement above is intentionally left untouched -
- * it still declares `provider`/`provider_id` and their UNIQUE constraint,
- * same as it always has. That means a genuinely fresh database still gets
- * those columns for one instant before this function immediately migrates
- * them away in the same boot - a deliberate choice: it means every single
- * test run in this suite exercises the real migration path, not just a
- * dedicated upgrade-path test. Guarded on information_schema so it's a
- * no-op on every boot after the first, whether that first boot was against
- * a brand-new database or one already holding real player data.
+ * `identities` is created unconditionally, every boot, *before* the guard
+ * below - never only as a side effect of the backfill-and-drop. The base
+ * `CREATE TABLE users` above ships in its final, post-split shape (no
+ * `provider`/`provider_id`), so the guard below only ever fires for a
+ * database that predates this migration - a genuinely fresh install never
+ * has those columns to find. Guarded on information_schema so it's a no-op
+ * on every boot after the one that actually performs it.
  */
 async function migrateIdentities(pool) {
   await pool.query(`
@@ -151,10 +147,13 @@ async function migrateIdentities(pool) {
   // no-op on a database that has already been through this - DROP COLUMN
   // also silently drops the UNIQUE(provider, provider_id) constraint that
   // depended on them, Postgres handles that automatically (no CASCADE
-  // needed for a plain table constraint like this one).
+  // needed for a plain table constraint like this one). table_schema is
+  // pinned to current_schema() so this can't match a same-named `users`
+  // table sitting in a different schema on the same search_path.
   const hasProvider = await pool.query(`
     SELECT 1 FROM information_schema.columns
     WHERE table_name = 'users' AND column_name = 'provider'
+      AND table_schema = current_schema()
   `);
   if (hasProvider.rowCount > 0) {
     await pool.query(`

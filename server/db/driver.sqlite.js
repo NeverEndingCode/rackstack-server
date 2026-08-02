@@ -37,9 +37,21 @@ export async function createSqliteDriver({ path: dbPath }) {
   `);
 
   const insertIdentityStmt = db.prepare(`
-    INSERT INTO identities (provider, provider_id, user_id, created_at)
-    VALUES (@provider, @provider_id, @user_id, @created_at)
+    INSERT INTO identities (provider, provider_id, user_id, created_at, last_login_at)
+    VALUES (@provider, @provider_id, @user_id, @created_at, @last_login_at)
   `);
+
+  // A brand-new login writes both `users` and `identities`. Wrapped in one
+  // transaction so a failure on the second write rolls back the first -
+  // without this, a users row with no matching identity is invisible to
+  // the identity lookup at the top of upsertUser, so the very next login
+  // attempt would retry INSERT INTO users with the same primary key,
+  // raising SQLITE_CONSTRAINT_PRIMARYKEY (a code the username-collision
+  // catch below doesn't recognize) and permanently locking the account out.
+  const insertUserAndIdentity = db.transaction((user, identityRow) => {
+    insertUserStmt.run(user);
+    insertIdentityStmt.run(identityRow);
+  });
 
   const putEventStmt = db.prepare(`
     INSERT INTO live_events (id, name, description, theme, modifiers, ladder, status, starts_at, ends_at, recurrence, created_at, created_by)
@@ -120,8 +132,11 @@ export async function createSqliteDriver({ path: dbPath }) {
       const user = {
         id, username, avatar_url: avatarUrl, created_at: now,
       };
+      const identityRow = {
+        provider, provider_id: providerId, user_id: id, created_at: now, last_login_at: now,
+      };
       try {
-        insertUserStmt.run(user);
+        insertUserAndIdentity(user, identityRow);
       } catch (e) {
         // Two different brand-new OAuth accounts can independently supply the
         // same (or case-variant) username - the COLLATE NOCASE unique index
@@ -132,11 +147,8 @@ export async function createSqliteDriver({ path: dbPath }) {
         // suffixing convention as dedupeUsernames and retry once.
         if (e.code !== 'SQLITE_CONSTRAINT_UNIQUE' && e.code !== 'SQLITE_CONSTRAINT') throw e;
         user.username = await findAvailableUsername(username, isUsernameTakenInDb);
-        insertUserStmt.run(user);
+        insertUserAndIdentity(user, identityRow);
       }
-      insertIdentityStmt.run({
-        provider, provider_id: providerId, user_id: id, created_at: now,
-      });
       return user;
     },
 
@@ -157,7 +169,7 @@ export async function createSqliteDriver({ path: dbPath }) {
                s.data, s.last_save,
                (SELECT i.provider FROM identities i
                  WHERE i.user_id = u.id
-                 ORDER BY i.created_at ASC, i.provider ASC
+                 ORDER BY i.created_at ASC, i.provider ASC, i.provider_id ASC
                  LIMIT 1) AS provider
         FROM users u
         LEFT JOIN saves s ON s.user_id = u.id

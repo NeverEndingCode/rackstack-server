@@ -20,8 +20,19 @@ afterAll(async () => {
   await provisioned.cleanup();
 });
 
+// Renames `identities` away and back, per-backend, so a test can force the
+// second write of upsertUser's insert path to fail without touching real
+// constraint machinery.
+async function renameIdentitiesTable(from, to) {
+  if (driver.__backend === 'sqlite') {
+    driver.__raw.exec(`ALTER TABLE ${from} RENAME TO ${to}`);
+  } else {
+    await driver.__raw.query(`ALTER TABLE ${from} RENAME TO ${to}`);
+  }
+}
+
 describe('identities split', () => {
-  it('creates exactly one identity per user on first login', async () => {
+  it('creates exactly one identity per user on first login, with last_login_at set immediately', async () => {
     await upsertUser({
       provider: 'github', providerId: '37058311', username: 'nec', avatarUrl: null,
     });
@@ -29,6 +40,11 @@ describe('identities split', () => {
     expect(ids).toHaveLength(1);
     expect(ids[0]).toMatchObject({ provider: 'github', provider_id: '37058311' });
     expect(ids[0].supertokens_user_id).toBeNull();
+    // Previously only set on a *returning* login's UPDATE - a brand-new
+    // identity is itself a login and should not require a second one before
+    // last_login_at is populated.
+    expect(ids[0].last_login_at).toBeTypeOf('number');
+    expect(ids[0].last_login_at).toBe(ids[0].created_at);
   });
 
   it('keeps users.id as provider:providerId', async () => {
@@ -40,17 +56,26 @@ describe('identities split', () => {
     expect(user.id).toBe('discord:536626725380161537');
   });
 
-  it('resolves a returning login through identities to the same user', async () => {
+  it('resolves a returning login through identities to the same user, bumping last_login_at', async () => {
     await upsertUser({
       provider: 'github', providerId: 'ret', username: 'first', avatarUrl: null,
     });
     await putSave('github:ret', { marker: 'keep-me' }, 123);
+    const [firstLogin] = await listIdentities('github:ret');
+    expect(firstLogin.last_login_at).toBeTypeOf('number');
+
     await upsertUser({
       provider: 'github', providerId: 'ret', username: 'renamed', avatarUrl: 'a.png',
     });
     const save = await getSave('github:ret');
     expect(JSON.parse(save.data).marker).toBe('keep-me');
-    expect(await listIdentities('github:ret')).toHaveLength(1);
+    const identities = await listIdentities('github:ret');
+    expect(identities).toHaveLength(1);
+    // The returning-login path updates last_login_at on the SAME identity
+    // row, not >= the first value strictly (two calls in the same test can
+    // land in the same millisecond), so pin "still populated", not "grew".
+    expect(identities[0].last_login_at).toBeTypeOf('number');
+    expect(identities[0].last_login_at).toBeGreaterThanOrEqual(firstLogin.last_login_at);
   });
 
   it('getAllUsersWithSaves still exposes provider', async () => {
@@ -59,6 +84,59 @@ describe('identities split', () => {
     });
     const rows = await getAllUsersWithSaves();
     expect(rows.find((r) => r.id === 'discord:agg').provider).toBe('discord');
+  });
+
+  it('getAllUsersWithSaves returns provider: null for a user with no identity row, rather than dropping them', async () => {
+    // Pins the correlated subquery as a LEFT-style lookup: a future
+    // refactor to an inner join would silently drop this user from the
+    // admin list instead of surfacing them with a null provider.
+    const now = Date.now();
+    if (driver.__backend === 'sqlite') {
+      driver.__raw.prepare(
+        'INSERT INTO users (id, username, avatar_url, created_at) VALUES (?, ?, ?, ?)',
+      ).run('orphan:no-identity', 'orphaned', null, now);
+    } else {
+      await driver.__raw.query(
+        'INSERT INTO users (id, username, avatar_url, created_at) VALUES ($1, $2, $3, $4)',
+        ['orphan:no-identity', 'orphaned', null, now],
+      );
+    }
+
+    const rows = await getAllUsersWithSaves();
+    const row = rows.find((r) => r.id === 'orphan:no-identity');
+    expect(row).toBeDefined();
+    expect(row.provider).toBeNull();
+  });
+
+  it('rolls back the whole write if the identities insert fails, leaving no orphaned users row', async () => {
+    // Forces upsertUser's second write (INSERT INTO identities) to fail by
+    // renaming the table out from under it, simulating any failure on that
+    // write. Before the writes were made transactional, this state (a users
+    // row with no matching identity) was a *permanent* lockout: the next
+    // login attempt's identity lookup would miss, retry INSERT INTO users
+    // with the same primary key, and raise a constraint code neither retry
+    // guard recognizes.
+    await renameIdentitiesTable('identities', 'identities_moved');
+    try {
+      await expect(upsertUser({
+        provider: 'github', providerId: 'atomic-1', username: 'atomicuser', avatarUrl: null,
+      })).rejects.toThrow();
+
+      // The users insert must have rolled back along with the failed
+      // identities insert - not left as an orphan.
+      expect(await getUserById('github:atomic-1')).toBeUndefined();
+    } finally {
+      await renameIdentitiesTable('identities_moved', 'identities');
+    }
+
+    // With identities restored, the exact same login must now succeed
+    // cleanly - proving the earlier failure didn't leave any partial state
+    // (e.g. a half-written users row) behind to trip up a retry.
+    const user = await upsertUser({
+      provider: 'github', providerId: 'atomic-1', username: 'atomicuser', avatarUrl: null,
+    });
+    expect(user.id).toBe('github:atomic-1');
+    expect(await listIdentities('github:atomic-1')).toHaveLength(1);
   });
 
   it('migrates a pre-split SQLite database without losing saves', async () => {
@@ -94,7 +172,11 @@ describe('identities split', () => {
     expect(identity).toMatchObject({ provider: 'github', provider_id: '37058311' });
 
     const save = raw.prepare('SELECT * FROM saves WHERE user_id = ?').get('github:37058311');
-    expect(JSON.parse(save.data).wafers).toBe(42);
+    // Byte-for-byte, not just the parsed field - interface.md states JSON
+    // columns round-trip exactly as stored, and a parsed-field check alone
+    // wouldn't catch e.g. whitespace or key-order drift introduced by the
+    // rebuild's SELECT/INSERT.
+    expect(save.data).toBe('{"wafers":42}');
     expect(save.last_save).toBe(1784859388999);
 
     // Idempotency: a second boot over the already-migrated database must be
@@ -106,7 +188,7 @@ describe('identities split', () => {
     expect(identitiesAgain).toHaveLength(1);
   });
 
-  it('throws rather than silently drop an orphaned save during the rebuild', async () => {
+  it('throws rather than silently drop an orphaned save during the rebuild, and rolls the rebuild back', async () => {
     // Proves the post-rebuild foreign_key_check actually catches a real
     // violation, not just that it stays quiet on clean data. A save row
     // pointing at a user id that was never inserted is exactly what "an
@@ -135,5 +217,14 @@ describe('identities split', () => {
 
     const { applySchema } = await import('../server/db/schema.sqlite.js');
     await expect(applySchema(raw)).rejects.toThrow(/FK violations/);
+
+    // Pins the rollback, not just the rejection: if the check ran after
+    // COMMIT (the pre-fix ordering), `users` would already be the rebuilt,
+    // provider-less table even though applySchema threw - a crashed boot
+    // that quietly "fixed itself" on the very next boot, at which point the
+    // guard sees no `provider` column and never checks again. Asserting the
+    // OLD shape survived is the only way to tell the two apart.
+    const cols = raw.prepare('PRAGMA table_info(users)').all().map((c) => c.name);
+    expect(cols).toContain('provider');
   });
 });
