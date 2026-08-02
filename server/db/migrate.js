@@ -503,6 +503,44 @@ export async function migrateSqliteToPostgres({ sqlitePath, databaseUrl, logger 
   }
 }
 
+/**
+ * Boot-time guard for Task 7: server/index.js awaits this, once, before
+ * buildApp() ever resolves its driver. The guard matrix is deliberately
+ * conservative - migrate only when all three hold:
+ *   1. DATABASE_URL is set (otherwise the app is running on SQLite as
+ *      today, and there is nothing to migrate into).
+ *   2. A SQLite file actually exists at DB_PATH (otherwise this is a fresh
+ *      Postgres install, not a cutover, and there is nothing to migrate
+ *      from).
+ *   3. The target Postgres database is still empty - enforced by
+ *      migrateSqliteToPostgres itself (see its own per-table emptiness
+ *      check), not duplicated here, so a restart against an
+ *      already-migrated target is always a silent no-op rather than a
+ *      second, redundant read of "is it empty" that could drift from the
+ *      one migrateSqliteToPostgres actually acts on.
+ *
+ * `env` defaults to `process.env` but is a caller-supplied parameter so
+ * tests can pass a fake object and exercise the "unset"/"absent file"
+ * branches without touching real environment state or leaving DATABASE_URL
+ * set behind them. The production call site (server/index.js) calls this
+ * with no arguments, so it reads the real process.env.
+ *
+ * Opens no Postgres connection of its own in the two guard branches that
+ * return early (no pool to leak); once past both guards it delegates
+ * entirely to migrateSqliteToPostgres, which owns its own pool's full
+ * lifecycle (including ending it on every early-failure path - see that
+ * function's own comments) end to end.
+ */
+export async function maybeAutoMigrate({ env = process.env, logger = console } = {}) {
+  if (!env.DATABASE_URL) return { migrated: false, reason: 'DATABASE_URL not set; using SQLite' };
+  const sqlitePath = env.DB_PATH || '/app/data/rackstack.db';
+  if (!fs.existsSync(sqlitePath)) {
+    return { migrated: false, reason: 'no SQLite database to migrate; fresh Postgres install' };
+  }
+  logger.log('[migrate] SQLite database found and DATABASE_URL is set - checking whether to migrate');
+  return migrateSqliteToPostgres({ sqlitePath, databaseUrl: env.DATABASE_URL, logger });
+}
+
 // Runnable by hand: npm run migrate:pg
 if (import.meta.url === `file://${process.argv[1]}`) {
   const sqlitePath = process.env.DB_PATH || '/app/data/rackstack.db';

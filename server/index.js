@@ -1,8 +1,31 @@
 import 'dotenv/config';
-import { ensureConfig } from './configService.js';
-import { seedSeasonalEvents } from './db.js';
-import { runScheduler } from './eventService.js';
-import { buildApp } from './app.js';
+import { maybeAutoMigrate } from './db/migrate.js';
+
+try {
+  const result = await maybeAutoMigrate();
+  if (result.migrated) {
+    console.log(`[migrate] migration complete: ${JSON.stringify(result.counts)}`);
+  } else {
+    console.log(`[migrate] skipped - ${result.reason}`);
+  }
+} catch (e) {
+  // Deliberately fatal. Serving an empty game to real players is worse than
+  // being down: a stopped container gets investigated, an empty leaderboard
+  // might not be noticed until saves have been overwritten on top of it.
+  console.error('[migrate] FATAL - refusing to start:', e.message);
+  process.exit(1);
+}
+
+// Dynamic imports: server/db/index.js (imported transitively by db.js,
+// configService.js, eventService.js and app.js) resolves its driver at
+// module-evaluation time via a top-level await, so a static import here
+// would open the pool - and start serving the un-migrated (or, for a fresh
+// Postgres target, empty) database - before maybeAutoMigrate() above ever
+// got a chance to run.
+const { ensureConfig } = await import('./configService.js');
+const { seedSeasonalEvents } = await import('./db.js');
+const { runScheduler } = await import('./eventService.js');
+const { buildApp } = await import('./app.js');
 
 await ensureConfig();
 await seedSeasonalEvents();
