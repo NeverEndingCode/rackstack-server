@@ -114,7 +114,7 @@ process.env.SUPER_ADMIN_IDS = OWNER_ID;
 process.env.DB_PATH = DB_PATH;
 process.env.NODE_ENV = 'test';
 
-const { upsertUser, putSave, getSave, setLeaderboardOptOut, setToursCompleted, db } = await import(path.join(REPO_ROOT, 'server', 'db.js'));
+const { upsertUser, putSave, getSave, setLeaderboardOptOut, setToursCompleted, driver } = await import(path.join(REPO_ROOT, 'server', 'db.js'));
 const { TOUR_IDS } = await import(path.join(REPO_ROOT, 'shared', 'tours.js'));
 const { issueToken, COOKIE_NAME } = await import(path.join(REPO_ROOT, 'server', 'auth.js'));
 const { initialState } = await import(path.join(REPO_ROOT, 'shared', 'state.js'));
@@ -122,7 +122,13 @@ const { DEFAULT_CONFIG } = await import(path.join(REPO_ROOT, 'shared', 'configSc
 const { contractsForState, contractDef } = await import(path.join(REPO_ROOT, 'shared', 'contracts.js'));
 const { utcDateKey } = await import(path.join(REPO_ROOT, 'shared', 'daily.js'));
 
-db.pragma('busy_timeout = 5000');
+// Multiple processes hold this same SQLite file open (this harness for
+// seeding, plus the spawned server for real traffic); busy_timeout is a
+// SQLite-only pragma (Postgres uses MVCC instead), so only apply it against
+// the SQLite driver.
+if (driver.__backend === 'sqlite') {
+  driver.__raw.pragma('busy_timeout = 5000');
+}
 
 let serverProc = null;
 let browser = null;

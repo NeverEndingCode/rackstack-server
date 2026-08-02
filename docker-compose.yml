@@ -1,11 +1,32 @@
 services:
+  postgres:
+    image: postgres:16
+    container_name: rackstack-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: rackstack
+      POSTGRES_PASSWORD: rackstack
+      POSTGRES_DB: rackstack
+    volumes:
+      - ./pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rackstack"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   rackstack:
     build: .
     container_name: rackstack
     restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
     ports:
       - "3000:3000"
     volumes:
       - ./data:/app/data
+    environment:
+      DATABASE_URL: postgresql://rackstack:rackstack@postgres:5432/rackstack
     env_file:
       - .env

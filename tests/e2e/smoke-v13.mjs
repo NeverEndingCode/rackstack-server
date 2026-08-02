@@ -119,7 +119,7 @@ process.env.NODE_ENV = 'test';
 // Dynamic imports (not hoisted above the env assignments above) - server/db.js
 // reads DB_PATH and server/auth.js reads JWT_SECRET/SUPER_ADMIN_IDS at
 // module-evaluation time.
-const { upsertUser, putSave, getSave, setToursCompleted, db } = await import(path.join(REPO_ROOT, 'server', 'db.js'));
+const { upsertUser, putSave, getSave, setToursCompleted, driver } = await import(path.join(REPO_ROOT, 'server', 'db.js'));
 const { TOUR_IDS } = await import(path.join(REPO_ROOT, 'shared', 'tours.js'));
 const { issueToken, COOKIE_NAME } = await import(path.join(REPO_ROOT, 'server', 'auth.js'));
 const { initialState } = await import(path.join(REPO_ROOT, 'shared', 'state.js'));
@@ -130,8 +130,11 @@ const { jobDurationSec } = await import(path.join(REPO_ROOT, 'shared', 'coldStor
 // seeding, plus the spawned server for real traffic) - WAL mode allows
 // concurrent readers/writers, but give writers a generous busy timeout so a
 // harmless lock collision during a concurrent write retries instead of
-// throwing outright.
-db.pragma('busy_timeout = 5000');
+// throwing outright. Postgres has no such pragma (MVCC handles concurrent
+// writers instead), so only apply this against the SQLite driver.
+if (driver.__backend === 'sqlite') {
+  driver.__raw.pragma('busy_timeout = 5000');
+}
 
 let serverProc = null;
 let browser = null;

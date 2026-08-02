@@ -1,8 +1,14 @@
 # RACKSTACK server
 
-Self-hosted version of the game: Discord/GitHub OAuth login, SQLite for
-persistence, and a server-authoritative economy (hard-capped at 72 hours of
-offline progress regardless of upgrades).
+Self-hosted version of the game: Discord/GitHub OAuth login, Postgres or
+SQLite for persistence, and a server-authoritative economy (hard-capped at 72
+hours of offline progress regardless of upgrades).
+
+As of v1.7, Postgres is a supported (and recommended) persistence backend
+alongside SQLite, selected by whether `DATABASE_URL` is set. Existing SQLite
+installs migrate across automatically and losslessly on first boot with
+`DATABASE_URL` set - see
+[Migrating from SQLite to Postgres](#migrating-from-sqlite-to-postgres) below.
 
 As of v1.3, a Cold Storage tab unlocks at the Server Room tier: a 16-block
 passive reward track that refills on a timer, one offline-only archival job
@@ -32,10 +38,12 @@ as you play. A daily login streak sits in the header. See
   separate client copy to keep in sync.
 - `server/` - Express API. Passport handles the Discord/GitHub OAuth
   handshake; on success we issue our own JWT in an httpOnly cookie (no
-  server-side session store needed). SQLite (`better-sqlite3`) persists
-  users, saves, roles, a versioned tunables config, and minigame sessions.
-  The client no longer computes or stores the economy itself - it dispatches
-  actions to `POST /api/actions` and renders whatever `GET /api/state`
+  server-side session store needed). `server/db.js` fronts one async
+  repository interface backed by either Postgres (`pg`, recommended) or
+  SQLite (`better-sqlite3`) - selected by whether `DATABASE_URL` is set -
+  persisting users, saves, roles, a versioned tunables config, and minigame
+  sessions. The client no longer computes or stores the economy itself - it
+  dispatches actions to `POST /api/actions` and renders whatever `GET /api/state`
   returns, with offline gain computed lazily on load rather than by an
   always-on background worker. As of v1.2 the old client-computed save flow
   (`GET`/`POST`/`DELETE /api/save`) is gone - if you had anything external
@@ -93,21 +101,30 @@ Users.
 docker compose up -d --build
 ```
 
-This builds the client, starts the server on port 3000 (mapped in
-`docker-compose.yml` - change the host side if you want a different port),
-and persists the SQLite file to `./data/rackstack.db` via a bind-mounted
-volume, so it survives container rebuilds.
+This builds the client, starts a `postgres:16` container plus the server on
+port 3000 (mapped in `docker-compose.yml` - change the host side if you want
+a different port), and persists Postgres's data under `./pgdata`. The
+`./data:/app/data` mapping is also present for the server - on a fresh
+install nothing uses it, but keep it mapped anyway: if you later point an
+existing SQLite-backed install at this compose file, it is the migration
+source and your rollback path (see
+[Migrating from SQLite to Postgres](#migrating-from-sqlite-to-postgres)).
 
 Point your reverse proxy / Cloudflare tunnel at `http://<host>:3000`.
 
 ## Upgrading
 
-Back up `rackstack.db` before upgrading across a major/minor version (e.g.
-v1.1.x -> v1.2.x): stop the container, copy the file
-(`./data/rackstack.db` for Docker Compose, or
-`<data path>/rackstack.db` for Unraid), then start the upgraded container.
-The database uses WAL mode, so copying it while the server is still running
-can grab an inconsistent snapshot - stopping first avoids that.
+If you're running on Postgres, back it up with your usual `pg_dump` practice
+before upgrading; nothing below is Postgres-specific.
+
+If you're still on SQLite, back up `rackstack.db` before upgrading across a
+major/minor version (e.g. v1.1.x -> v1.2.x): stop the container, copy **all
+three** `rackstack.db*` files - `rackstack.db`, `rackstack.db-wal`,
+`rackstack.db-shm` (recent progress lives in the `-wal` file, so copying only
+`rackstack.db` can lose it) - from `./data/` for Docker Compose or
+`<data path>/` for Unraid, then start the upgraded container. The database
+uses WAL mode, so copying it while the server is still running can grab an
+inconsistent snapshot - stopping first avoids that.
 
 That said, upgrading in place should just work without a backup too: v1.1
 saves are migrated to the current shape automatically and losslessly the
@@ -136,16 +153,44 @@ as a reference. Two things matter for updates to be safe:
 
 - **Data path** must be a stable host path (e.g.
   `/mnt/user/appdata/rackstack-server/data`) mapped to the container's
-  `/app/data` - this holds the entire SQLite database (saves + users) and is
-  untouched by "Apply Update," since that only swaps the image and reuses the
-  existing volume/variable config.
+  `/app/data`, and left in place even after moving to Postgres - it is the
+  migration source on first cutover and your rollback path afterward. On
+  SQLite it also holds the entire database (saves + users). It is untouched
+  by "Apply Update," since that only swaps the image and reuses the existing
+  volume/variable config.
 - **`JWT_SECRET`** must be set once as a container Variable and never changed
   afterward - it signs the 90-day login cookie, so rotating it logs every
   user out (no data loss, just re-login required). The other OAuth variables
   mirror `.env.example`.
+- **`DATABASE_URL`** (optional, recommended) points at a Postgres database
+  instead of the local SQLite file - see
+  [Migrating from SQLite to Postgres](#migrating-from-sqlite-to-postgres)
+  below.
 
 Once installed this way, updates are just Unraid's Docker tab -> "Check for
 Updates" / "Apply Update" whenever a new `:latest` digest is published.
+
+### Migrating from SQLite to Postgres
+
+Full runbook (backup, cutover, verification, rollback):
+[`docs/postgres-migration-runbook.md`](./docs/postgres-migration-runbook.md).
+The two things operators most often get wrong:
+
+- **Back up all three `rackstack.db*` files**, not just `rackstack.db`.
+  Recent progress lives in the `-wal` file - copying only the `.db` is the
+  most likely way to lose data during this migration.
+- **Leave the `/app/data` volume mapping in place** after setting
+  `DATABASE_URL`. It is the migration source and your rollback path;
+  removing it is the one irreversible mistake in the whole process.
+
+Short version: add a `postgres:16` container with its own appdata path and a
+`rackstack` database, stop rackstack, back up as above, set `DATABASE_URL`
+(must be `postgresql://`, and the host must not be `localhost` from inside a
+container), and start rackstack. Watch the log for `[migrate]` - you should
+see a verified row count for each table, then `committed`. If verification
+fails the container refuses to start on purpose, so it never serves an empty
+game over your save data; your SQLite data is untouched either way. To roll
+back, blank out `DATABASE_URL` and restart.
 
 **Cutting a release:** bump `version` in `package.json` and
 `client/package.json`, commit, then:
@@ -286,28 +331,20 @@ introduces a new currency.
 
 ## Notes / things worth knowing
 
-- **SQLite, not Postgres**: chosen for zero-config, single-file persistence
-  that's easy to back up - see [Upgrading](#upgrading) for the safe way (stop
-  the container, then copy the file; it runs in WAL mode, so a bare `cp`
-  against a live server can grab an inconsistent snapshot). If you need a
-  backup without stopping the server, use SQLite's own online-safe backup
-  command instead: `sqlite3 data/rackstack.db ".backup data/rackstack.db.bak"`.
-  Fine for a personal or small-group deployment. If you outgrow it (many
-  concurrent users, wanting replication, etc.), `server/db.js` is still the
-  only module that touches the database, but the porting surface is its full
-  export list now, not a handful of functions: saves (`getSave`/`putSave`,
-  consumed by `stateService.js` and, for `putSave`, also `routes/api.js`'s
-  minigame handler; `deleteSave` is exported but currently unused), users
-  (`upsertUser` in `auth.js`; `getUserById`, `getAllUsersWithSaves`,
-  `setUsername` in `routes/api.js`), roles (`getRoles` in both `auth.js` and
-  `routes/api.js`; `setRoles` in `routes/api.js`), the tunables config
-  (`getConfigRow`/`putConfigRow`/`getConfigHistory`, all consumed by
-  `configService.js`), minigame sessions (`createMinigameSession`/
-  `getMinigameSession`/`getOpenMinigameSession`/`finishMinigameSession`, all
-  consumed by `routes/api.js`), and `dedupeUsernames`, which db.js calls on
-  itself at boot rather than exposing to a caller. Swapping in a `pg`
-  version behind the same signatures still wouldn't require touching those
-  callers, but it's a bigger module to port than it used to be.
+- **Postgres or SQLite**: `server/db.js` fronts one async repository
+  interface (`server/db/index.js`) implemented by two drivers -
+  `server/db/driver.pg.js` and `server/db/driver.sqlite.js` - selected by
+  whether `DATABASE_URL` is set. Postgres is recommended; SQLite remains
+  fully supported for zero-config, single-file personal deployments. On
+  SQLite, back up the way [Upgrading](#upgrading) describes (stop the
+  container, then copy all three `rackstack.db*` files; it runs in WAL mode,
+  so a bare `cp` of just `rackstack.db` against a live server grabs an
+  inconsistent, incomplete snapshot). If you need a backup without stopping
+  the server, use SQLite's own online-safe backup command instead:
+  `sqlite3 data/rackstack.db ".backup data/rackstack.db.bak"`. On Postgres,
+  use your usual `pg_dump`/`pg_basebackup` practice. Every caller goes
+  through the same interface regardless of backend, so nothing outside
+  `server/db/` needs to know or care which one is active.
 - **JWT cookie, not sessions**: avoids needing a session store. The cookie
   is httpOnly and `secure` in production, valid for 90 days.
 - **Multi-user by default**: every Discord/GitHub login gets its own

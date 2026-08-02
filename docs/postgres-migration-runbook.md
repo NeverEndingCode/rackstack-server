@@ -1,7 +1,8 @@
 # Postgres Migration — Backup, Cutover and Rollback Runbook
 
-**Status: NOT READY TO RUN.** Parts B and C describe machinery that is still
-being built (see §0). **Part A is valid today and you should do it now.**
+**Status: READY TO RUN.** All of Tasks 1–8 have landed (see §0) - Parts A, B
+and C below are all valid to use now. `npm run test:all` passes on both
+backends and all six `tests/e2e/smoke-v1*.mjs` suites pass against Postgres.
 
 Applies to the Unraid install at `/mnt/user/appdata/rackstack-server/data`.
 
@@ -15,15 +16,16 @@ Applies to the Unraid install at `/mnt/user/appdata/rackstack-server/data`.
 | Facade + SQLite driver | 2 | ✅ merged to branch |
 | Postgres test harness | 3 | ✅ merged to branch |
 | Postgres schema + driver | 4 | ✅ merged to branch |
-| `identities` auth split | 5 | ⚠️ **built but has 4 unfixed defects** |
-| **The migrator itself** (`npm run migrate:pg`) | 6 | ❌ **not written** |
-| Auto-migrate on boot | 7 | ❌ not written |
-| Compose/Unraid/docs | 8 | ❌ not written |
+| `identities` auth split | 5 | ✅ merged to branch |
+| **The migrator itself** (`npm run migrate:pg`) | 6 | ✅ merged to branch |
+| Auto-migrate on boot | 7 | ✅ merged to branch |
+| Compose/Unraid/docs | 8 | ✅ merged to branch |
 
-**There is no migration tool yet.** Task 5's open defects include one that
-causes a permanent account lockout on partial write, and one where SQLite's
-foreign-key check runs after `COMMIT` so it cannot roll back the rebuild it is
-supposed to guard. Do not point this branch at production data.
+**The migration tool is written, tested and wired into boot.** Task 5's
+earlier open defects (permanent account lockout on partial write; SQLite's
+foreign-key check running after `COMMIT` so it couldn't roll back the rebuild
+it was supposed to guard) were fixed in subsequent rounds of review. Parts B
+and C below are safe to use.
 
 ---
 
@@ -97,7 +99,7 @@ are enough for the identity-mapping half, though not for the byte-for-byte half.
 
 ---
 
-## Part B — Cutover (once Tasks 6–8 land)
+## Part B — Cutover
 
 ### B1. Stand up Postgres
 

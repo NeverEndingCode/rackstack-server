@@ -33,12 +33,18 @@ COPY --from=client-build /app/client/dist ./client/dist
 
 ENV NODE_ENV=production
 ENV PORT=3000
+# Still the default so a container without DATABASE_URL behaves exactly as
+# before, and so the migrator knows where to find the source database.
 ENV DB_PATH=/app/data/rackstack.db
 
 LABEL org.opencontainers.image.source="https://github.com/NeverEndingCode/rackstack-server"
 LABEL org.opencontainers.image.description="RackStack self-hosted server"
 LABEL org.opencontainers.image.licenses="MIT"
-LABEL org.opencontainers.image.version="1.6.0"
+# The GHCR publish workflow (.github/workflows/docker-publish.yml) triggers
+# only on a pushed vX.Y.Z tag, and docker/metadata-action derives the
+# published image's version label from that tag - so this literal only
+# affects locally-built images, not what GHCR publishes.
+LABEL org.opencontainers.image.version="1.7.0"
 
 VOLUME ["/app/data"]
 EXPOSE 3000

@@ -1,5 +1,40 @@
 # Changelog
 
+## v1.7.0
+
+Postgres support, with automatic migration from SQLite.
+
+- **Postgres backend**: `DATABASE_URL` selects Postgres as the persistence
+  backend instead of the local SQLite file. `server/db.js` fronts one async
+  repository interface (`server/db/index.js`) implemented by two drivers -
+  `server/db/driver.pg.js` and `server/db/driver.sqlite.js` - so every
+  caller (routes, services, minigames) is backend-agnostic. SQLite remains
+  fully supported and is still the default when `DATABASE_URL` is unset.
+- **Automatic migration on boot**: with `DATABASE_URL` set, if a SQLite
+  database still exists and the target Postgres database is empty, the
+  server migrates every table across in a single transaction, verifies row
+  counts match, and only then starts serving. Your SQLite file is never
+  modified or deleted, so rolling back is just unsetting `DATABASE_URL` and
+  restarting. If verification fails, the container refuses to start on
+  purpose rather than serve an empty game over live save data - the log
+  names the table that failed. The same logic is available standalone via
+  `npm run migrate:pg`.
+- **`identities` table**: authentication identity records (provider +
+  provider id) are now split from `users` into their own table, in
+  preparation for the SuperTokens migration planned for v1.8.
+- **Two-backend test matrix**: `npm run test:all` runs the full suite against
+  both SQLite and Postgres; CI does the same. A Postgres test harness
+  (`tests/setup/pg-global.js`, `tests/helpers/backend.js`) provisions an
+  isolated database per test file via Testcontainers (or a Docker/Podman
+  service container in CI).
+- **Operator note**: whether you're on SQLite or have moved to Postgres,
+  keep the `/app/data` volume mapping in place. It is the migration source
+  on first cutover and your rollback path afterward - removing it is the one
+  irreversible mistake in the whole process. See the
+  [migration runbook](docs/postgres-migration-runbook.md) or the README's
+  [Migrating from SQLite to Postgres](README.md#migrating-from-sqlite-to-postgres)
+  section for the full walkthrough.
+
 ## v1.6.0
 
 Onboarding & quality of life: a guided tour for new and existing players,

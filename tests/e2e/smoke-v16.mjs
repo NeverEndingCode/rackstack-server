@@ -49,12 +49,18 @@ process.env.JWT_SECRET = JWT_SECRET;
 process.env.DB_PATH = DB_PATH;
 process.env.NODE_ENV = 'test';
 
-const { upsertUser, putSave, db } = await import(path.join(REPO_ROOT, 'server', 'db.js'));
+const { upsertUser, putSave, driver } = await import(path.join(REPO_ROOT, 'server', 'db.js'));
 const { issueToken, COOKIE_NAME } = await import(path.join(REPO_ROOT, 'server', 'auth.js'));
 const { initialState } = await import(path.join(REPO_ROOT, 'shared', 'state.js'));
 const { TOUR_IDS, ONBOARDING_TOUR_ID } = await import(path.join(REPO_ROOT, 'shared', 'tours.js'));
 
-db.pragma('busy_timeout = 5000');
+// Multiple processes hold this same SQLite file open (this harness for
+// seeding, plus the spawned server for real traffic); busy_timeout is a
+// SQLite-only pragma (Postgres uses MVCC instead), so only apply it against
+// the SQLite driver.
+if (driver.__backend === 'sqlite') {
+  driver.__raw.pragma('busy_timeout = 5000');
+}
 
 let serverProc = null;
 let shuttingDown = false;
