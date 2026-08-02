@@ -83,6 +83,35 @@ describe.skipIf(skip)('sqlite -> postgres migration', () => {
     expect(second.reason).toMatch(/not empty/i);
   });
 
+  it('declines on a target with an empty `users` but a populated other table, and names that table', async () => {
+    // server/index.js calls seedSeasonalEvents() on every boot, which
+    // inserts fixed-id rows into live_events - so a target the app has
+    // booted against even once (a plausible cutover sequence) has an empty
+    // `users` but a non-empty `live_events`. Checking only `users` would
+    // sail straight through this and either collide (SQLSTATE 23505, for a
+    // modern source with its own live_events rows) or, worse, COMMIT
+    // successfully while leaving these pre-existing rows completely
+    // unaccounted for (for a v1.1 source with no live_events table at all,
+    // which the insert loop and verification both simply skip).
+    const { applySchema } = await import('../server/db/schema.pg.js');
+    const client = new pg.Client({ connectionString: db.url });
+    await client.connect();
+    try {
+      await applySchema(client);
+      await client.query(`
+        INSERT INTO live_events (id, name, modifiers, ladder, status, created_at)
+        VALUES ('summer-surge', 'Summer Surge', '[]', '[]', 'draft', $1)
+      `, [Date.now()]);
+    } finally {
+      await client.end();
+    }
+
+    const result = await migrateSqliteToPostgres({ sqlitePath: FIXTURE, databaseUrl: db.url });
+    expect(result.migrated).toBe(false);
+    expect(result.reason).toMatch(/not empty/i);
+    expect(result.reason).toMatch(/live_events/);
+  });
+
   it('declines when there is no sqlite file', async () => {
     const result = await migrateSqliteToPostgres({
       sqlitePath: '/nonexistent/rackstack.db', databaseUrl: db.url,
@@ -177,11 +206,107 @@ describe.skipIf(skip)('sqlite -> postgres migration', () => {
     const row = await client.query('SELECT * FROM users WHERE id = $1', ['github:wal1']);
     expect(row.rows).toHaveLength(1);
     await client.end();
-    raw.close();
 
     // Never modified beyond the checkpoint, never deleted - the operator's
     // rollback artifact must still be exactly where it was.
     expect(fs.existsSync(tmp)).toBe(true);
+
+    // Discriminating assertion: a SQLite reader merges committed WAL frames
+    // regardless of whether anyone ever checkpoints (that's what let the row
+    // above be read correctly either way) - so this test would pass
+    // identically with the checkpoint call deleted entirely unless it
+    // specifically checks that a checkpoint actually ran. TRUNCATE mode
+    // truncates -wal to zero bytes rather than deleting it, so a leftover
+    // non-zero -wal is the tell that migrateSqliteToPostgres's own
+    // checkpoint never fired. Checked BEFORE closing `raw`: closing the
+    // last connection to a WAL-mode database does its own
+    // checkpoint-and-delete of `-wal`/`-shm`, which would make this
+    // assertion vacuously true (or throw ENOENT) for a completely unrelated
+    // reason.
+    expect(fs.statSync(`${tmp}-wal`).size).toBe(0);
+    raw.close();
+  });
+
+  it('refuses when the WAL checkpoint is blocked by another connection, rather than proceeding silently', async () => {
+    // wal_checkpoint(TRUNCATE) reports a blocked checkpoint as a *returned
+    // row* (`{ busy: 1, ... }`), not a thrown exception - so this has to be
+    // simulated by actually blocking one, not just asserted from reading the
+    // implementation. A second connection holding an open read transaction
+    // (BEGIN + a SELECT, never committed until after the assertion) is
+    // exactly what "another process holds the file" looks like in practice.
+    const tmp = scratchCopy();
+    const blocker = new Database(tmp);
+    blocker.pragma('journal_mode = WAL');
+    // A TRUNCATE checkpoint is only blocked by a reader whose pinned
+    // snapshot actually includes WAL content the checkpoint would need to
+    // discard - an empty WAL has nothing for a reader to be blocking. This
+    // write (auto-committed, before the explicit BEGIN below) puts a real
+    // frame in the WAL for the read transaction to pin to.
+    blocker.exec("UPDATE users SET username = 'still-here' WHERE id = 'github:37058311'");
+    blocker.exec('BEGIN');
+    blocker.prepare('SELECT * FROM users').all();
+
+    try {
+      await expect(migrateSqliteToPostgres({ sqlitePath: tmp, databaseUrl: db.url }))
+        .rejects.toThrow(/could not checkpoint the sqlite wal/i);
+    } finally {
+      blocker.exec('COMMIT');
+      blocker.close();
+    }
+
+    // The refusal must not have left the target half-populated or the pg
+    // pool leaked - a normal run right after must still succeed cleanly.
+    // Deliberately a *fresh* scratch copy rather than reusing `tmp`:
+    // reopening the exact same file immediately after `blocker.close()`
+    // raced SQLite's own lock-release timing in practice (multi-second
+    // delays came from that, not from anything migrateSqliteToPostgres
+    // does), which is a file-handle-reuse artifact of this test, not
+    // something worth asserting on.
+    const result = await migrateSqliteToPostgres({ sqlitePath: scratchCopy(), databaseUrl: db.url });
+    expect(result.migrated).toBe(true);
+  });
+
+  it('wraps a failure opening the source file in the operator-facing checkpoint message, not a raw SqliteError', async () => {
+    // Specifically targets `new Database(sqlitePath)` throwing, as opposed
+    // to the checkpoint pragma call throwing - those are two different
+    // lines and, before this fix, only the second was inside the try. A
+    // garbage-bytes file doesn't distinguish them: better-sqlite3 opens the
+    // file handle lazily and only reads (and rejects) the header on the
+    // first real pragma/query, so even the un-fixed code happened to catch
+    // that case via the pragma call already being inside its try. A
+    // directory is different: better-sqlite3 rejects it immediately at
+    // `new Database()`, before any pragma ever runs - the genuine
+    // regression case for "open() itself throws".
+    const tmp = path.join(os.tmpdir(), `migrate-corrupt-dir-${Date.now()}.db`);
+    fs.mkdirSync(tmp);
+    try {
+      await expect(migrateSqliteToPostgres({ sqlitePath: tmp, databaseUrl: db.url }))
+        .rejects.toThrow(/could not checkpoint the sqlite wal/i);
+    } finally {
+      fs.rmdirSync(tmp);
+    }
+
+    // Same pool-leak concern as the blocked-checkpoint case: a subsequent,
+    // legitimate call against the same target must still work.
+    const result = await migrateSqliteToPostgres({ sqlitePath: FIXTURE, databaseUrl: db.url });
+    expect(result.migrated).toBe(true);
+  });
+
+  it('ends the pg pool after an early failure connecting to the target, so a later call is unaffected', async () => {
+    // Covers the applyPgSchema/emptiness-check try/catch specifically (as
+    // opposed to the sqlite-side failures above): a nonexistent target
+    // database fails on the pool's very first query. A leaked pool here
+    // wouldn't necessarily throw its own error in this test, but it would
+    // eventually starve later connections - proven the same way as the
+    // sqlite-side cases, by a legitimate call succeeding promptly right
+    // after.
+    const badUrl = new URL(db.url);
+    badUrl.pathname = '/rackstack_test_migrate_leak_probe_does_not_exist';
+    await expect(migrateSqliteToPostgres({ sqlitePath: FIXTURE, databaseUrl: badUrl.toString() }))
+      .rejects.toThrow();
+
+    const result = await migrateSqliteToPostgres({ sqlitePath: FIXTURE, databaseUrl: db.url });
+    expect(result.migrated).toBe(true);
   });
 
   // Correction 1 (owner-mandated): no test-only __corruptForTest hook in
@@ -373,6 +498,166 @@ describe.skipIf(skip)('sqlite -> postgres migration', () => {
       const session = (await client.query('SELECT * FROM minigame_sessions WHERE id = $1', ['sess-1'])).rows[0];
       expect(session.score).toBe(42);
     } finally {
+      await client.end();
+    }
+  });
+
+  it('preserves config_history insertion order through the target BIGSERIAL id, not sorted by version', async () => {
+    // Postgres's config_history.id is a BIGSERIAL assigned in insertion
+    // order; the admin rollback UI reads history back `ORDER BY id DESC`.
+    // `id` itself is excluded from verifyMigration's fingerprint on both
+    // sides (SQLite's config_history has no id column at all), so a
+    // reordering bug here would be silently unverifiable - this has to be
+    // checked directly. Inserted deliberately out of version order (5, 1,
+    // 3) so "happens to match a sort" can't be mistaken for "order
+    // survived".
+    const { applySchema } = await import('../server/db/schema.sqlite.js');
+    const raw = new Database(':memory:');
+    await applySchema(raw);
+    raw.prepare('INSERT INTO users (id, username, avatar_url, created_at) VALUES (?,?,?,?)')
+      .run('github:order1', 'orderuser', null, 1_700_000_000_000);
+    raw.prepare('INSERT INTO config_history (version, data, updated_at, updated_by) VALUES (?,?,?,?)')
+      .run(5, '{"n":"fifth"}', 1_700_000_000_100, null);
+    raw.prepare('INSERT INTO config_history (version, data, updated_at, updated_by) VALUES (?,?,?,?)')
+      .run(1, '{"n":"first"}', 1_700_000_000_200, null);
+    raw.prepare('INSERT INTO config_history (version, data, updated_at, updated_by) VALUES (?,?,?,?)')
+      .run(3, '{"n":"third"}', 1_700_000_000_300, null);
+
+    const tmp = path.join(os.tmpdir(), `migrate-history-order-${Date.now()}.db`);
+    scratchFiles.push(tmp);
+    await raw.backup(tmp);
+    raw.close();
+
+    const result = await migrateSqliteToPostgres({ sqlitePath: tmp, databaseUrl: db.url });
+    expect(result.migrated).toBe(true);
+
+    const client = new pg.Client({ connectionString: db.url });
+    await client.connect();
+    try {
+      const rows = (await client.query('SELECT version, data FROM config_history ORDER BY id ASC')).rows;
+      expect(rows.map((r) => r.version)).toEqual([5, 1, 3]);
+      expect(rows.map((r) => r.data)).toEqual(['{"n":"fifth"}', '{"n":"first"}', '{"n":"third"}']);
+    } finally {
+      await client.end();
+    }
+  });
+
+  describe('refuses rather than silently dropping unaccounted-for data', () => {
+    it('refuses when a source column has no home in the target schema and is not on the allowed-drop list', async () => {
+      // provider/provider_id on users are the one intentional, allow-listed
+      // drop (see ALLOWED_DROPPED_COLUMNS). Anything else the target schema
+      // doesn't recognize would otherwise be dropped with only a log line -
+      // and, worse, excluded from verifyMigration's fingerprint too (it only
+      // compares columns both sides share), making the loss unverifiable.
+      // For a one-shot run against irreplaceable data, refuse-and-explain is
+      // the only acceptable default.
+      const tmp = scratchCopy();
+      const raw = new Database(tmp);
+      raw.exec('ALTER TABLE users ADD COLUMN favorite_color TEXT');
+      raw.exec("UPDATE users SET favorite_color = 'teal' WHERE id = 'github:37058311'");
+      raw.close();
+
+      await expect(migrateSqliteToPostgres({ sqlitePath: tmp, databaseUrl: db.url }))
+        .rejects.toThrow(/favorite_color/);
+
+      // Refused before COMMIT (users is the first table in TABLES, so this
+      // throws before any row - for any table - is ever inserted): nothing
+      // landed at all, not a partial import of the other, unaffected tables.
+      const client = new pg.Client({ connectionString: db.url });
+      await client.connect();
+      try {
+        const { rows } = await client.query('SELECT count(*)::int AS n FROM users');
+        expect(rows[0].n).toBe(0);
+      } finally {
+        await client.end();
+      }
+    });
+
+    it('refuses when the source has a table this migrator does not know about, before ever opening a transaction', async () => {
+      // A table added to the app's schema in a future release and never
+      // added to TABLES would otherwise be invisible to this migrator -
+      // never read, never inserted, never verified - while the migration
+      // still COMMITs and reports success. Checked via sqlite_master, so it
+      // catches a table this migrator has simply never heard of, not just a
+      // column mismatch on a table it does know about.
+      const tmp = scratchCopy();
+      const raw = new Database(tmp);
+      raw.exec('CREATE TABLE achievements_unlocked (user_id TEXT, achievement_id TEXT)');
+      raw.close();
+
+      await expect(migrateSqliteToPostgres({ sqlitePath: tmp, databaseUrl: db.url }))
+        .rejects.toThrow(/achievements_unlocked/);
+
+      // This check runs before BEGIN - confirm no transaction was ever
+      // opened by checking the target is still completely untouched, and
+      // that a normal run against the (unmodified) fixture right after
+      // still succeeds - proving neither the sqlite handle nor the pg pool
+      // was left in a bad state by the refusal.
+      const client = new pg.Client({ connectionString: db.url });
+      await client.connect();
+      try {
+        const { rows } = await client.query('SELECT count(*)::int AS n FROM users');
+        expect(rows[0].n).toBe(0);
+      } finally {
+        await client.end();
+      }
+
+      const result = await migrateSqliteToPostgres({ sqlitePath: FIXTURE, databaseUrl: db.url });
+      expect(result.migrated).toBe(true);
+    });
+  });
+
+  it('logs every username rename at [migrate] level, not just applies it silently', async () => {
+    const tmp = scratchCopy();
+    const raw = new Database(tmp);
+    raw.exec("UPDATE users SET username = 'Neo' WHERE id = 'github:37058311'");
+    raw.prepare(`
+      INSERT INTO users (id, provider, provider_id, username, avatar_url, created_at)
+      VALUES ('github:dup3', 'github', 'dup3', 'neo', NULL, 1784859388999)
+    `).run();
+    raw.close();
+
+    const lines = [];
+    const logger = { log: (...args) => lines.push(args.join(' ')), error: (...args) => lines.push(args.join(' ')) };
+
+    const result = await migrateSqliteToPostgres({ sqlitePath: tmp, databaseUrl: db.url, logger });
+    expect(result.migrated).toBe(true);
+    expect(lines.some((l) => /renamed duplicate username for github:dup3 -> 'neo-2'/.test(l))).toBe(true);
+  });
+
+  it('falls back to logger.log when a caller-supplied logger has no .error, instead of masking the real failure with a TypeError', async () => {
+    // Task 7 is expected to pass a boot-time logger in-process rather than
+    // run this as a CLI - a minimal { log } logger with no .error is
+    // plausible there. Without the fallback, the ROLLBACK catch block's own
+    // `logger.error(...)` call would throw a TypeError that replaces the
+    // real verification failure as the rejection the caller sees.
+    const lines = [];
+    const logger = { log: (...args) => lines.push(args.join(' ')) }; // no .error
+
+    const client = new pg.Client({ connectionString: db.url });
+    await client.connect();
+    const { applySchema } = await import('../server/db/schema.pg.js');
+    await applySchema(client);
+    await client.query(`
+      CREATE OR REPLACE FUNCTION migrate_test_corrupt_saves_2() RETURNS trigger AS $$
+      BEGIN
+        NEW.data := '{"wafers":0}';
+        RETURN NEW;
+      END;
+      $$ LANGUAGE plpgsql;
+      CREATE TRIGGER migrate_test_corrupt_saves_2_trigger BEFORE INSERT ON saves
+      FOR EACH ROW EXECUTE FUNCTION migrate_test_corrupt_saves_2();
+    `);
+
+    try {
+      await expect(migrateSqliteToPostgres({ sqlitePath: FIXTURE, databaseUrl: db.url, logger }))
+        .rejects.toThrow(/verification failed/i); // not a TypeError about .error
+      expect(lines.some((l) => /ROLLED BACK/.test(l))).toBe(true);
+    } finally {
+      await client.query(`
+        DROP TRIGGER IF EXISTS migrate_test_corrupt_saves_2_trigger ON saves;
+        DROP FUNCTION IF EXISTS migrate_test_corrupt_saves_2();
+      `);
       await client.end();
     }
   });

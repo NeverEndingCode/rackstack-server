@@ -1,6 +1,6 @@
 // One-shot SQLite -> Postgres data migrator. Run by hand (`npm run
 // migrate:pg`) against a stopped-or-quiescent instance's database file; see
-// docs/backup-cutover-rollback.md for the runbook this backs.
+// docs/postgres-migration-runbook.md for the runbook this backs.
 //
 // Contract:
 // - Refuses (returns { migrated: false, reason }) rather than acting when
@@ -10,9 +10,10 @@
 //   COMMIT. Any mismatch rolls the whole thing back and rejects - nothing is
 //   ever left half-migrated.
 // - The SQLite file is never modified beyond the WAL checkpoint (the one
-//   write this module makes, needed so recent commits sitting only in
-//   rackstack.db-wal aren't silently skipped) and never deleted. It is the
-//   operator's rollback artifact.
+//   write this module makes - defense-in-depth and an early, actionable
+//   failure if something else still has the file open, not a correctness
+//   requirement; see the comment at the checkpoint call site) and never
+//   deleted. It is the operator's rollback artifact.
 // - Idempotent: re-running against an already-migrated (non-empty) target is
 //   a clean no-op, not a partial re-import.
 import pg from 'pg';
@@ -41,6 +42,42 @@ export const TABLES = [
 
 function tableExists(sqlite, name) {
   return !!sqlite.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name = ?").get(name);
+}
+
+// Columns a source table is allowed to carry that the target intentionally
+// has no home for. Anything else the target doesn't recognize is refused,
+// not silently dropped - see assertKnownTables below for the table-level
+// version of the same policy.
+const ALLOWED_DROPPED_COLUMNS = {
+  // Pre-split (v1.1-era) `users` carries provider/provider_id; they become
+  // `identities` rows (see synthesizedIdentityRows), not columns on `users`.
+  users: ['provider', 'provider_id'],
+};
+
+/**
+ * Refuses to proceed if the source has a table this migrator doesn't know
+ * about. Without this, a table added to the schema in a future release and
+ * never added to TABLES would be silently skipped - never read, never
+ * inserted, never verified - and the migration would still COMMIT and
+ * report success, dropping that table's data wholesale. For a one-shot run
+ * against irreplaceable data, "refuse and explain" is the only acceptable
+ * default; the operator can extend TABLES (or confirm the table is safe to
+ * skip) and retry. `schema_migrations` is applySchema's own bookkeeping
+ * table, not app data, and sqlite_* names are SQLite's own internal tables
+ * (e.g. sqlite_sequence) - neither belongs in TABLES.
+ */
+function assertKnownTables(sqlite, tables) {
+  const known = new Set([...tables.map((t) => t.name), 'schema_migrations']);
+  const actual = sqlite.prepare(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'",
+  ).all().map((r) => r.name);
+  const unknown = actual.filter((n) => !known.has(n));
+  if (unknown.length > 0) {
+    throw new Error(
+      `source has table(s) this migrator doesn't know about: ${unknown.join(', ')}. `
+      + 'Add them to TABLES in server/db/migrate.js (or confirm they are safe to skip) before retrying.',
+    );
+  }
 }
 
 function sqliteUserHasProviderColumns(sqlite) {
@@ -100,17 +137,28 @@ function sourceIdentityRows(sqlite) {
  */
 async function dedupedUsers(sqlite) {
   if (!tableExists(sqlite, 'users')) return { rows: [], renames: [] };
-  const rows = sqlite.prepare('SELECT * FROM users').all();
+  const rows = sqlite.prepare('SELECT * FROM users ORDER BY rowid').all();
   if (rows.length === 0) return { rows, renames: [] };
 
-  const named = rows.filter((r) => r.username != null)
-    .slice()
-    .sort((a, b) => a.created_at - b.created_at || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  // dedupeUsernameRows requires earliest-created-first input (see its own
+  // contract in shared.js) - reuse sortByKey (defined below, hoisted) for
+  // this rather than a second, separately-written comparator that has to be
+  // kept in sync with it by hand.
+  const named = sortByKey(rows.filter((r) => r.username != null), ['created_at', 'id']);
   const renames = await dedupeUsernameRows(named);
   if (renames.length === 0) return { rows, renames };
 
   const byId = new Map(renames.map((r) => [r.id, r.username]));
   return { rows: rows.map((r) => (byId.has(r.id) ? { ...r, username: byId.get(r.id) } : r)), renames };
+}
+
+// `logger` defaults to `console` but is a caller-supplied parameter - Task
+// 7 is expected to pass a boot-time logger in-process rather than run this
+// as a CLI, and a minimal `{ log }`-shaped logger is plausible there.
+// Falling back to `.log` means a missing `.error` surfaces as a normal log
+// line instead of a TypeError that masks the actual error being reported.
+function logError(logger, ...args) {
+  (logger.error ?? logger.log).call(logger, ...args);
 }
 
 function sortByKey(rows, key) {
@@ -227,29 +275,88 @@ export async function migrateSqliteToPostgres({ sqlitePath, databaseUrl, logger 
   // about it here than not crash; the in-flight query/transaction still
   // surfaces its own rejection through the normal catch/rollback path below.
   pool.on('error', (err) => {
-    logger.error('[migrate] unexpected error on idle Postgres client', err);
+    logError(logger, '[migrate] unexpected error on idle Postgres client', err);
   });
-  await applyPgSchema(pool);
 
-  const { rows: [{ n }] } = await pool.query('SELECT count(*)::int AS n FROM users');
-  if (n > 0) {
+  // applyPgSchema and the emptiness check below are the pool's first real
+  // queries - either can throw (a bad connection string, the target being
+  // unreachable) before any transaction ever starts. Wrapped so a failure
+  // here doesn't leak the pool's connections, same as every other early-exit
+  // path in this function.
+  try {
+    await applyPgSchema(pool);
+
+    // Checking only `users` misses a real cutover sequence: server/index.js
+    // calls seedSeasonalEvents() on every boot, so a target the app has
+    // booted against even once - plausible during cutover, and routine once
+    // boot-time auto-migration exists - has an empty `users` but a populated
+    // `live_events`. Against a modern source that would surface as a raw
+    // SQLSTATE 23505 mid-transaction with no hint about which table to
+    // truncate; against a v1.1 source with no `live_events` table at all,
+    // the table is silently skipped by both the insert loop and
+    // verification, so the migration would COMMIT and report success while
+    // leaving rows in the target it never accounted for. Check every table
+    // this migrator knows about, not just `users`, and name the offending
+    // one.
+    for (const { name } of TABLES) {
+      // eslint-disable-next-line no-await-in-loop
+      const { rows: [{ n }] } = await pool.query(`SELECT count(*)::int AS n FROM ${name}`);
+      if (n > 0) {
+        await pool.end();
+        return {
+          migrated: false,
+          reason: `target database is not empty (${name} has ${n} row(s)); refusing to migrate`,
+        };
+      }
+    }
+  } catch (e) {
     await pool.end();
-    return { migrated: false, reason: 'target database is not empty; refusing to migrate' };
+    throw e;
   }
 
-  // Recent commits live in the -wal file. Checkpointing folds them into the
-  // main database so we cannot silently migrate stale data. This is the
-  // only write the migrator ever makes to the SQLite side. If the -wal
-  // exists but can't be folded in (permissions, another process holding a
-  // lock, a corrupt WAL), refuse outright rather than proceeding on a main
-  // file that might be missing the operator's most recent commits.
-  const sqlite = new Database(sqlitePath);
+  // Checkpoint the WAL before reading. This is defense-in-depth, not a
+  // correctness requirement: a SQLite reader always transparently merges
+  // committed WAL frames with the main file, so a second connection (this
+  // one) sees every committed row regardless of whether a checkpoint ever
+  // runs - there is no "stale read" failure mode here to guard against. The
+  // WAL trap that actually loses data is copying the *files* for a backup
+  // while a live process still holds `-wal` open (see
+  // docs/postgres-migration-runbook.md's "stop the container first" step) -
+  // a raw file copy has no way to merge WAL frames the way a live
+  // connection does. This function only ever reads through a live
+  // connection, so that trap doesn't apply to it. Checkpointing here is
+  // still worth doing: it collapses the WAL into the main file so the
+  // artifact left on disk afterward is self-contained, and - the part that
+  // *is* a real correctness guard - `wal_checkpoint(TRUNCATE)` reports a
+  // blocked checkpoint (another connection still mid-transaction) as
+  // `busy: 1` in its result row, not as a thrown exception, so that result
+  // has to be checked explicitly or a concurrent-access problem passes
+  // silently. `new Database()` itself is inside this try too: an unreadable
+  // file, an unwritable directory, or a corrupt header throws there, and
+  // without this wrapping the operator would see a raw `SqliteError`
+  // instead of an actionable message, and the pg pool above would leak.
+  let sqlite;
   try {
-    sqlite.pragma('wal_checkpoint(TRUNCATE)');
+    sqlite = new Database(sqlitePath);
+    const [{ busy }] = sqlite.pragma('wal_checkpoint(TRUNCATE)');
+    if (busy) {
+      throw new Error('checkpoint was blocked - another connection is still reading or writing this database file');
+    }
+  } catch (e) {
+    if (sqlite) sqlite.close();
+    await pool.end();
+    throw new Error(`could not checkpoint the SQLite WAL (${e.message}). Stop the container and retry.`);
+  }
+
+  // Refuse before ever opening a transaction if the source has a table
+  // TABLES doesn't know about - see assertKnownTables' own doc comment for
+  // why "silently skip it" is the wrong default here.
+  try {
+    assertKnownTables(sqlite, TABLES);
   } catch (e) {
     sqlite.close();
     await pool.end();
-    throw new Error(`could not checkpoint the SQLite WAL (${e.message}). Stop the container and retry.`);
+    throw e;
   }
 
   const client = await pool.connect();
@@ -272,7 +379,16 @@ export async function migrateSqliteToPostgres({ sqlitePath, databaseUrl, logger 
         continue;
       }
 
-      let rows = sqlite.prepare(`SELECT * FROM ${name}`).all();
+      // ORDER BY rowid: every table here is an ordinary SQLite rowid table
+      // (none is WITHOUT ROWID), so this is a cheap way to pin insertion
+      // order to source insertion order rather than leaning on unspecified
+      // `SELECT *` ordering. It matters concretely for config_history: its
+      // Postgres id is a BIGSERIAL assigned in insertion order, and the
+      // admin rollback UI reads it back `ORDER BY id DESC` - a shuffled
+      // insertion order would be silently wrong (id is excluded from
+      // verifyMigration's fingerprint on both sides, so nothing else here
+      // would catch it).
+      let rows = sqlite.prepare(`SELECT * FROM ${name} ORDER BY rowid`).all();
       counts[name] = rows.length;
       if (rows.length === 0) { logger.log(`[migrate] ${name}: 0 rows`); continue; }
 
@@ -309,12 +425,26 @@ export async function migrateSqliteToPostgres({ sqlitePath, databaseUrl, logger 
       // Only insert columns the target table actually has. A legacy `users`
       // row's provider/provider_id have no home in the post-split schema
       // (they became `identities` rows, handled separately) - inserting
-      // them verbatim would fail with "column does not exist".
+      // them verbatim would fail with "column does not exist". But an
+      // unexpected dropped column - anything not on ALLOWED_DROPPED_COLUMNS
+      // - is refused, not silently skipped: a column the target doesn't
+      // recognize is excluded from the fingerprint too (verifyMigration
+      // only compares columns both sides share), so a silent drop here
+      // would also be invisible to verification. Refuse-and-explain is the
+      // only acceptable default for data this can't be re-run to recover.
       // eslint-disable-next-line no-await-in-loop
       const targetCols = await targetColumns(client, name);
       const sourceCols = Object.keys(rows[0]);
       const columns = sourceCols.filter((c) => targetCols.has(c));
       const dropped = sourceCols.filter((c) => !targetCols.has(c));
+      const allowedDrops = new Set(ALLOWED_DROPPED_COLUMNS[name] ?? []);
+      const unexpectedDrops = dropped.filter((c) => !allowedDrops.has(c));
+      if (unexpectedDrops.length > 0) {
+        throw new Error(
+          `refusing to migrate ${name}: source column(s) not present in the target schema and not on `
+          + `the allowed-drop list: ${unexpectedDrops.join(', ')}`,
+        );
+      }
       if (dropped.length > 0) {
         logger.log(`[migrate] ${name}: dropping column(s) not present in target schema: ${dropped.join(', ')}`);
       }
@@ -354,8 +484,17 @@ export async function migrateSqliteToPostgres({ sqlitePath, databaseUrl, logger 
     logger.log('[migrate] committed');
     return { migrated: true, counts };
   } catch (e) {
-    await client.query('ROLLBACK');
-    logger.error(`[migrate] ROLLED BACK: ${e.message}`);
+    // If ROLLBACK itself fails (e.g. the connection already dropped), that
+    // failure must not replace `e` - the verification failure (or whatever
+    // actually caused the rollback) is the one message the operator most
+    // needs, and losing it behind a secondary connection error would send
+    // them chasing the wrong problem.
+    try {
+      await client.query('ROLLBACK');
+    } catch (rollbackError) {
+      logError(logger, `[migrate] ROLLBACK itself failed: ${rollbackError.message}`);
+    }
+    logError(logger, `[migrate] ROLLED BACK: ${e.message}`);
     throw e;
   } finally {
     client.release();
