@@ -1,20 +1,11 @@
 import pg from 'pg';
 import { randomUUID } from 'node:crypto';
+import './pgTypes.js'; // side effect: registers the BIGINT->Number type parser
 import { applySchema } from './schema.pg.js';
 import { SEASONAL_EVENTS } from '../data/seasonalEvents.js';
 import {
   findAvailableUsername, parseEventRow, normalizeEventRow, normalizeParticipationRow, dedupeUsernameRows,
 } from './shared.js';
-
-// pg returns int8/BIGINT as a STRING by default, to avoid precision loss
-// above 2^53. Every BIGINT in this schema is an epoch-millisecond timestamp
-// (created_at, last_save, starts_at, ends_at, ...) - all far below 2^53, and
-// every consumer does arithmetic or comparison on them. Left as strings,
-// `now > state.server.anomalyExpiresAt` and every offline-gap calculation
-// silently misbehave. Parse them back to numbers. Registered at module
-// scope so it runs before any query, regardless of which pool imports this
-// file first.
-pg.types.setTypeParser(pg.types.builtins.INT8, (v) => (v === null ? null : Number(v)));
 
 export async function createPgDriver({ url }) {
   const pool = new pg.Pool({ connectionString: url });
