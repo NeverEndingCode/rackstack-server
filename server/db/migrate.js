@@ -541,6 +541,31 @@ export async function maybeAutoMigrate({ env = process.env, logger = console } =
   return migrateSqliteToPostgres({ sqlitePath, databaseUrl: env.DATABASE_URL, logger });
 }
 
+/**
+ * Turns a boot-time migration failure into a diagnostic string that can
+ * never come out blank. server/index.js logs exactly this after "[migrate]
+ * FATAL - refusing to start:" - it is the *only* signal an operator gets
+ * when the server refuses to boot rather than serve an empty game over
+ * live save data, so silently producing nothing here defeats the entire
+ * point of making the failure fatal in the first place.
+ *
+ * The specific hazard this guards against: `e.message` is empty for
+ * Node's own AggregateError, which is exactly the shape a
+ * connection-refused Postgres produces through `pg` (e.g. a bad
+ * DATABASE_URL, or the target not yet reachable at boot) - the real
+ * detail lives on `.errors` instead, not `.message`. Falls back to the
+ * joined messages of every aggregated error, and only then to `String(e)`
+ * for anything stranger still (a non-Error thrown value, or an
+ * AggregateError with no sub-errors at all).
+ */
+export function describeFatalMigrationError(e) {
+  if (e && e.message) return e.message;
+  if (e && Array.isArray(e.errors) && e.errors.length > 0) {
+    return e.errors.map((sub) => (sub && sub.message) || String(sub)).join('; ');
+  }
+  return String(e);
+}
+
 // Runnable by hand: npm run migrate:pg
 if (import.meta.url === `file://${process.argv[1]}`) {
   const sqlitePath = process.env.DB_PATH || '/app/data/rackstack.db';

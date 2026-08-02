@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { maybeAutoMigrate } from './db/migrate.js';
+import { maybeAutoMigrate, describeFatalMigrationError } from './db/migrate.js';
 
 try {
   const result = await maybeAutoMigrate();
@@ -12,7 +12,12 @@ try {
   // Deliberately fatal. Serving an empty game to real players is worse than
   // being down: a stopped container gets investigated, an empty leaderboard
   // might not be noticed until saves have been overwritten on top of it.
-  console.error('[migrate] FATAL - refusing to start:', e.message);
+  // describeFatalMigrationError (not e.message directly): a connection-
+  // refused Postgres surfaces as Node's own AggregateError, whose .message
+  // is always '' - logging that verbatim would print this line with
+  // nothing after the colon, defeating the point of it being the operator's
+  // only signal for why boot refused.
+  console.error('[migrate] FATAL - refusing to start:', describeFatalMigrationError(e));
   process.exit(1);
 }
 

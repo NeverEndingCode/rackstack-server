@@ -16,7 +16,7 @@ import {
 } from 'vitest';
 import path from 'path';
 import { provisionDatabase } from './helpers/backend.js';
-import { maybeAutoMigrate } from '../server/db/migrate.js';
+import { maybeAutoMigrate, describeFatalMigrationError } from '../server/db/migrate.js';
 
 const skip = process.env.TEST_BACKEND === 'sqlite';
 
@@ -75,5 +75,39 @@ describe.skipIf(skip)('auto-migration guards', () => {
     });
     expect(second.migrated).toBe(false);
     expect(second.reason).toMatch(/not empty/i);
+  });
+});
+
+// server/index.js's fatal-boot catch block logs this string as the *only*
+// signal an operator gets when the server refuses to start over live save
+// data - so it must never come out blank. A pure function, not gated by
+// TEST_BACKEND: it touches neither SQLite nor Postgres, and the bug it
+// guards against (a real Postgres connection-refused surfacing as Node's
+// own AggregateError, whose .message is always '' - the detail lives on
+// .errors instead) has nothing backend-specific about it.
+describe('describeFatalMigrationError', () => {
+  it('returns e.message for an ordinary Error', () => {
+    expect(describeFatalMigrationError(new Error('checkpoint was blocked'))).toBe('checkpoint was blocked');
+  });
+
+  it('falls back to the joined .errors messages for an AggregateError, whose own .message is blank', () => {
+    // This is the exact shape a connection-refused Postgres produces
+    // through `pg`/Node's networking stack - confirmed by hand against a
+    // real ECONNREFUSED in server/index.js's manual smoke test, not
+    // guessed. `new AggregateError([...]).message` is '' unless a second
+    // constructor argument is passed, which nothing in the `pg` codepath
+    // does.
+    const inner = new Error('connect ECONNREFUSED 127.0.0.1:1');
+    const agg = new AggregateError([inner], '');
+    expect(agg.message).toBe(''); // the premise this test depends on
+    const described = describeFatalMigrationError(agg);
+    expect(described).not.toBe('');
+    expect(described).toMatch(/ECONNREFUSED/);
+  });
+
+  it('falls back to String(e) rather than an empty string when neither .message nor .errors has anything usable', () => {
+    const weird = new AggregateError([], '');
+    const described = describeFatalMigrationError(weird);
+    expect(described).not.toBe('');
   });
 });
