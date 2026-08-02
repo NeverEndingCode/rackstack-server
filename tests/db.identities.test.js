@@ -1,6 +1,8 @@
 import {
-  describe, it, expect, afterAll,
+  describe, it, expect, afterAll, vi,
 } from 'vitest';
+import pg from 'pg';
+import { randomUUID } from 'node:crypto';
 import { provisionDatabase } from './helpers/backend.js';
 
 // Provision before importing the facade: DATABASE_URL/DB_PATH must be set
@@ -89,25 +91,39 @@ describe('identities split', () => {
   });
 
   it('resolves a returning login through identities to the same user, bumping last_login_at', async () => {
-    await upsertUser({
-      provider: 'github', providerId: 'ret', username: 'first', avatarUrl: null,
-    });
-    await putSave('github:ret', { marker: 'keep-me' }, 123);
-    const [firstLogin] = await listIdentities('github:ret');
-    expect(firstLogin.last_login_at).toBeTypeOf('number');
+    // Fake only Date, not timers wholesale - real setTimeout/network I/O
+    // (the pg client, in particular) must keep working underneath. Without
+    // controlling the clock, two upsertUser calls a few ms apart can land
+    // in the same millisecond, and asserting last_login_at >= its own
+    // insert-time value is trivially true even if the returning-login
+    // UPDATE never ran at all (delete driver.sqlite.js's/driver.pg.js's
+    // `UPDATE identities SET last_login_at = ...` entirely and X >= X still
+    // passes) - the exact vacuous-test shape caught and fixed in the
+    // atomicity test above. A deliberate, asserted gap makes it real.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(1_700_000_000_000);
+      await upsertUser({
+        provider: 'github', providerId: 'ret', username: 'first', avatarUrl: null,
+      });
+      await putSave('github:ret', { marker: 'keep-me' }, 123);
+      const [firstLogin] = await listIdentities('github:ret');
+      expect(firstLogin.last_login_at).toBe(1_700_000_000_000);
 
-    await upsertUser({
-      provider: 'github', providerId: 'ret', username: 'renamed', avatarUrl: 'a.png',
-    });
-    const save = await getSave('github:ret');
-    expect(JSON.parse(save.data).marker).toBe('keep-me');
-    const identities = await listIdentities('github:ret');
-    expect(identities).toHaveLength(1);
-    // The returning-login path updates last_login_at on the SAME identity
-    // row, not >= the first value strictly (two calls in the same test can
-    // land in the same millisecond), so pin "still populated", not "grew".
-    expect(identities[0].last_login_at).toBeTypeOf('number');
-    expect(identities[0].last_login_at).toBeGreaterThanOrEqual(firstLogin.last_login_at);
+      vi.setSystemTime(1_700_000_050_000); // +50s - a real, asserted gap
+      await upsertUser({
+        provider: 'github', providerId: 'ret', username: 'renamed', avatarUrl: 'a.png',
+      });
+      const save = await getSave('github:ret');
+      expect(JSON.parse(save.data).marker).toBe('keep-me');
+      const identities = await listIdentities('github:ret');
+      expect(identities).toHaveLength(1);
+      // Exact value, not just >= - only true if the returning-login UPDATE
+      // actually ran and actually wrote the new clock value.
+      expect(identities[0].last_login_at).toBe(1_700_000_050_000);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('getAllUsersWithSaves still exposes provider', async () => {
@@ -219,6 +235,95 @@ describe('identities split', () => {
     expect(userAgain.username).toBe('nec');
     const identitiesAgain = raw.prepare('SELECT * FROM identities WHERE user_id = ?').all('github:37058311');
     expect(identitiesAgain).toHaveLength(1);
+  });
+
+  // Postgres counterpart of the sqlite old-shape test above. Since
+  // schema.pg.js's base CREATE TABLE users now ships in the post-split
+  // shape (Important 4 of the prior review round), no test that boots a
+  // driver normally ever exercises migrateIdentities's backfill-and-
+  // DROP COLUMN branch on Postgres - that branch is unreachable from a
+  // fresh `applySchema` call. This is the only thing that still exercises
+  // it: build the pre-split table directly against a real Postgres
+  // database (bypassing applySchema entirely, the same way the sqlite
+  // test bypasses it via a raw better-sqlite3 handle), then run
+  // applySchema over it. Needs a real Postgres server, so it only runs
+  // when the suite's own backend is pg - unlike the sqlite counterpart,
+  // there's no in-memory equivalent to fall back to when running under
+  // TEST_BACKEND=sqlite (no postgres container is even started in that
+  // run - see tests/setup/pg-global.js).
+  it.runIf(driver.__backend === 'pg')('migrates a pre-split Postgres database without losing saves', async () => {
+    const adminUrl = process.env.TEST_DATABASE_URL;
+    const name = `rackstack_pg_upgrade_${randomUUID().replace(/-/g, '')}`;
+    const admin = new pg.Client({ connectionString: adminUrl });
+    await admin.connect();
+    try {
+      await admin.query(`CREATE DATABASE ${name}`);
+    } finally {
+      await admin.end();
+    }
+
+    const url = new URL(adminUrl);
+    url.pathname = `/${name}`;
+    const pool = new pg.Pool({ connectionString: url.toString() });
+
+    try {
+      // Build the OLD shape directly against the pool - deliberately NOT
+      // via applySchema, which no longer produces this shape at all.
+      await pool.query(`
+        CREATE TABLE users (
+          id TEXT PRIMARY KEY, provider TEXT NOT NULL, provider_id TEXT NOT NULL,
+          username TEXT, avatar_url TEXT, created_at BIGINT NOT NULL,
+          UNIQUE(provider, provider_id)
+        );
+        CREATE TABLE saves (
+          user_id TEXT PRIMARY KEY REFERENCES users(id),
+          data TEXT NOT NULL, last_save BIGINT NOT NULL
+        );
+        INSERT INTO users VALUES ('github:37058311','github','37058311','nec',NULL,1784859388645);
+        INSERT INTO saves VALUES ('github:37058311','{"wafers":42}',1784859388999);
+      `);
+
+      const { applySchema } = await import('../server/db/schema.pg.js');
+      await applySchema(pool);
+
+      const cols = await pool.query(
+        "SELECT column_name FROM information_schema.columns WHERE table_name = 'users' ORDER BY column_name",
+      );
+      const colNames = cols.rows.map((r) => r.column_name);
+      expect(colNames).not.toContain('provider');
+      expect(colNames).not.toContain('provider_id');
+
+      const user = (await pool.query("SELECT * FROM users WHERE id = 'github:37058311'")).rows[0];
+      expect(user.id).toBe('github:37058311');
+      expect(user.username).toBe('nec');
+
+      const identity = (await pool.query(
+        "SELECT * FROM identities WHERE user_id = 'github:37058311'",
+      )).rows[0];
+      expect(identity).toMatchObject({ provider: 'github', provider_id: '37058311' });
+
+      const save = (await pool.query("SELECT * FROM saves WHERE user_id = 'github:37058311'")).rows[0];
+      // Byte-for-byte, same rationale as the sqlite counterpart.
+      expect(save.data).toBe('{"wafers":42}');
+      expect(Number(save.last_save)).toBe(1784859388999);
+
+      // Idempotency against a real upgrade target, not just a fresh db.
+      await applySchema(pool);
+      await applySchema(pool);
+      const identitiesAgain = await pool.query(
+        "SELECT * FROM identities WHERE user_id = 'github:37058311'",
+      );
+      expect(identitiesAgain.rows).toHaveLength(1);
+    } finally {
+      await pool.end();
+      const cleanupAdmin = new pg.Client({ connectionString: adminUrl });
+      await cleanupAdmin.connect();
+      try {
+        await cleanupAdmin.query(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`);
+      } finally {
+        await cleanupAdmin.end();
+      }
+    }
   });
 
   it('throws rather than silently drop an orphaned save during the rebuild, and rolls the rebuild back', async () => {
