@@ -140,6 +140,42 @@ describe('initSuperTokens containment', () => {
   });
 });
 
+describe('the SDK actually loads on this runtime', () => {
+  // Deliberately separate from the containment tests above, and deliberately
+  // NOT redundant with them.
+  //
+  // Every other test in this file either runs in passport mode or hits a
+  // config error that throws before init.js reaches its dynamic import - so
+  // without this, the suite would be fully green on a runtime where
+  // supertokens-node cannot even be loaded. That is precisely how v1.7
+  // shipped four commits of silently-red CI: the failing import was on a path
+  // no green test exercised.
+  //
+  // CI runs Node 20 to match the production image, so this is the check that
+  // makes CI meaningful for the dependency, rather than merely passing.
+  //
+  // Loading the SDK here does not weaken the containment assertions above:
+  // those are source-level (init.js must contain no static import), not
+  // module-registry-level, and vitest isolates by file.
+
+  it('imports supertokens-node and both recipes without throwing', async () => {
+    const [core, session, thirdparty] = await Promise.all([
+      import('supertokens-node').then((m) => m.default ?? m),
+      import('supertokens-node/recipe/session').then((m) => m.default ?? m),
+      import('supertokens-node/recipe/thirdparty').then((m) => m.default ?? m),
+    ]);
+    expect(typeof core.init).toBe('function');
+    expect(typeof session.init).toBe('function');
+    expect(typeof thirdparty.init).toBe('function');
+  });
+
+  it('exposes the express framework bindings app.js mounts', async () => {
+    const { middleware, errorHandler } = await import('supertokens-node/framework/express');
+    expect(typeof middleware).toBe('function');
+    expect(typeof errorHandler).toBe('function');
+  });
+});
+
 describe('initSuperTokens configuration errors', () => {
   it('refuses to start without a SuperTokens core URI', async () => {
     const { SUPERTOKENS_CONNECTION_URI: _omit, ...env } = CREDS;
