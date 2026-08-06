@@ -174,6 +174,38 @@ describe('the SDK actually loads on this runtime', () => {
     expect(typeof middleware).toBe('function');
     expect(typeof errorHandler).toBe('function');
   });
+
+  it('exposes the two user-id-mapping functions the signInUp override calls', async () => {
+    // The mapping override is tested against a fake core, which is what makes
+    // its ordering assertions possible - but a fake will happily answer to any
+    // method name, so nothing there would notice if the real SDK renamed or
+    // dropped these. This is the only check that the object init.js actually
+    // hands to buildSignInUpOverride carries the functions it will call.
+    //
+    // Worth pinning precisely because of how it would fail otherwise: an
+    // absent createUserIdMapping means no mapping is created, and no mapping
+    // means a returning player silently lands on an empty save. There is no
+    // error at the moment it happens.
+    const core = await import('supertokens-node').then((m) => m.default ?? m);
+    expect(typeof core.createUserIdMapping).toBe('function');
+    expect(typeof core.getUserIdMapping).toBe('function');
+  });
+
+  it("takes the mapping parameter spelled with a capital T, as mapping.js sends it", async () => {
+    // `superTokensUserId`, not `supertokensUserId`. The lowercase spelling is
+    // accepted silently as undefined - no throw, no log, no mapping - so the
+    // typo fails as the invisible wrong-save bug rather than as an error.
+    // Asserted against the shipped type declaration, which is the only
+    // machine-readable statement of the key the SDK reads.
+    const { readFileSync } = await import('node:fs');
+    const dts = readFileSync(
+      new URL('../node_modules/supertokens-node/lib/build/index.d.ts', import.meta.url),
+      'utf8',
+    );
+    const signature = dts.slice(dts.indexOf('static createUserIdMapping'));
+    expect(signature).toContain('superTokensUserId');
+    expect(signature.slice(0, 200)).not.toContain('supertokensUserId:');
+  });
 });
 
 describe('initSuperTokens configuration errors', () => {
