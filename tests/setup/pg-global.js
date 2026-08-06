@@ -26,8 +26,21 @@
 // as teardown() runs. If a run is killed hard enough that globalTeardown
 // never fires (e.g. SIGKILL), the container is left running; `podman ps` and
 // `podman rm -f` clean that up manually.
+// Testcontainers is imported dynamically, inside setup(), AFTER both early
+// returns - never at module scope. It is a local-only convenience, and its
+// dependency tree is not loadable on the Node version this project ships on:
+// testcontainers pulls in undici@8, which declares `engines: node >=22.19`
+// and throws `webidl.util.markAsUncloneable is not a function` the moment it
+// is required on Node 20. The Dockerfile runs node:20-bookworm-slim and CI
+// matches it deliberately, so a top-level import here crashed BOTH matrix
+// jobs before a single test file was collected ("No test files found") - the
+// sqlite job too, which has nothing to do with Postgres, because an ES
+// import is hoisted and runs regardless of the early return below.
+//
+// CI supplies TEST_DATABASE_URL from a service container and never needs
+// Testcontainers at all, so deferring the import keeps CI on the same Node
+// version as production while local runs still get an automatic container.
 import { existsSync } from 'node:fs';
-import { PostgreSqlContainer } from '@testcontainers/postgresql';
 
 // Fully-qualified so it resolves identically on Docker and on Podman
 // installs that have no unqualified-search registries configured (Podman's
@@ -62,6 +75,7 @@ export async function setup() {
 
   configureContainerRuntime();
 
+  const { PostgreSqlContainer } = await import('@testcontainers/postgresql');
   container = await new PostgreSqlContainer(POSTGRES_IMAGE).start();
   process.env.TEST_DATABASE_URL = container.getConnectionUri();
 }
