@@ -66,6 +66,30 @@ You only need to configure the provider(s) you actually want to use - leave
 the other's ID/SECRET blank in `.env` and its login button will just fail if
 clicked (harmless, but you may want to hide it later).
 
+### If you plan to enable SuperTokens later
+
+SuperTokens serves its OAuth callbacks at `/auth/callback/<provider>`, while
+the paths above are `/auth/<provider>/callback`. GitHub requires a redirect
+URL's path to be a **subdirectory** of the registered callback URL, and
+`/auth/callback/github` is *not* a subdirectory of `/auth/github/callback` - so
+left alone, every SuperTokens GitHub login would fail with a `redirect_uri`
+mismatch while passport logins carried on working.
+
+The fix is one-time, **additive and reversible**: widen the GitHub OAuth app's
+registered callback to the parent path `https://<your-domain>/auth`. Both paths
+are then subdirectories of it and both work simultaneously - nothing is
+removed, so passport keeps working before, during and after. Discord permits
+multiple redirect URIs, so simply add
+`https://<your-domain>/auth/callback/discord` alongside the existing one.
+
+Leave `GITHUB_CALLBACK_URL` / `DISCORD_CALLBACK_URL` pointing at the existing
+`/auth/<provider>/callback` paths - those tell passport where to send people,
+and passport's paths have not changed.
+
+**Do this before setting `AUTH_MODE`, not at the same time.** It is safe to do
+days early. Full sequence in
+[`docs/supertokens-rollout-runbook.md`](docs/supertokens-rollout-runbook.md).
+
 ## 2. Configure
 
 ```bash

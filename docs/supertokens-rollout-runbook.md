@@ -1,11 +1,29 @@
 # SuperTokens Rollout Runbook (v1.8)
 
-**Status: IN PROGRESS — not ready to run.** The `AUTH_MODE` switch exists and
-defaults to the legacy stack, so v1.8 is safe to *deploy*. It is not yet safe
-to *roll out*: the SuperTokens integration behind the switch is still being
-built. Parts B onward are placeholders until the tasks that back them land.
+**Status: built, and not yet run anywhere.** Every part below is implemented
+and covered by tests. `AUTH_MODE` defaults to the legacy stack, so v1.8 is safe
+to deploy and changes nothing until an operator sets it.
 
-Do not set `AUTH_MODE` to anything but blank or `passport` yet.
+### What has NOT been verified
+
+Stated plainly, because a runbook that reads as though it has been rehearsed is
+worse than one that admits it has not:
+
+- **Shadow mode has never run against production identities.** The owner's
+  current Unraid export has not been supplied. Part C is tested — including
+  against a database deliberately seeded with a bad row — but only ever
+  against test data.
+- **No cutover has happened.** `AUTH_MODE` has never been anything but
+  `passport` on any real deployment.
+- **v1.7 has not been cut over on the Unraid box either.** The design gates
+  v1.8's rollout on v1.7 running in production, and that is still outstanding.
+- **No SuperTokens core has been run against this code outside tests.** Part B
+  is written from the documented configuration, not from a stood-up instance.
+- **`supertokens`-only mode is not recommended yet** — see D6. `dual` is the
+  intended resting state for this release.
+
+None of that blocks *deploying* v1.8. All of it blocks *rolling it out*, and
+Part C exists to close the first item.
 
 ---
 
@@ -313,7 +331,76 @@ what the gate is meant to clear beforehand. **C2 is the gate.**
 
 ## Part D — Cutover
 
-*Pending Tasks 3, 4 and 7. Gated on Part C reporting 100%.*
+**Do not start this until Part C reports `GATE: PASS` against your real
+database.** Parts A and B must also be done.
+
+### D1. Take a backup
+
+Same procedure as the Postgres migration — see
+[`postgres-migration-runbook.md`](./postgres-migration-runbook.md) Part A.
+Changing `AUTH_MODE` rewrites no player data, so this is belt-and-braces
+rather than strictly required, but it costs minutes and the alternative to
+having it is discovering you needed it.
+
+### D2. Switch to `dual`
+
+On the RackStack container, set:
+
+```
+AUTH_MODE=dual
+```
+
+Restart. Both login paths are now live and a session from either is accepted.
+
+**Nobody is logged out by this.** Every existing cookie is a 90-day JWT and
+`dual` keeps accepting them — that is the whole point of the mode.
+
+### D3. Watch the boot
+
+The container either starts cleanly or refuses to start. If it refuses, the
+message names the cause; the three common ones:
+
+| Message mentions | Cause | Fix |
+|---|---|---|
+| `Invalid AUTH_MODE` | Typo. Values are exact lowercase. | `passport`, `dual`, `supertokens` |
+| `requires SUPERTOKENS_CONNECTION_URI` | Part B4 not done | Set it, restart |
+| `needs to know this server's public origin` | No `PUBLIC_ORIGIN` and no callback URL to derive it from | Set `PUBLIC_ORIGIN` |
+
+A refusal to start is the designed behaviour for a misconfiguration, not a
+failure of the rollout. Nothing has changed for players at that point — the
+previous container is still what is running until the new one comes up.
+
+### D4. Verify, in this order
+
+1. **An existing session still works.** Open the game in a browser that was
+   already logged in. It should load your save with no login prompt at all.
+   This is the no-forced-logout guarantee.
+2. **A legacy login still works.** Log out, then log in with the normal
+   Discord/GitHub button. This still goes through passport in `dual`.
+3. **Your save is intact and your admin access still works.** Check the Admin
+   tab appears if you are in `SUPER_ADMIN_IDS`.
+
+If any of those fail, go to Part E. Nothing needs unpicking first.
+
+### D5. Sit on `dual`
+
+There is no schedule to keep. `dual` is a stable state, not a transition —
+both stacks work, rollback stays free, and nothing degrades by leaving it
+there for weeks.
+
+### D6. `supertokens` mode — not yet recommended
+
+> **Read this before considering it.** The client does not use the SuperTokens
+> frontend SDK, so it has no interceptor to refresh an expired access token. In
+> `dual` that is harmless: when a SuperTokens session expires, the request
+> falls through to the legacy JWT cookie and the player stays logged in. In
+> `supertokens` mode, once a player's legacy cookie has also expired, there is
+> nothing to fall through to and they would be silently logged out when the
+> access token expires.
+>
+> `supertokens` mode is implemented and tested, but **cutting over to it needs
+> frontend refresh handling first**. `dual` is the intended resting state for
+> this release.
 
 ## Part E — Rollback
 

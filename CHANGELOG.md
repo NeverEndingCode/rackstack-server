@@ -1,5 +1,50 @@
 # Changelog
 
+## v1.8.0
+
+SuperTokens as an alternative login stack, behind a switch that is off by
+default.
+
+**Upgrading changes nothing.** `AUTH_MODE` defaults to `passport`, which is
+byte-for-byte the login stack that shipped in v1.7 — SuperTokens is not
+initialised, its middleware is not mounted, and the SDK is not even imported.
+Everything below is inert until an operator opts in.
+
+- **`AUTH_MODE` switch**: `passport` (default), `dual` (both stacks live,
+  sessions from either accepted), `supertokens` (legacy OAuth routes not
+  registered). An unrecognised value stops the container on purpose rather
+  than quietly serving the legacy stack — a typo that looked like a completed
+  rollout would be discovered weeks later.
+- **Your account and save are untouched.** RackStack identifies players by
+  `users.id` (`provider:providerId`, e.g. `github:37058311`). SuperTokens
+  issues its own internal id and that id is mapped *onto* the existing one, so
+  `session.getUserId()` returns exactly what the old JWT carried. No save is
+  rewritten, no id renumbered, no foreign key moved, and `SUPER_ADMIN_IDS`
+  keeps working. There is no "migrate your account" step for players.
+- **Nobody is logged out, in either direction.** Existing cookies are 90-day
+  JWTs and stay valid through every mode change. Rollback is setting
+  `AUTH_MODE` back to `passport` and restarting; unlike the v1.7 Postgres
+  migration there is no one-way door, because changing the mode rewrites no
+  data.
+- **Shadow-mode verification gate**: `npm run shadow:check` audits every
+  stored identity and reports whether the id mapping would resolve correctly,
+  before anything is switched on. Read-only — safe against production with
+  players online, and against a restored export on a laptop. Cutover is gated
+  on a 100% match. An empty run reports `NOT RUN` and exits non-zero rather
+  than passing on having read nothing.
+- **Two new repository functions**, `getIdentity` and `setSupertokensUserId`,
+  implemented on both the SQLite and Postgres drivers. `npm run test:all`
+  still runs the whole suite against both backends.
+- **Operator runbook**: `docs/supertokens-rollout-runbook.md` covers the OAuth
+  redirect widening (additive and reversible — nothing is removed, so passport
+  keeps working), standing up the core, the shadow gate, cutover and rollback.
+
+**Not yet run anywhere.** Shadow mode has not been run against production
+identities, and no cutover has happened. `dual` is the intended resting state
+for this release: `supertokens`-only mode is implemented and tested but needs
+frontend token-refresh handling before it is cut over to. The runbook says all
+of this in its opening section.
+
 ## v1.7.0
 
 Postgres support, with automatic migration from SQLite.

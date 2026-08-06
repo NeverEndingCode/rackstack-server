@@ -102,6 +102,15 @@ export async function initSuperTokens({ env = process.env, mode } = {}) {
   });
 
   initialised = true;
+  // An operator who has just flipped AUTH_MODE needs to see that it took
+  // effect, and needs to see it in the log rather than by inferring it from
+  // the absence of an error. Names the mode, the core it will talk to, and
+  // which providers came up - the three things that are wrong when a rollout
+  // is not behaving.
+  console.log(
+    `[auth] SuperTokens initialised (AUTH_MODE=${mode}, core=${connectionURI}, `
+    + `providers=${providers.map((p) => p.config.thirdPartyId).join(',')})`,
+  );
   return true;
 }
 

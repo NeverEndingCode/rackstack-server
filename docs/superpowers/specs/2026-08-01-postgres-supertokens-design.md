@@ -257,14 +257,19 @@ Starts only after v1.7 is confirmed running in production.
 >
 > Implementation plan: `docs/superpowers/plans/2026-08-06-v1.8-supertokens.md`.
 > Operator runbook: `docs/supertokens-rollout-runbook.md`.
-> Progress: Tasks 1–4 of 7 built (the `AUTH_MODE` switch; SuperTokens init,
-> provider config and conditional mounting; the identity mapping and its
-> ordering guarantee; the authentication chain across all three modes).
+> Progress: **all 7 tasks built.** 587 tests green on SQLite, 610 on
+> Postgres, 39 e2e smoke assertions, and a real boot verified in each of the
+> three `AUTH_MODE` values. Version bumped to 1.8.0; not yet tagged.
 >
-> One gap found in Task 4 and not yet closed: the client does not use the
-> SuperTokens frontend SDK, so it cannot refresh an expired access token.
-> This does not affect `dual` (the legacy cookie still authenticates), but a
-> `supertokens`-only cutover needs frontend refresh handling first.
+> One gap found in Task 4 and deliberately not closed in this release: the
+> client does not use the SuperTokens frontend SDK, so it cannot refresh an
+> expired access token. This does not affect `dual` (the legacy cookie still
+> authenticates and the player stays logged in), but a `supertokens`-only
+> cutover needs frontend refresh handling first. **`dual` is the intended
+> resting state for v1.8.**
+>
+> Still true, and unchanged by any of the above: shadow mode has not been run
+> against production identities, and no cutover has happened anywhere.
 
 ### 5.1 Containers
 
