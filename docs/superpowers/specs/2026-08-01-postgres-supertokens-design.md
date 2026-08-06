@@ -257,7 +257,7 @@ Starts only after v1.7 is confirmed running in production.
 >
 > Implementation plan: `docs/superpowers/plans/2026-08-06-v1.8-supertokens.md`.
 > Operator runbook: `docs/supertokens-rollout-runbook.md`.
-> Progress: **all 7 tasks built.** 587 tests green on SQLite, 610 on
+> Progress: **all 7 tasks built.** 589 tests green on SQLite, 612 on
 > Postgres, 39 e2e smoke assertions, and a real boot verified in each of the
 > three `AUTH_MODE` values. Version bumped to 1.8.0; not yet tagged.
 >

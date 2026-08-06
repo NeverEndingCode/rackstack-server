@@ -37,7 +37,7 @@ Part C exists to close the first item.
 | Auth middleware chain | 4 | ✅ built |
 | Shadow-mode verification | 5 | ✅ built — **not yet run against production** |
 | OAuth callback URL changes | 6 | 📄 documented below, not yet needed |
-| Deployment config + release | 7 | ⬜ not started |
+| Deployment config + release | 7 | ✅ built — version at 1.8.0, not yet tagged |
 
 Plan: [`superpowers/plans/2026-08-06-v1.8-supertokens.md`](./superpowers/plans/2026-08-06-v1.8-supertokens.md)
 Design: [`superpowers/specs/2026-08-01-postgres-supertokens-design.md`](./superpowers/specs/2026-08-01-postgres-supertokens-design.md) §5
