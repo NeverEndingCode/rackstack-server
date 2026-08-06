@@ -1,0 +1,21 @@
+-- Creates the separate database the SuperTokens core requires (v1.8).
+--
+-- SuperTokens manages its own schema and must not share a database with
+-- RackStack's application tables. This is a different database on the same
+-- Postgres server - not a different server, and not a schema inside the
+-- rackstack database.
+--
+-- Postgres runs everything in /docker-entrypoint-initdb.d exactly once, when
+-- the data directory is first initialised. On an existing deployment - which
+-- includes every install that already migrated to Postgres in v1.7 - this
+-- file never runs, and the database must be created by hand:
+--
+--   psql -U rackstack -d rackstack -c 'CREATE DATABASE supertokens OWNER rackstack;'
+--
+-- Creating it before it is needed is deliberate and harmless: an empty
+-- unused database costs nothing, and it removes a step from the rollout at
+-- the moment when fewest steps is worth the most.
+--
+-- The owner matches POSTGRES_USER from docker-compose.yml so the SuperTokens
+-- core can create its own tables on first connect.
+CREATE DATABASE supertokens OWNER rackstack;

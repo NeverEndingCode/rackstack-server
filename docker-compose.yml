@@ -9,8 +9,50 @@ services:
       POSTGRES_DB: rackstack
     volumes:
       - ./pgdata:/var/lib/postgresql/data
+      # Creates the SEPARATE database the SuperTokens core needs (v1.8).
+      # Scripts here run only when the data directory is first initialised,
+      # so on an existing deployment this file does nothing and the database
+      # must be created by hand - see docs/supertokens-rollout-runbook.md.
+      # Creating it unconditionally is harmless: an unused empty database
+      # costs nothing, and having it ready removes a step from the rollout.
+      - ./docker/init-supertokens-db.sql:/docker-entrypoint-initdb.d/10-supertokens.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U rackstack"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # The SuperTokens core (v1.8). Opt-in: it belongs to a compose profile, so
+  # `docker compose up` does NOT start it and the default passport auth stack
+  # is unaffected. Start it only when you are rolling SuperTokens out:
+  #
+  #   docker compose --profile supertokens up -d
+  #
+  # It is deliberately not a `depends_on` of rackstack. In the default
+  # AUTH_MODE the server never contacts it, and making every deployment wait
+  # on a container it will not use is a good way to turn an unrelated
+  # SuperTokens problem into a RackStack outage.
+  supertokens:
+    image: registry.supertokens.io/supertokens/supertokens-postgresql:latest
+    container_name: rackstack-supertokens
+    profiles: ["supertokens"]
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "3567:3567"
+    environment:
+      # Its OWN database, never the rackstack one - SuperTokens manages its
+      # own schema and must not share a database with application tables.
+      #
+      # The scheme must be postgresql://. The SuperTokens core rejects
+      # postgres:// at startup. (This is specific to the core: RackStack's
+      # own DATABASE_URL above accepts either - v1.7 verified that directly,
+      # against an earlier claim to the contrary.)
+      POSTGRESQL_CONNECTION_URI: postgresql://rackstack:rackstack@postgres:5432/supertokens
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/3567' || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5

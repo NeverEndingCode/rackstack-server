@@ -247,6 +247,19 @@ python3/make/g++ build stage stays. `DB_PATH` keeps its default so a
 
 Starts only after v1.7 is confirmed running in production.
 
+> **Status (2026-08-06).** v1.7 is merged, tagged `v1.7.0`, and published to
+> GHCR — but **has not been cut over on the owner's Unraid box**, and the
+> production export §5.5 depends on has not been supplied. Implementation of
+> v1.8 is under way regardless, because `AUTH_MODE` defaults to `passport` and
+> every part of the release is inert until an operator changes it. The two
+> things genuinely gated on production are unchanged: running shadow mode
+> against real identities, and cutting over to `dual`. Neither has happened.
+>
+> Implementation plan: `docs/superpowers/plans/2026-08-06-v1.8-supertokens.md`.
+> Operator runbook: `docs/supertokens-rollout-runbook.md`.
+> Progress: Tasks 1–2 of 7 built (the `AUTH_MODE` switch; SuperTokens init,
+> provider config and conditional mounting).
+
 ### 5.1 Containers
 
 - `registry.supertokens.io/supertokens/supertokens-postgresql`, port 3567.
@@ -255,6 +268,12 @@ Starts only after v1.7 is confirmed running in production.
 - Two documented footguns: the scheme must be `postgresql://` (`postgres://`
   fails at startup), and the host may not be `localhost`/`127.0.0.1` from inside
   a container.
+
+> **Scoping correction (2026-08-06).** The `postgres://` warning applies to the
+> **SuperTokens core only**. v1.7 established that RackStack's own
+> `DATABASE_URL` accepts either scheme — `pg-connection-string` parses them
+> identically, verified directly — and three documents that had repeated the
+> broader claim were corrected in v1.7. Do not let this line reintroduce it.
 
 ### 5.2 Strangler rollout via `AUTH_MODE`
 
@@ -274,7 +293,27 @@ seam means zero route handler changes.
 
 SuperTokens' ThirdParty recipe supplies `thirdPartyId` (`'github'`/`'discord'`)
 and `thirdPartyUserId` — the same pair passport supplies as `provider` and
-`profile.id`. In the `signInUp` override:
+`profile.id`.
+
+> **Verified during v1.8 implementation (2026-08-06).** This equality was
+> written as an assumption; it has since been checked against the pinned
+> library sources:
+>
+> - **GitHub** — `supertokens-node`'s built-in provider sets
+>   ``thirdPartyUserId = `${user.id}` `` (the numeric id, stringified);
+>   `passport-github2` sets `profile.id = String(json.id)`. Same source field,
+>   same stringification.
+> - **Discord** — `supertokens-node` maps
+>   `userInfoMap.fromUserInfoAPI.userId` to `id` (the snowflake, already a
+>   string); `passport-discord` passes Discord's raw user JSON straight
+>   through, so `profile.id` is that same `id`.
+>
+> This raises confidence but does **not** retire the §5.5 shadow gate: what
+> ultimately matters is the values already stored in the owner's `identities`
+> rows, some of which may have been written by older versions of either
+> library.
+
+In the `signInUp` override:
 
 1. Look up `identities` by `(provider, provider_id)`.
 2. Resolve the existing `users.id` (or create user + identity for a new player).
