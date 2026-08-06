@@ -4,6 +4,45 @@
 and covered by tests. `AUTH_MODE` defaults to the legacy stack, so v1.8 is safe
 to deploy and changes nothing until an operator sets it.
 
+### Security review (2026-08-06)
+
+A security review of the branch was run before any cutover. It found **one
+High-severity authentication bypass**, now fixed and regression-tested.
+
+**What it was.** SuperTokens' stock `POST /auth/signinup` accepts *either* the
+browser redirect flow *or* a caller-supplied `oAuthTokens` object, and treats a
+submitted token as proof of identity. The audience check that should make that
+safe is dead code for GitHub in the pinned SDK: the provider defines
+`validateAccessToken` but then replaces `getUserInfo` wholesale, and only the
+generic `getUserInfo` ever calls it.
+
+Unpatched, an unauthenticated request carrying **any** GitHub token able to
+read `/user` — one minted for an unrelated OAuth app the victim had authorised,
+or a leaked personal access token — would have authenticated as that token's
+owner. `SUPER_ADMIN_IDS` values are deterministic and effectively public, so
+the owner's own account was the obvious target, and that path led to every
+admin route.
+
+This was a regression against the passport stack, not a pre-existing hole:
+passport only ever obtains a token by exchanging an authorization code with our
+own client secret, so a foreign token can never be replayed at it.
+
+**Fix.** RackStack is browser-only and has no native client, so the
+token-submission flow has no legitimate caller. It is now rejected outright;
+only the redirect flow is accepted. Seven regression tests cover it, and the
+guard was verified to fail closed when removed.
+
+**It was never exploitable in production**, because it only exists in
+`dual`/`supertokens` mode and `AUTH_MODE` has never been anything but
+`passport` anywhere. It would have become live the moment you followed Part D.
+
+The same review also caught a **Discord outage**, unrelated to security: we
+pin Discord to the `identify` scope to avoid re-prompting existing players for
+a new permission, but SuperTokens rejects a provider that returns no email
+unless `requireEmail: false` is set — which Discord's built-in provider does
+not. Every Discord login would have failed at the API layer, before any of our
+own code ran. Fixed and tested.
+
 ### What has NOT been verified
 
 Stated plainly, because a runbook that reads as though it has been rehearsed is

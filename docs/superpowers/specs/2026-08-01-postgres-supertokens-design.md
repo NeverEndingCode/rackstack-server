@@ -399,6 +399,7 @@ full 90-day expiry, so in-flight sessions survive the round trip.
 | SQLite driver rots untested | Full suite runs on both backends in CI |
 | SuperTokens id shape differs from stored `provider_id` | Shadow mode against production export; cutover gated on 100% match |
 | SuperTokens session carries the wrong user id | Mapping created before session issuance; asserted by test |
+| **Stock `signInUpPOST` accepts a submitted OAuth token as proof of identity** | **Found by security review 2026-08-06.** The SDK's GitHub `validateAccessToken` audience check is dead code (the provider replaces `getUserInfo`, and only the generic one calls it), so any GitHub token able to read `/user` would authenticate as its owner — account takeover, and full admin for a `SUPER_ADMIN_IDS` holder. Fixed by an `apis` override rejecting the `oAuthTokens` flow; RackStack is browser-only so it has no legitimate caller. Regression-tested. |
 | GitHub redirect_uri mismatch | Registered callback widened to `/auth` before enabling `dual` |
 | Async refactor swallows route errors | Every handler audited for try/catch during the refactor |
 

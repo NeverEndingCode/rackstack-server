@@ -33,6 +33,63 @@ export const API_BASE_PATH = '/auth';
 let initialised = false;
 
 /**
+ * Closes an authentication bypass in SuperTokens' stock `signInUpPOST`.
+ *
+ * THE HOLE. The stock API accepts EITHER `redirectURIInfo` (the browser
+ * authorization-code flow) OR a caller-supplied `oAuthTokens` object, and
+ * treats the latter as proof of identity:
+ *
+ *   recipe/thirdparty/api/signinup.js
+ *     else if (bodyParams.oAuthTokens !== undefined) { oAuthTokens = ... }
+ *
+ * The audience check that should make that safe does not run for GitHub. The
+ * SDK's GitHub provider DEFINES `config.validateAccessToken` - which asks
+ * `POST api.github.com/applications/{client_id}/token` whether the token was
+ * minted for this OAuth app - but that function is only ever invoked from the
+ * GENERIC `getUserInfo` in providers/custom.js. providers/github.js then
+ * REPLACES `getUserInfo` wholesale in its own override, and the override is
+ * applied last, so the check is dead code. GitHub's replacement calls
+ * api.github.com/user directly with `Bearer <token>` and asks nothing about
+ * where the token came from.
+ *
+ * Net effect, unpatched: an unauthenticated
+ *   POST /auth/signinup {"thirdPartyId":"github","oAuthTokens":{"access_token":"..."}}
+ * with ANY GitHub token that can read /user - one from an unrelated OAuth app
+ * the victim authorised, or a leaked PAT - resolves to that victim's
+ * `thirdPartyUserId`, and our mapping faithfully turns it into their
+ * `users.id`. Account takeover, and full admin if the victim is in
+ * SUPER_ADMIN_IDS, whose values are deterministic and effectively public.
+ *
+ * This is a regression against the passport stack rather than a pre-existing
+ * flaw: passport-github2 only ever obtains a token by exchanging an
+ * authorization code with our own client secret, so a foreign token can never
+ * be replayed at it.
+ *
+ * THE FIX. RackStack is browser-only and has no native or mobile client, so
+ * the token-submission flow has no legitimate caller here. Reject it and keep
+ * only the redirect flow, where the token is obtained by exchanging a code
+ * using our own client secret and is therefore bound to this application.
+ */
+export function rejectRawOAuthTokens(originalImplementation) {
+  return {
+    ...originalImplementation,
+    signInUpPOST: originalImplementation.signInUpPOST === undefined
+      ? undefined
+      : async function signInUpPOST(input) {
+        if (input.redirectURIInfo === undefined) {
+          throw new Error(
+            'signInUp requires the redirect-URI flow. Submitting oAuthTokens directly is '
+            + 'not accepted: RackStack cannot verify that such a token was issued to this '
+            + 'application, so honouring it would let any third-party token authenticate as '
+            + 'its owner.',
+          );
+        }
+        return originalImplementation.signInUpPOST(input);
+      },
+  };
+}
+
+/**
  * Initialises SuperTokens if the mode calls for it.
  *
  * Returns true when SuperTokens is now active, false when the mode means it
@@ -89,13 +146,19 @@ export async function initSuperTokens({ env = process.env, mode } = {}) {
     recipeList: [
       ThirdParty.init({
         signInUpFeature: { providers },
-        // The override is on `functions` (the recipe function), NOT `apis`.
-        // SuperTokens creates the session in the API layer after the recipe
-        // function returns, so an `apis` override would run too late to get
-        // the user id mapping in place first - and a session carrying
-        // SuperTokens' internal id resolves to no save at all. See
-        // ./mapping.js and design section 5.3.
-        override: { functions: buildSignInUpOverride({ supertokens }) },
+        override: {
+          // The IDENTITY MAPPING override is on `functions` (the recipe
+          // function), NOT `apis`. SuperTokens creates the session in the API
+          // layer after the recipe function returns, so putting it in `apis`
+          // would run too late to get the user id mapping in place first -
+          // and a session carrying SuperTokens' internal id resolves to no
+          // save at all. See ./mapping.js and design section 5.3.
+          functions: buildSignInUpOverride({ supertokens }),
+          // The `apis` override exists for a different reason entirely: to
+          // close an authentication bypass in the stock signInUpPOST. See
+          // rejectRawOAuthTokens below.
+          apis: rejectRawOAuthTokens,
+        },
       }),
       Session.init(),
     ],

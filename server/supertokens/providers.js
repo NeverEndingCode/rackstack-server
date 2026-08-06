@@ -63,6 +63,20 @@ export function buildProviders(env = process.env) {
     providers.push({
       config: {
         thirdPartyId: 'discord',
+        // REQUIRED because of the narrowed scope below, not optional polish.
+        // SuperTokens' API layer treats a provider that returns no email as a
+        // failure - recipe/thirdparty/api/implementation.js only substitutes a
+        // placeholder when `requireEmail === false`, and otherwise returns
+        // status NO_EMAIL_GIVEN_BY_PROVIDER. Discord's built-in provider does
+        // not set it. Without this line, dropping the 'email' scope means
+        // every Discord login fails before the mapping override is ever
+        // reached, and it fails at the API layer where our own code never
+        // sees it.
+        //
+        // Safe here because RackStack never uses email for anything: identity
+        // is `provider:providerId` end to end, and upsertUser takes only
+        // provider, providerId, username and avatarUrl.
+        requireEmail: false,
         clients: [{
           clientId: env.DISCORD_CLIENT_ID,
           clientSecret: env.DISCORD_CLIENT_SECRET,
