@@ -7,6 +7,7 @@ import { configurePassport } from './auth.js';
 import { resolveAuthMode, isSuperTokensEnabled } from './authMode.js';
 import { initSuperTokens } from './supertokens/init.js';
 import apiRouter from './routes/api.js';
+import { createAuthRouter } from './routes/authRoutes.js';
 import './db.js'; // ensures tables exist on boot
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -41,6 +42,10 @@ export async function buildApp({ env = process.env } = {}) {
     app.use(middleware());
   }
 
+  // Built per app rather than imported as a singleton: these are the only
+  // routes whose registration depends on the mode, so two apps built in the
+  // same process with different modes must not share them.
+  app.use('/', createAuthRouter({ mode }));
   app.use('/', apiRouter);
 
   if (isSuperTokensEnabled(mode)) {

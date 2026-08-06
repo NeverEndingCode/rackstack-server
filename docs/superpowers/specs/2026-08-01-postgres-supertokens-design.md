@@ -257,9 +257,14 @@ Starts only after v1.7 is confirmed running in production.
 >
 > Implementation plan: `docs/superpowers/plans/2026-08-06-v1.8-supertokens.md`.
 > Operator runbook: `docs/supertokens-rollout-runbook.md`.
-> Progress: Tasks 1–3 of 7 built (the `AUTH_MODE` switch; SuperTokens init,
+> Progress: Tasks 1–4 of 7 built (the `AUTH_MODE` switch; SuperTokens init,
 > provider config and conditional mounting; the identity mapping and its
-> ordering guarantee).
+> ordering guarantee; the authentication chain across all three modes).
+>
+> One gap found in Task 4 and not yet closed: the client does not use the
+> SuperTokens frontend SDK, so it cannot refresh an expired access token.
+> This does not affect `dual` (the legacy cookie still authenticates), but a
+> `supertokens`-only cutover needs frontend refresh handling first.
 
 ### 5.1 Containers
 

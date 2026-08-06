@@ -105,6 +105,38 @@ export async function initSuperTokens({ env = process.env, mode } = {}) {
   return true;
 }
 
+/**
+ * Whether SuperTokens is live in this process.
+ *
+ * This, not AUTH_MODE, is what the auth chain in server/auth.js branches on.
+ * The distinction matters: `requireAuth` is module-level middleware shared by
+ * every route, while the mode is resolved per-`buildApp()` call, so reading the
+ * mode there would mean guessing which app a request belongs to. Asking
+ * "has init actually run?" is both simpler and strictly safer - if SuperTokens
+ * is not initialised, calling into its SDK would throw, and that is exactly
+ * the condition this answers.
+ */
+export function isSuperTokensReady() {
+  return initialised;
+}
+
+/**
+ * The Session recipe module, or null when SuperTokens is not initialised.
+ *
+ * Cached after the first load. The import stays dynamic for the same reason
+ * every other one in this file does: in `passport` mode the SDK must never be
+ * loaded, and `requireAuth` runs on every single request in every mode.
+ */
+let sessionRecipe = null;
+export async function loadSessionRecipe() {
+  if (!initialised) return null;
+  if (!sessionRecipe) {
+    const m = await import('supertokens-node/recipe/session');
+    sessionRecipe = m.default ?? m;
+  }
+  return sessionRecipe;
+}
+
 /** Test-only: whether init has run in this process. */
 export function __isInitialised() {
   return initialised;
@@ -120,4 +152,5 @@ export function __isInitialised() {
  */
 export function __resetForTests() {
   initialised = false;
+  sessionRecipe = null;
 }

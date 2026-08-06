@@ -2,7 +2,8 @@ import passport from 'passport';
 import { Strategy as DiscordStrategy } from 'passport-discord';
 import { Strategy as GitHubStrategy } from 'passport-github2';
 import jwt from 'jsonwebtoken';
-import { upsertUser, getRoles } from './db.js';
+import { upsertUser, getRoles, getUserById } from './db.js';
+import { isSuperTokensReady, loadSessionRecipe } from './supertokens/init.js';
 
 const JWT_SECRET = process.env.JWT_SECRET;
 if (!JWT_SECRET) {
@@ -119,13 +120,85 @@ export function issueToken(user) {
   );
 }
 
-export function requireAuth(req, res, next) {
-  const token = req.cookies && req.cookies[COOKIE_NAME];
-  if (!token) return res.status(401).json({ error: 'not authenticated' });
+/**
+ * Resolves a SuperTokens session into our `req.user` shape, or null.
+ *
+ * Returns null - never throws - for every "no usable session" case, including
+ * a malformed, expired or revoked one. That is deliberate and is the single
+ * most important property of this function during a rollout: in `dual` mode a
+ * user can be carrying a stale SuperTokens session AND a perfectly good legacy
+ * JWT cookie, and letting the SuperTokens failure escape would 500 the request
+ * instead of falling through to the cookie that would have worked. This is the
+ * failure mode that would take logins down mid-migration.
+ *
+ * `session.getUserId()` returns our `users.id` rather than SuperTokens'
+ * internal id, because the user id mapping was created before the session was
+ * issued - see server/supertokens/mapping.js. The username and avatar are not
+ * in the session (the legacy JWT carries them in its payload), so they come
+ * from the database.
+ */
+async function userFromSuperTokens(req, res) {
+  if (!isSuperTokensReady()) return null;
   try {
-    req.user = jwt.verify(token, JWT_SECRET);
-    next();
+    const Session = await loadSessionRecipe();
+    if (!Session) return null;
+    const session = await Session.getSession(req, res, { sessionRequired: false });
+    if (!session) return null;
+
+    const sub = session.getUserId();
+    if (!sub) return null;
+
+    // A session for a user id with no row is not an authenticated user. It
+    // would mean the mapping resolved to something `users` has never heard of,
+    // and treating it as valid would hand out a request context whose `sub`
+    // matches no save, no role and no SUPER_ADMIN_IDS entry.
+    const user = await getUserById(sub);
+    if (!user) return null;
+
+    return { sub, username: user.username, avatarUrl: user.avatar_url };
   } catch (e) {
-    return res.status(401).json({ error: 'invalid or expired token' });
+    return null;
+  }
+}
+
+/**
+ * The v1.8 authentication chain: SuperTokens session first, then the legacy
+ * JWT cookie, then 401.
+ *
+ * Both paths populate the identical `req.user = { sub, username, avatarUrl }`,
+ * which is why no route handler changes in this release - `req.user.sub` is
+ * the only identity field the handlers read, and `requireRole` re-derives
+ * roles from it on every request (see requireRole above: it takes
+ * `req.user.sub` and goes to the database and env, so it needs no change and
+ * cannot be fooled by whichever stack authenticated the request).
+ *
+ * The JWT branch runs in EVERY mode, including `supertokens`. That is what
+ * makes the documented rollback real: legacy cookies stay valid for their full
+ * 90-day expiry through every transition in both directions, so nobody is
+ * forced to log in again by a mode change. `supertokens` mode stops *issuing*
+ * legacy cookies (the passport routes are not registered); it does not start
+ * rejecting the ones already in the wild.
+ *
+ * Async since v1.8. Express 4 does not route an async middleware's rejection
+ * to the error handler, so like requireRole this catches its own.
+ */
+export async function requireAuth(req, res, next) {
+  try {
+    const stUser = await userFromSuperTokens(req, res);
+    if (stUser) {
+      req.user = stUser;
+      return next();
+    }
+
+    const token = req.cookies && req.cookies[COOKIE_NAME];
+    if (!token) return res.status(401).json({ error: 'not authenticated' });
+    try {
+      req.user = jwt.verify(token, JWT_SECRET);
+    } catch (e) {
+      return res.status(401).json({ error: 'invalid or expired token' });
+    }
+    return next();
+  } catch (e) {
+    return next(e);
   }
 }
