@@ -1,12 +1,21 @@
-process.env.DB_PATH = ':memory:';
-
-import { describe, it, expect, beforeEach } from 'vitest';
+import {
+  describe, it, expect, beforeEach, afterAll,
+} from 'vitest';
 import { validateModifiers, validateLadder } from '../shared/events.js';
+import { provisionDatabase } from './helpers/backend.js';
+
+// Provision before importing the facade: DATABASE_URL/DB_PATH must be set
+// before the dynamic import below, since the facade resolves its driver at
+// module-evaluation time - a static `import { driver } from ...` would be
+// hoisted by the ESM spec above the provisioning call and stand up the
+// driver against the wrong backend/path.
+const provisioned = await provisionDatabase();
 
 const dbMod = await import('../server/db.js');
 const {
-  db,
+  driver,
   upsertUser,
+  getUserById,
   listEvents,
   getEvent,
   getActiveEvent,
@@ -21,8 +30,34 @@ const {
 } = dbMod;
 const { SEASONAL_EVENTS } = await import('../server/data/seasonalEvents.js');
 
-function tableNames() {
-  return db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().map((r) => r.name);
+afterAll(async () => {
+  if (driver.__backend === 'pg') await driver.__raw.end();
+  await provisioned.cleanup();
+});
+
+// Schema/table-existence assertions below are inherently backend-specific
+// (sqlite_master/PRAGMA table_info vs. pg_tables/information_schema); route
+// them through the driver handle rather than a module-level `db` export so
+// the intent stays explicit.
+const db = driver.__raw;
+
+async function tableNames() {
+  if (driver.__backend === 'sqlite') {
+    return db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().map((r) => r.name);
+  }
+  const { rows } = await db.query("SELECT tablename AS name FROM pg_tables WHERE schemaname = 'public'");
+  return rows.map((r) => r.name);
+}
+
+async function columnNames(table) {
+  if (driver.__backend === 'sqlite') {
+    return db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+  }
+  const { rows } = await db.query(
+    'SELECT column_name AS name FROM information_schema.columns WHERE table_name = $1',
+    [table],
+  );
+  return rows.map((r) => r.name);
 }
 
 function sampleEvent(overrides = {}) {
@@ -45,18 +80,20 @@ function sampleEvent(overrides = {}) {
 }
 
 describe('db schema v1.4', () => {
-  it('creates live_events and event_participation tables', () => {
-    const names = tableNames();
+  it('creates live_events and event_participation tables', async () => {
+    const names = await tableNames();
     expect(names).toContain('live_events');
     expect(names).toContain('event_participation');
   });
 
-  it('adds leaderboard_opt_out column to users', () => {
-    const cols = db.prepare('PRAGMA table_info(users)').all().map((c) => c.name);
+  it('adds leaderboard_opt_out column to users', async () => {
+    const cols = await columnNames('users');
     expect(cols).toContain('leaderboard_opt_out');
   });
 
-  it('re-running the guarded ALTER does not throw on a second boot', () => {
+  // SQLite-only: see the equivalent skip in tests/db.test.js - guarded ALTER
+  // is a SQLite-specific mechanism schema.pg.js has no counterpart for.
+  it.runIf(driver.__backend === 'sqlite')('re-running the guarded ALTER does not throw on a second boot', async () => {
     expect(() => {
       try {
         db.exec('ALTER TABLE users ADD COLUMN leaderboard_opt_out INTEGER DEFAULT 0');
@@ -68,9 +105,9 @@ describe('db schema v1.4', () => {
 });
 
 describe('live_events CRUD', () => {
-  it('putEvent + getEvent round-trips with JSON fields parsed', () => {
-    putEvent(sampleEvent());
-    const row = getEvent('test-event');
+  it('putEvent + getEvent round-trips with JSON fields parsed', async () => {
+    await putEvent(sampleEvent());
+    const row = await getEvent('test-event');
     expect(row.id).toBe('test-event');
     expect(row.name).toBe('Test Event');
     expect(row.theme).toEqual({ icon: '🧪', color: '#123456' });
@@ -83,22 +120,22 @@ describe('live_events CRUD', () => {
     expect(row.status).toBe('draft');
   });
 
-  it('getEvent returns undefined for an unknown id', () => {
-    expect(getEvent('nope')).toBeUndefined();
+  it('getEvent returns undefined for an unknown id', async () => {
+    expect(await getEvent('nope')).toBeUndefined();
   });
 
-  it('putEvent upserts (insert-or-replace) on a second call with the same id', () => {
-    putEvent(sampleEvent({ id: 'upsert-me', name: 'Original' }));
-    putEvent(sampleEvent({ id: 'upsert-me', name: 'Renamed' }));
-    const row = getEvent('upsert-me');
+  it('putEvent upserts (insert-or-replace) on a second call with the same id', async () => {
+    await putEvent(sampleEvent({ id: 'upsert-me', name: 'Original' }));
+    await putEvent(sampleEvent({ id: 'upsert-me', name: 'Renamed' }));
+    const row = await getEvent('upsert-me');
     expect(row.name).toBe('Renamed');
-    expect(listEvents().filter((e) => e.id === 'upsert-me').length).toBe(1);
+    expect((await listEvents()).filter((e) => e.id === 'upsert-me').length).toBe(1);
   });
 
-  it('listEvents returns all events with parsed JSON fields', () => {
-    putEvent(sampleEvent({ id: 'list-a' }));
-    putEvent(sampleEvent({ id: 'list-b' }));
-    const events = listEvents();
+  it('listEvents returns all events with parsed JSON fields', async () => {
+    await putEvent(sampleEvent({ id: 'list-a' }));
+    await putEvent(sampleEvent({ id: 'list-b' }));
+    const events = await listEvents();
     const ids = events.map((e) => e.id);
     expect(ids).toContain('list-a');
     expect(ids).toContain('list-b');
@@ -108,95 +145,93 @@ describe('live_events CRUD', () => {
     }
   });
 
-  it('getActiveEvent returns at most one event, only when status is active', () => {
-    putEvent(sampleEvent({ id: 'active-none', status: 'draft' }));
-    expect(getActiveEvent()).toBeUndefined();
+  it('getActiveEvent returns at most one event, only when status is active', async () => {
+    await putEvent(sampleEvent({ id: 'active-none', status: 'draft' }));
+    expect(await getActiveEvent()).toBeUndefined();
 
-    putEvent(sampleEvent({ id: 'active-one', status: 'active' }));
-    const active = getActiveEvent();
+    await putEvent(sampleEvent({ id: 'active-one', status: 'active' }));
+    const active = await getActiveEvent();
     expect(active).toBeDefined();
     expect(active.id).toBe('active-one');
     expect(active.status).toBe('active');
   });
 
-  it('setEventStatus updates status and window', () => {
-    putEvent(sampleEvent({ id: 'status-me', status: 'draft' }));
-    setEventStatus('status-me', 'scheduled', { startsAt: 1000, endsAt: 2000 });
-    const row = getEvent('status-me');
+  it('setEventStatus updates status and window', async () => {
+    await putEvent(sampleEvent({ id: 'status-me', status: 'draft' }));
+    await setEventStatus('status-me', 'scheduled', { startsAt: 1000, endsAt: 2000 });
+    const row = await getEvent('status-me');
     expect(row.status).toBe('scheduled');
     expect(row.starts_at).toBe(1000);
     expect(row.ends_at).toBe(2000);
 
-    setEventStatus('status-me', 'active');
-    expect(getEvent('status-me').status).toBe('active');
+    await setEventStatus('status-me', 'active');
+    expect((await getEvent('status-me')).status).toBe('active');
     // window untouched by the status-only call
-    expect(getEvent('status-me').starts_at).toBe(1000);
-    expect(getEvent('status-me').ends_at).toBe(2000);
+    expect((await getEvent('status-me')).starts_at).toBe(1000);
+    expect((await getEvent('status-me')).ends_at).toBe(2000);
   });
 
-  it('deleteEvent removes the row', () => {
-    putEvent(sampleEvent({ id: 'delete-me' }));
-    expect(getEvent('delete-me')).toBeDefined();
-    deleteEvent('delete-me');
-    expect(getEvent('delete-me')).toBeUndefined();
+  it('deleteEvent removes the row', async () => {
+    await putEvent(sampleEvent({ id: 'delete-me' }));
+    expect(await getEvent('delete-me')).toBeDefined();
+    await deleteEvent('delete-me');
+    expect(await getEvent('delete-me')).toBeUndefined();
   });
 });
 
 describe('event_participation', () => {
-  it('upsertParticipation round-trips and getParticipation reads it back', () => {
-    const u = upsertUser({ provider: 'discord', providerId: 'ep1', username: 'participant1', avatarUrl: null });
-    putEvent(sampleEvent({ id: 'part-event' }));
+  it('upsertParticipation round-trips and getParticipation reads it back', async () => {
+    const u = await upsertUser({ provider: 'discord', providerId: 'ep1', username: 'participant1', avatarUrl: null });
+    await putEvent(sampleEvent({ id: 'part-event' }));
 
-    upsertParticipation({
+    await upsertParticipation({
       userId: u.id, eventId: 'part-event', startedAt: 100, endsAt: 200, rungsClaimed: 2, lastProgressAt: 150, optedOut: false,
     });
-    const row = getParticipation(u.id, 'part-event');
+    const row = await getParticipation(u.id, 'part-event');
     expect(row.user_id).toBe(u.id);
     expect(row.event_id).toBe('part-event');
     expect(row.rungs_claimed).toBe(2);
     expect(row.opted_out).toBe(0);
 
-    upsertParticipation({
+    await upsertParticipation({
       userId: u.id, eventId: 'part-event', startedAt: 100, endsAt: 200, rungsClaimed: 5, lastProgressAt: 180, optedOut: false,
     });
-    const updated = getParticipation(u.id, 'part-event');
+    const updated = await getParticipation(u.id, 'part-event');
     expect(updated.rungs_claimed).toBe(5);
     expect(updated.last_progress_at).toBe(180);
   });
 
-  it('listParticipation orders by rungs_claimed DESC, last_progress_at ASC', () => {
-    const a = upsertUser({ provider: 'discord', providerId: 'ep2', username: 'participant2', avatarUrl: null });
-    const b = upsertUser({ provider: 'discord', providerId: 'ep3', username: 'participant3', avatarUrl: null });
-    const c = upsertUser({ provider: 'discord', providerId: 'ep4', username: 'participant4', avatarUrl: null });
-    putEvent(sampleEvent({ id: 'leaderboard-event' }));
+  it('listParticipation orders by rungs_claimed DESC, last_progress_at ASC', async () => {
+    const a = await upsertUser({ provider: 'discord', providerId: 'ep2', username: 'participant2', avatarUrl: null });
+    const b = await upsertUser({ provider: 'discord', providerId: 'ep3', username: 'participant3', avatarUrl: null });
+    const c = await upsertUser({ provider: 'discord', providerId: 'ep4', username: 'participant4', avatarUrl: null });
+    await putEvent(sampleEvent({ id: 'leaderboard-event' }));
 
-    upsertParticipation({ userId: a.id, eventId: 'leaderboard-event', startedAt: 0, endsAt: 1000, rungsClaimed: 3, lastProgressAt: 500 });
-    upsertParticipation({ userId: b.id, eventId: 'leaderboard-event', startedAt: 0, endsAt: 1000, rungsClaimed: 5, lastProgressAt: 900 });
-    upsertParticipation({ userId: c.id, eventId: 'leaderboard-event', startedAt: 0, endsAt: 1000, rungsClaimed: 5, lastProgressAt: 400 });
+    await upsertParticipation({ userId: a.id, eventId: 'leaderboard-event', startedAt: 0, endsAt: 1000, rungsClaimed: 3, lastProgressAt: 500 });
+    await upsertParticipation({ userId: b.id, eventId: 'leaderboard-event', startedAt: 0, endsAt: 1000, rungsClaimed: 5, lastProgressAt: 900 });
+    await upsertParticipation({ userId: c.id, eventId: 'leaderboard-event', startedAt: 0, endsAt: 1000, rungsClaimed: 5, lastProgressAt: 400 });
 
-    const rows = listParticipation('leaderboard-event');
+    const rows = await listParticipation('leaderboard-event');
     expect(rows.map((r) => r.user_id)).toEqual([c.id, b.id, a.id]);
   });
 
-  it('setLeaderboardOptOut round-trips on the users table', () => {
-    const u = upsertUser({ provider: 'discord', providerId: 'ep5', username: 'participant5', avatarUrl: null });
-    const before = db.prepare('SELECT leaderboard_opt_out FROM users WHERE id = ?').get(u.id);
-    expect(before.leaderboard_opt_out).toBe(0);
+  it('setLeaderboardOptOut round-trips on the users table', async () => {
+    const u = await upsertUser({ provider: 'discord', providerId: 'ep5', username: 'participant5', avatarUrl: null });
+    expect((await getUserById(u.id)).leaderboard_opt_out).toBe(0);
 
-    setLeaderboardOptOut(u.id, true);
-    const after = db.prepare('SELECT leaderboard_opt_out FROM users WHERE id = ?').get(u.id);
-    expect(after.leaderboard_opt_out).toBe(1);
+    await setLeaderboardOptOut(u.id, true);
+    expect((await getUserById(u.id)).leaderboard_opt_out).toBe(1);
 
-    setLeaderboardOptOut(u.id, false);
-    expect(db.prepare('SELECT leaderboard_opt_out FROM users WHERE id = ?').get(u.id).leaderboard_opt_out).toBe(0);
+    await setLeaderboardOptOut(u.id, false);
+    expect((await getUserById(u.id)).leaderboard_opt_out).toBe(0);
   });
 });
 
 describe('seedSeasonalEvents', () => {
-  it('inserts all seasonal events as drafts with NULL window', () => {
-    seedSeasonalEvents();
+  it('inserts all seasonal events as drafts with NULL window', async () => {
+    await seedSeasonalEvents();
     for (const evt of SEASONAL_EVENTS) {
-      const row = getEvent(evt.id);
+      const row = await getEvent(evt.id);
       expect(row).toBeDefined();
       expect(row.status).toBe('draft');
       expect(row.starts_at).toBeNull();
@@ -206,34 +241,34 @@ describe('seedSeasonalEvents', () => {
     }
   });
 
-  it('is idempotent across two calls', () => {
-    seedSeasonalEvents();
-    const first = listEvents().length;
-    seedSeasonalEvents();
-    const second = listEvents().length;
+  it('is idempotent across two calls', async () => {
+    await seedSeasonalEvents();
+    const first = (await listEvents()).length;
+    await seedSeasonalEvents();
+    const second = (await listEvents()).length;
     expect(second).toBe(first);
   });
 
-  it('does not clobber an admin-edited copy of a seeded event', () => {
-    seedSeasonalEvents();
-    const edited = { ...getEvent('summer-surge'), name: 'Admin Edited Summer Surge', status: 'active' };
-    putEvent(edited);
+  it('does not clobber an admin-edited copy of a seeded event', async () => {
+    await seedSeasonalEvents();
+    const edited = { ...(await getEvent('summer-surge')), name: 'Admin Edited Summer Surge', status: 'active' };
+    await putEvent(edited);
 
-    seedSeasonalEvents();
+    await seedSeasonalEvents();
 
-    const row = getEvent('summer-surge');
+    const row = await getEvent('summer-surge');
     expect(row.name).toBe('Admin Edited Summer Surge');
     expect(row.status).toBe('active');
   });
 });
 
 describe('SEASONAL_EVENTS content', () => {
-  it('every seasonal event has 4 known entries', () => {
+  it('every seasonal event has 4 known entries', async () => {
     const ids = SEASONAL_EVENTS.map((e) => e.id).sort();
     expect(ids).toEqual(['black-frame-friday', 'frost-uptime', 'spooky-packets', 'summer-surge']);
   });
 
-  it('every seasonal event passes validateModifiers and validateLadder', () => {
+  it('every seasonal event passes validateModifiers and validateLadder', async () => {
     for (const evt of SEASONAL_EVENTS) {
       const modResult = validateModifiers(evt.modifiers);
       expect(modResult.ok, `${evt.id} modifiers: ${JSON.stringify(modResult.errors)}`).toBe(true);
@@ -243,7 +278,7 @@ describe('SEASONAL_EVENTS content', () => {
     }
   });
 
-  it('every seasonal event has a well-formed recurrence', () => {
+  it('every seasonal event has a well-formed recurrence', async () => {
     for (const evt of SEASONAL_EVENTS) {
       expect(evt.recurrence).toBeDefined();
       expect(evt.recurrence.month).toBeGreaterThanOrEqual(1);

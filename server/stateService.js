@@ -7,6 +7,7 @@ import { getEffectiveConfig } from './configService.js';
 import { joinEventIfEligible, resolvePlayerEvents } from './eventService.js';
 import { rolloverContracts } from '../shared/contracts.js';
 import { checkAchievements } from '../shared/achievements.js';
+import { withUserLock } from './userLock.js';
 
 function safeParse(text, userId) {
   try {
@@ -33,7 +34,7 @@ function safeParse(text, userId) {
  * state further (crediting wafers, setting a cooldown) before a single
  * putSave, the same one-write pattern applyActions uses.
  */
-export function loadEvaluateAndSchedule(userId, now) {
+export async function loadEvaluateAndSchedule(userId, now) {
   // getEffectiveConfig() (server/configService.js) is getConfig()'s admin
   // baseline with the currently active live event's modifiers merged on
   // top (Task 4) - never the other way around. This is the ONLY read of
@@ -53,9 +54,9 @@ export function loadEvaluateAndSchedule(userId, now) {
   // itself - mutating the shared cached object would leak one user's
   // claimable event onto every other user's request that hits the same
   // cache before it next invalidates.
-  const effectiveConfig = getEffectiveConfig();
+  const effectiveConfig = await getEffectiveConfig();
   const config = { ...effectiveConfig.data };
-  const row = getSave(userId);
+  const row = await getSave(userId);
   const raw = row ? safeParse(row.data, userId) : null;
   const lastEvaluatedAt = row ? row.last_save : now;
 
@@ -77,7 +78,7 @@ export function loadEvaluateAndSchedule(userId, now) {
   // window; if their in-flight progress belongs to a now-superseded event,
   // clear it. Mutates state.meta.eventProgress in place, same convention as
   // scheduleAnomaly above.
-  const activeEvent = joinEventIfEligible(userId, state, now);
+  const activeEvent = await joinEventIfEligible(userId, state, now);
 
   // Resolve the per-user claimable event(s), if any, AFTER join-on-login has
   // had a chance to settle state.meta.eventProgress/pendingEventClaims (new
@@ -90,7 +91,7 @@ export function loadEvaluateAndSchedule(userId, now) {
   // getEvent() returns undefined, the entry is simply dropped, and
   // claimEventRung's own `!activeEvent` guard fails closed with
   // invalid_target - never throws.
-  const { current, pending } = resolvePlayerEvents(state);
+  const { current, pending } = await resolvePlayerEvents(state);
   if (current) {
     config.__claimableEvent = {
       id: current.event.id, ladder: current.event.ladder, endsAt: current.event.ends_at,
@@ -122,11 +123,21 @@ export function loadEvaluateAndSchedule(userId, now) {
   return { state, gained, config, activeEvent, unlockedAchievements };
 }
 
-/** Loads, evaluates, persists, and returns { state, gained, activeEvent } for GET /api/state. */
-export function loadAndEvaluate(userId, now = Date.now()) {
-  const { state, gained, activeEvent, unlockedAchievements } = loadEvaluateAndSchedule(userId, now);
-  putSave(userId, state, now);
-  return { state, gained, activeEvent, unlockedAchievements };
+/**
+ * Loads, evaluates, persists, and returns { state, gained, activeEvent } for
+ * GET /api/state.
+ *
+ * Serialized per user: this is a read-modify-write (load -> evaluate ->
+ * putSave) and every step now awaits, so without the lock a concurrent
+ * request for the same user reads the same pre-write state and the later
+ * putSave silently discards the earlier one. See server/userLock.js.
+ */
+export async function loadAndEvaluate(userId, now = Date.now()) {
+  return withUserLock(userId, async () => {
+    const { state, gained, activeEvent, unlockedAchievements } = await loadEvaluateAndSchedule(userId, now);
+    await putSave(userId, state, now);
+    return { state, gained, activeEvent, unlockedAchievements };
+  });
 }
 
 /**
@@ -139,11 +150,21 @@ export function loadAndEvaluate(userId, now = Date.now()) {
  * buyUpgrade/buyShardUpgrade/claimGoal/claimRepeatable/buyTapeUpgrade all
  * pass `{ type, id: <string identifier> }`) - echoing back `action.id`
  * here instead used to silently clobber those actions' own id client-side.
+ *
+ * Serialized per user for the same reason loadAndEvaluate is: the load and
+ * the putSave are separated by awaits, so a concurrent request for this user
+ * would evaluate against the same pre-write state and one of the two writes
+ * would be lost. The lock spans the participation-progress writes at the end
+ * too, since those are derived from the state this call just persisted.
  */
-export function applyActions(userId, actions, now = Date.now()) {
+export async function applyActions(userId, actions, now = Date.now()) {
+  return withUserLock(userId, () => applyActionsUnlocked(userId, actions, now));
+}
+
+async function applyActionsUnlocked(userId, actions, now) {
   const {
     state: loaded, config, unlockedAchievements: loadUnlocked,
-  } = loadEvaluateAndSchedule(userId, now);
+  } = await loadEvaluateAndSchedule(userId, now);
 
   let state = loaded;
   const results = [];
@@ -153,7 +174,7 @@ export function applyActions(userId, actions, now = Date.now()) {
     results.push({ ...result, _cid: action && action._cid });
   }
 
-  putSave(userId, state, now);
+  await putSave(userId, state, now);
 
   // Hotfix: event_participation.rungs_claimed was previously only ever
   // written once, at join time (joinEventIfEligible -> upsertParticipation,
@@ -183,7 +204,7 @@ export function applyActions(userId, actions, now = Date.now()) {
       ? state.meta.eventProgress
       : (state.meta.pendingEventClaims || []).find((p) => p && p.eventId === eventId);
     if (record && Array.isArray(record.rungsClaimed)) {
-      updateParticipationProgress(userId, eventId, record.rungsClaimed.length, now);
+      await updateParticipationProgress(userId, eventId, record.rungsClaimed.length, now);
     }
   }
 

@@ -4,43 +4,53 @@
 // are covered in tests/e2e/smoke-v14.mjs, because asserting only through the
 // API is precisely how all six of these shipped green.
 process.env.JWT_SECRET = 'test-secret-for-supertest-finalfix';
-process.env.DB_PATH = ':memory:';
 process.env.SUPER_ADMIN_IDS = 'test:finalfix-owner';
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterAll } from 'vitest';
 import request from 'supertest';
 import jwt from 'jsonwebtoken';
+import { provisionDatabase } from './helpers/backend.js';
+
+// Provision before importing the facade: DATABASE_URL/DB_PATH must be set
+// before the dynamic import below, since the facade resolves its driver at
+// module-evaluation time.
+const provisioned = await provisionDatabase();
 
 const { buildApp } = await import('../server/app.js');
 const { ensureConfig } = await import('../server/configService.js');
 const {
-  upsertUser, setRoles, putEvent, setEventStatus, getSave, putSave,
+  upsertUser, setRoles, putEvent, setEventStatus, getSave, putSave, driver,
 } = await import('../server/db.js');
 const { COOKIE_NAME } = await import('../server/auth.js');
 const { activateEvent, endEvent } = await import('../server/eventService.js');
 
-ensureConfig();
+await ensureConfig();
 const app = buildApp();
+
+afterAll(async () => {
+  if (driver.__backend === 'pg') await driver.__raw.end();
+  await provisioned.cleanup();
+});
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 let seq = 0;
 
-function makeUser() {
+async function makeUser() {
   seq += 1;
-  return upsertUser({
+  return await upsertUser({
     provider: 'discord', providerId: `ffa${seq}`, username: `ffauser${seq}`, avatarUrl: null,
   });
 }
 
-function makeCoordinator() {
-  const u = makeUser();
-  setRoles(u.id, ['event_coordinator']);
+async function makeCoordinator() {
+  const u = await makeUser();
+  await setRoles(u.id, ['event_coordinator']);
   return u;
 }
 
-function makeAdmin() {
-  const u = makeUser();
-  setRoles(u.id, ['admin']);
+async function makeAdmin() {
+  const u = await makeUser();
+  await setRoles(u.id, ['admin']);
   return u;
 }
 
@@ -53,9 +63,9 @@ function cookieFor(user) {
   return `${COOKIE_NAME}=${token}`;
 }
 
-function makeEvent(overrides = {}) {
+async function makeEvent(overrides = {}) {
   seq += 1;
-  return putEvent({
+  return await putEvent({
     id: `ffa-evt-${seq}`,
     name: `Final Fix API Event ${seq}`,
     description: 'desc',
@@ -80,21 +90,21 @@ function makeEvent(overrides = {}) {
 describe('GET /api/event and GET /api/state during the post-end claim grace', () => {
   it('still serves the ladder, progress and a claimable rung after the event ends globally', async () => {
     const now = Date.now();
-    const user = makeUser();
-    const evt = makeEvent();
-    setEventStatus(evt.id, 'scheduled', { startsAt: now - 1000, endsAt: now + DAY_MS });
-    activateEvent(evt.id, now);
+    const user = await makeUser();
+    const evt = await makeEvent();
+    await setEventStatus(evt.id, 'scheduled', { startsAt: now - 1000, endsAt: now + DAY_MS });
+    await activateEvent(evt.id, now);
 
     // Join, then earn enough to meet rung 0.
     await request(app).get('/api/event').set('Cookie', cookieFor(user));
-    const row = getSave(user.id);
+    const row = await getSave(user.id);
     const data = JSON.parse(row.data);
     data.meta.stats.lifetimeFlopsAllTime += 300;
-    putSave(user.id, data, Date.now());
+    await putSave(user.id, data, Date.now());
 
     // The event ends globally. The player's personal window (and its 48h
     // grace) is untouched.
-    endEvent(evt.id, Date.now());
+    await endEvent(evt.id, Date.now());
 
     // Pre-fix this returned { event: null, progress: null, leaderboard: [] }
     // because the route gated the entire response on getActiveEvent(), so a
@@ -127,18 +137,18 @@ describe('GET /api/event and GET /api/state during the post-end claim grace', ()
 
   it('reports no event once the grace window itself has lapsed', async () => {
     const now = Date.now();
-    const user = makeUser();
-    const evt = makeEvent();
-    setEventStatus(evt.id, 'scheduled', { startsAt: now - 1000, endsAt: now + DAY_MS });
-    activateEvent(evt.id, now);
+    const user = await makeUser();
+    const evt = await makeEvent();
+    await setEventStatus(evt.id, 'scheduled', { startsAt: now - 1000, endsAt: now + DAY_MS });
+    await activateEvent(evt.id, now);
     await request(app).get('/api/event').set('Cookie', cookieFor(user));
-    endEvent(evt.id, Date.now());
+    await endEvent(evt.id, Date.now());
 
     // Push the personal window (and its grace) fully into the past.
-    const row = getSave(user.id);
+    const row = await getSave(user.id);
     const data = JSON.parse(row.data);
     data.meta.eventProgress.endsAt = Date.now() - 100 * DAY_MS;
-    putSave(user.id, data, Date.now());
+    await putSave(user.id, data, Date.now());
 
     const res = await request(app).get('/api/event').set('Cookie', cookieFor(user));
     expect(res.body.event).toBeNull();
@@ -154,16 +164,16 @@ describe('GET /api/event and GET /api/state during the post-end claim grace', ()
 describe('GET /api/config (gameplay) vs GET /api/admin/config (baseline)', () => {
   it('serves the event-overlaid config to players and the untouched baseline to admins', async () => {
     const now = Date.now();
-    const player = makeUser();
-    const admin = makeAdmin();
-    const evt = makeEvent({
+    const player = await makeUser();
+    const admin = await makeAdmin();
+    const evt = await makeEvent({
       modifiers: [
         { path: 'production.gridMult', value: 3 },
         { path: 'heat.capacity', value: 4000 },
       ],
     });
-    setEventStatus(evt.id, 'scheduled', { startsAt: now - 1000, endsAt: now + DAY_MS });
-    activateEvent(evt.id, now);
+    await setEventStatus(evt.id, 'scheduled', { startsAt: now - 1000, endsAt: now + DAY_MS });
+    await activateEvent(evt.id, now);
 
     // Pre-fix BOTH of these read the baseline, so the client predicted
     // production from gridMult 1 while the server used 3, and crossed its own
@@ -186,7 +196,7 @@ describe('GET /api/config (gameplay) vs GET /api/admin/config (baseline)', () =>
     expect(baseline.body.data.production.gridMult).toBe(1);
     expect(baseline.body.data.heat.capacity).toBe(2000);
 
-    endEvent(evt.id, Date.now());
+    await endEvent(evt.id, Date.now());
 
     // Once the event ends, the gameplay read falls back to the baseline and
     // its cache key changes - which is the client's refetch signal, since the
@@ -198,17 +208,17 @@ describe('GET /api/config (gameplay) vs GET /api/admin/config (baseline)', () =>
   });
 
   it('gates the baseline route on admin', async () => {
-    const plain = makeUser();
+    const plain = await makeUser();
     const res = await request(app).get('/api/admin/config').set('Cookie', cookieFor(plain));
     expect(res.status).toBe(403);
   });
 
   it('an admin round-tripping the baseline never bakes event modifiers into the stored config', async () => {
     const now = Date.now();
-    const admin = makeAdmin();
-    const evt = makeEvent({ modifiers: [{ path: 'production.gridMult', value: 3 }] });
-    setEventStatus(evt.id, 'scheduled', { startsAt: now - 1000, endsAt: now + DAY_MS });
-    activateEvent(evt.id, now);
+    const admin = await makeAdmin();
+    const evt = await makeEvent({ modifiers: [{ path: 'production.gridMult', value: 3 }] });
+    await setEventStatus(evt.id, 'scheduled', { startsAt: now - 1000, endsAt: now + DAY_MS });
+    await activateEvent(evt.id, now);
 
     const loaded = await request(app).get('/api/admin/config').set('Cookie', cookieFor(admin));
     const saved = await request(app)
@@ -217,7 +227,7 @@ describe('GET /api/config (gameplay) vs GET /api/admin/config (baseline)', () =>
       .send({ data: loaded.body.data });
     expect(saved.status).toBe(200);
 
-    endEvent(evt.id, Date.now());
+    await endEvent(evt.id, Date.now());
 
     const stored = await request(app).get('/api/admin/config').set('Cookie', cookieFor(admin));
     expect(stored.body.data.production.gridMult).toBe(1);
@@ -241,7 +251,7 @@ describe('POST /api/admin/events: recurrence validation', () => {
   }
 
   it('accepts a well-formed annual recurrence', async () => {
-    const coord = makeCoordinator();
+    const coord = await makeCoordinator();
     const res = await request(app)
       .post('/api/admin/events')
       .set('Cookie', cookieFor(coord))
@@ -250,7 +260,7 @@ describe('POST /api/admin/events: recurrence validation', () => {
   });
 
   it('rejects shapes that would strand the event or expire it instantly', async () => {
-    const coord = makeCoordinator();
+    const coord = await makeCoordinator();
     for (const recurrence of [{}, 'weekly', [], { month: 7, day: 1, durationDays: -5 }, { month: 0, day: 1, durationDays: 5 }]) {
       // eslint-disable-next-line no-await-in-loop
       const res = await request(app)
@@ -263,7 +273,7 @@ describe('POST /api/admin/events: recurrence validation', () => {
   });
 
   it('still accepts an event with no recurrence at all', async () => {
-    const coord = makeCoordinator();
+    const coord = await makeCoordinator();
     const res = await request(app)
       .post('/api/admin/events')
       .set('Cookie', cookieFor(coord))

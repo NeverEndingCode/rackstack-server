@@ -1,26 +1,36 @@
 process.env.JWT_SECRET = 'test-secret-for-supertest-social';
-process.env.DB_PATH = ':memory:';
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterAll } from 'vitest';
 import request from 'supertest';
 import jwt from 'jsonwebtoken';
+import { provisionDatabase } from './helpers/backend.js';
+
+// Provision before importing the facade: DATABASE_URL/DB_PATH must be set
+// before the dynamic import below, since the facade resolves its driver at
+// module-evaluation time.
+const provisioned = await provisionDatabase();
 
 const { buildApp } = await import('../server/app.js');
 const { ensureConfig } = await import('../server/configService.js');
-const { upsertUser, putSave, setLeaderboardOptOut } = await import('../server/db.js');
+const { upsertUser, putSave, setLeaderboardOptOut, driver } = await import('../server/db.js');
 const { invalidateLeaderboards } = await import('../server/leaderboardService.js');
 const { COOKIE_NAME } = await import('../server/auth.js');
 const { initialState } = await import('../shared/state.js');
 
-ensureConfig();
+await ensureConfig();
 const app = buildApp();
 
+afterAll(async () => {
+  if (driver.__backend === 'pg') await driver.__raw.end();
+  await provisioned.cleanup();
+});
+
 let seq = 0;
-function seedPlayer({
+async function seedPlayer({
   flops = 0, level = 0, cores = 0, singularities = 0, tapes = 0, achievements = {},
 } = {}) {
   seq += 1;
-  const u = upsertUser({
+  const u = await upsertUser({
     provider: 'discord', providerId: `lb${seq}`, username: `lbuser${seq}`,
     avatarUrl: `https://x/${seq}.png`,
   });
@@ -31,7 +41,7 @@ function seedPlayer({
   s.meta.stats.singularities = singularities;
   s.meta.coldStorage.tapes = tapes;
   s.meta.achievements = achievements;
-  putSave(u.id, s, Date.now());
+  await putSave(u.id, s, Date.now());
   return u;
 }
 
@@ -49,8 +59,8 @@ describe('GET /api/leaderboard', () => {
   });
 
   it('returns every board, ranked descending', async () => {
-    const low = seedPlayer({ flops: 100, level: 1 });
-    const high = seedPlayer({ flops: 999999, level: 40 });
+    const low = await seedPlayer({ flops: 100, level: 1 });
+    const high = await seedPlayer({ flops: 999999, level: 40 });
     invalidateLeaderboards();
     const res = await request(app).get('/api/leaderboard').set('Cookie', cookieFor(low));
     expect(res.status).toBe(200);
@@ -67,9 +77,9 @@ describe('GET /api/leaderboard', () => {
   });
 
   it('excludes opted-out players from every board', async () => {
-    const shy = seedPlayer({ flops: 1e12, level: 90 });
-    const seen = seedPlayer({ flops: 5, level: 1 });
-    setLeaderboardOptOut(shy.id, true);
+    const shy = await seedPlayer({ flops: 1e12, level: 90 });
+    const seen = await seedPlayer({ flops: 5, level: 1 });
+    await setLeaderboardOptOut(shy.id, true);
     invalidateLeaderboards();
     const res = await request(app).get('/api/leaderboard').set('Cookie', cookieFor(seen));
     for (const board of Object.values(res.body.boards)) {
@@ -78,7 +88,7 @@ describe('GET /api/leaderboard', () => {
   });
 
   it('surfaces up to three badges per row, gold first', async () => {
-    const decorated = seedPlayer({
+    const decorated = await seedPlayer({
       flops: 42,
       achievements: {
         first_migrate: 1, first_singularity: 2, level_10: 3, jackpot: 4, level_50: 5,
@@ -92,13 +102,13 @@ describe('GET /api/leaderboard', () => {
   });
 
   it('serves a cached payload within the TTL and rebuilds after invalidation', async () => {
-    const u = seedPlayer({ flops: 1 });
+    const u = await seedPlayer({ flops: 1 });
     invalidateLeaderboards();
     const first = await request(app).get('/api/leaderboard').set('Cookie', cookieFor(u));
     const second = await request(app).get('/api/leaderboard').set('Cookie', cookieFor(u));
     expect(second.body.generatedAt).toBe(first.body.generatedAt); // same cached build
 
-    seedPlayer({ flops: 1e15 });
+    await seedPlayer({ flops: 1e15 });
     const stale = await request(app).get('/api/leaderboard').set('Cookie', cookieFor(u));
     expect(stale.body.generatedAt).toBe(first.body.generatedAt); // still cached
 
@@ -116,8 +126,8 @@ describe('GET /api/leaderboard', () => {
   // and this control must not silently mean something weaker on the newer
   // boards. Caught by tests/e2e/smoke-v15.mjs before it was fixed.
   it('opting out through the route takes effect immediately, not after the cache TTL', async () => {
-    const shy = seedPlayer({ flops: 7e14 });
-    const observer = seedPlayer({ flops: 3 });
+    const shy = await seedPlayer({ flops: 7e14 });
+    const observer = await seedPlayer({ flops: 3 });
     invalidateLeaderboards();
 
     const before = await request(app).get('/api/leaderboard').set('Cookie', cookieFor(observer));
@@ -137,8 +147,8 @@ describe('GET /api/leaderboard', () => {
   });
 
   it('skips users with no save row without throwing', async () => {
-    const u = seedPlayer({ flops: 1 });
-    upsertUser({
+    const u = await seedPlayer({ flops: 1 });
+    await upsertUser({
       provider: 'discord', providerId: 'lb-nosave', username: 'nosave', avatarUrl: null,
     });
     invalidateLeaderboards();

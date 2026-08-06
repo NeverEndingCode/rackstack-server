@@ -1,25 +1,33 @@
 process.env.JWT_SECRET = 'test-secret-for-supertest-events';
-process.env.DB_PATH = ':memory:';
 process.env.SUPER_ADMIN_IDS = 'test:events-owner';
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterAll } from 'vitest';
 import request from 'supertest';
 import jwt from 'jsonwebtoken';
+import { provisionDatabase } from './helpers/backend.js';
 
-// Dynamic imports: server/auth.js reads JWT_SECRET (and server/db.js reads
-// DB_PATH) at module-evaluation time - same trick as tests/api.test.js.
+// Provision before importing the facade: DATABASE_URL/DB_PATH must be set
+// before the dynamic import below, since the facade resolves its driver at
+// module-evaluation time - same trick as tests/api.test.js.
+const provisioned = await provisionDatabase();
+
 const { buildApp } = await import('../server/app.js');
 const { ensureConfig, getEffectiveConfig } = await import('../server/configService.js');
-const { upsertUser, setRoles } = await import('../server/db.js');
+const { upsertUser, setRoles, driver } = await import('../server/db.js');
 const { COOKIE_NAME } = await import('../server/auth.js');
 
-ensureConfig();
+await ensureConfig();
 const app = buildApp();
 
+afterAll(async () => {
+  if (driver.__backend === 'pg') await driver.__raw.end();
+  await provisioned.cleanup();
+});
+
 let seq = 0;
-function makeUser(overrides = {}) {
+async function makeUser(overrides = {}) {
   seq += 1;
-  return upsertUser({
+  return await upsertUser({
     provider: 'discord',
     providerId: `ev${seq}`,
     username: `evuser${seq}`,
@@ -28,9 +36,9 @@ function makeUser(overrides = {}) {
   });
 }
 
-function makeCoordinator() {
-  const u = makeUser();
-  setRoles(u.id, ['event_coordinator']);
+async function makeCoordinator() {
+  const u = await makeUser();
+  await setRoles(u.id, ['event_coordinator']);
   return u;
 }
 
@@ -101,7 +109,7 @@ async function endEventReq(coordinator, id) {
 
 describe('GET /api/event (no active event, must run first)', () => {
   it('returns event: null, progress: null, leaderboard: [] when nothing is active', async () => {
-    const user = makeUser();
+    const user = await makeUser();
     const res = await request(app).get('/api/event').set('Cookie', cookieFor(user));
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
@@ -112,8 +120,8 @@ describe('GET /api/event (no active event, must run first)', () => {
 
 describe('coordinator gating: every admin event route 403s for a non-coordinator', () => {
   it('403s across the board', async () => {
-    const plain = makeUser();
-    const coordinator = makeCoordinator();
+    const plain = await makeUser();
+    const coordinator = await makeCoordinator();
     const event = await createEvent(coordinator);
 
     const attempts = [
@@ -142,7 +150,7 @@ describe('coordinator gating: every admin event route 403s for a non-coordinator
 
 describe('coordinator lifecycle: create -> schedule -> activate -> end', () => {
   it('walks the full happy path and is reflected in GET /api/event for a player', async () => {
-    const coordinator = makeCoordinator();
+    const coordinator = await makeCoordinator();
     const now = Date.now();
 
     const created = await createEvent(coordinator, { id: 'lifecycle-evt' });
@@ -162,7 +170,7 @@ describe('coordinator lifecycle: create -> schedule -> activate -> end', () => {
     expect(activateRes.status).toBe(200);
     expect(activateRes.body.event.status).toBe('active');
 
-    const player = makeUser();
+    const player = await makeUser();
     const playerRes = await request(app).get('/api/event').set('Cookie', cookieFor(player));
     expect(playerRes.status).toBe(200);
     expect(playerRes.body.event).toMatchObject({
@@ -183,7 +191,7 @@ describe('coordinator lifecycle: create -> schedule -> activate -> end', () => {
   });
 
   it('GET /api/admin/events lists events with participation counts', async () => {
-    const coordinator = makeCoordinator();
+    const coordinator = await makeCoordinator();
     const created = await createEvent(coordinator);
     const res = await request(app).get('/api/admin/events').set('Cookie', cookieFor(coordinator));
     expect(res.status).toBe(200);
@@ -194,7 +202,7 @@ describe('coordinator lifecycle: create -> schedule -> activate -> end', () => {
   });
 
   it('GET /api/admin/events/:id/participation returns the coordinator view', async () => {
-    const coordinator = makeCoordinator();
+    const coordinator = await makeCoordinator();
     const created = await createEvent(coordinator);
     const res = await request(app)
       .get(`/api/admin/events/${created.id}/participation`)
@@ -206,7 +214,7 @@ describe('coordinator lifecycle: create -> schedule -> activate -> end', () => {
 
 describe('activating a second event while one is active -> 409', () => {
   it('rejects; ending the first, then activating the second, succeeds', async () => {
-    const coordinator = makeCoordinator();
+    const coordinator = await makeCoordinator();
     const now = Date.now();
 
     await createEvent(coordinator, { id: 'conflict-a' });
@@ -234,7 +242,7 @@ describe('activating a second event while one is active -> 409', () => {
 
 describe('rejecting activation of an event whose window has already fully passed (hard requirement 2)', () => {
   it('400s with invalid_target rather than activating with an already-expired window', async () => {
-    const coordinator = makeCoordinator();
+    const coordinator = await makeCoordinator();
     const now = Date.now();
 
     await createEvent(coordinator, { id: 'past-window' });
@@ -251,7 +259,7 @@ describe('rejecting activation of an event whose window has already fully passed
 
 describe('editing an active event (ladder/modifiers locked, cache invalidation on window edit)', () => {
   it('rejects ladder/modifiers edits on an active event with 409, but allows name edits', async () => {
-    const coordinator = makeCoordinator();
+    const coordinator = await makeCoordinator();
     const now = Date.now();
 
     await createEvent(coordinator, { id: 'edit-locked' });
@@ -283,7 +291,7 @@ describe('editing an active event (ladder/modifiers locked, cache invalidation o
   });
 
   it('invalidates the effective-config cache when an active event window edit changes endsAt (hard requirement 3)', async () => {
-    const coordinator = makeCoordinator();
+    const coordinator = await makeCoordinator();
     const now = Date.now();
 
     await createEvent(coordinator, { id: 'cache-invalidate' });
@@ -291,7 +299,7 @@ describe('editing an active event (ladder/modifiers locked, cache invalidation o
     await activateEventReq(coordinator, 'cache-invalidate');
 
     // Populate the effective-config cache with the original endsAt.
-    const before = getEffectiveConfig();
+    const before = await getEffectiveConfig();
     expect(before.data.__activeEvent.id).toBe('cache-invalidate');
     expect(before.data.__activeEvent.endsAt).toBe(now + 100000);
 
@@ -302,7 +310,7 @@ describe('editing an active event (ladder/modifiers locked, cache invalidation o
       .send({ startsAt: now - 1000, endsAt: newEndsAt });
     expect(windowEdit.status).toBe(200);
 
-    const after = getEffectiveConfig();
+    const after = await getEffectiveConfig();
     expect(after.data.__activeEvent.endsAt).toBe(newEndsAt);
 
     await endEventReq(coordinator, 'cache-invalidate');
@@ -311,7 +319,7 @@ describe('editing an active event (ladder/modifiers locked, cache invalidation o
 
 describe('deleting a non-draft event -> 409', () => {
   it('rejects deleting a scheduled event, allows deleting a draft', async () => {
-    const coordinator = makeCoordinator();
+    const coordinator = await makeCoordinator();
     const now = Date.now();
 
     const scheduled = await createEvent(coordinator, { id: 'delete-scheduled' });
@@ -337,7 +345,7 @@ describe('deleting a non-draft event -> 409', () => {
 
 describe('POST /api/admin/events validation', () => {
   it('400s with errors[] for invalid modifiers', async () => {
-    const coordinator = makeCoordinator();
+    const coordinator = await makeCoordinator();
     const res = await request(app)
       .post('/api/admin/events')
       .set('Cookie', cookieFor(coordinator))
@@ -348,7 +356,7 @@ describe('POST /api/admin/events validation', () => {
   });
 
   it('400s with errors[] for invalid ladder', async () => {
-    const coordinator = makeCoordinator();
+    const coordinator = await makeCoordinator();
     const res = await request(app)
       .post('/api/admin/events')
       .set('Cookie', cookieFor(coordinator))
@@ -359,7 +367,7 @@ describe('POST /api/admin/events validation', () => {
   });
 
   it('409s on a duplicate id', async () => {
-    const coordinator = makeCoordinator();
+    const coordinator = await makeCoordinator();
     await createEvent(coordinator, { id: 'dup-id' });
     const res = await request(app)
       .post('/api/admin/events')
@@ -369,7 +377,7 @@ describe('POST /api/admin/events validation', () => {
   });
 
   it('400s on a non-slug-safe id', async () => {
-    const coordinator = makeCoordinator();
+    const coordinator = await makeCoordinator();
     const res = await request(app)
       .post('/api/admin/events')
       .set('Cookie', cookieFor(coordinator))
@@ -380,15 +388,15 @@ describe('POST /api/admin/events validation', () => {
 
 describe('leaderboard opt-out must be live, not snapshot-only (hard requirement 1)', () => {
   it('a user who opts out AFTER joining an active event vanishes from the leaderboard', async () => {
-    const coordinator = makeCoordinator();
+    const coordinator = await makeCoordinator();
     const now = Date.now();
 
     await createEvent(coordinator, { id: 'optout-evt' });
     await scheduleEvent(coordinator, 'optout-evt', { startsAt: now - 1000, endsAt: now + 100000 });
     await activateEventReq(coordinator, 'optout-evt');
 
-    const alice = makeUser();
-    const bob = makeUser();
+    const alice = await makeUser();
+    const bob = await makeUser();
 
     // Both join by hitting a state-reading route.
     await request(app).get('/api/event').set('Cookie', cookieFor(alice));
@@ -417,7 +425,7 @@ describe('leaderboard opt-out must be live, not snapshot-only (hard requirement 
 
 describe('PUT /api/me/leaderboard-opt-out', () => {
   it('400s on a non-boolean optOut', async () => {
-    const user = makeUser();
+    const user = await makeUser();
     const res = await request(app)
       .put('/api/me/leaderboard-opt-out')
       .set('Cookie', cookieFor(user))

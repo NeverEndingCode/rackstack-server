@@ -57,20 +57,20 @@ const MAX_PENDING_EVENT_CLAIMS = 3;
  *
  * Returns `{ ok: true }` or `{ ok: false, error }`.
  */
-export function activateEvent(id, now = Date.now()) {
-  const event = getEvent(id);
+export async function activateEvent(id, now = Date.now()) {
+  const event = await getEvent(id);
   if (!event) return { ok: false, error: 'not_found' };
   if (event.ends_at == null) return { ok: false, error: 'not_scheduled' };
   if (event.ends_at <= now) return { ok: false, error: 'invalid_target' };
 
-  for (const other of listEvents()) {
+  for (const other of await listEvents()) {
     if (other.status === 'active' && other.id !== id) {
-      setEventStatus(other.id, 'ended');
+      await setEventStatus(other.id, 'ended');
     }
   }
 
   const startsAt = event.starts_at ?? now;
-  setEventStatus(id, 'active', { startsAt, endsAt: event.ends_at });
+  await setEventStatus(id, 'active', { startsAt, endsAt: event.ends_at });
   invalidateEffectiveConfig();
   return { ok: true };
 }
@@ -82,10 +82,10 @@ export function activateEvent(id, now = Date.now()) {
  * through their own 48h grace period; they're only force-cleared when a
  * *different* event next goes active (joinEventIfEligible, below).
  */
-export function endEvent(id, now = Date.now()) {
-  const event = getEvent(id);
+export async function endEvent(id, now = Date.now()) {
+  const event = await getEvent(id);
   if (!event) return { ok: false, error: 'not_found' };
-  setEventStatus(id, 'ended');
+  await setEventStatus(id, 'ended');
   invalidateEffectiveConfig();
   return { ok: true };
 }
@@ -143,8 +143,8 @@ function nextOccurrence({ month, day, durationDays }, now) {
  * only ever fires on rows written before that validation existed, or edited
  * directly in the DB.
  */
-function materializeRecurrences(now) {
-  for (const event of listEvents()) {
+async function materializeRecurrences(now) {
+  for (const event of await listEvents()) {
     if (!isValidRecurrence(event.recurrence)) continue;
 
     const isUnscheduledDraft = event.status === 'draft'
@@ -154,7 +154,7 @@ function materializeRecurrences(now) {
     if (!isUnscheduledDraft && !isElapsedRecurring) continue;
 
     const { startsAt, endsAt } = nextOccurrence(event.recurrence, now);
-    setEventStatus(event.id, 'scheduled', { startsAt, endsAt });
+    await setEventStatus(event.id, 'scheduled', { startsAt, endsAt });
   }
 }
 
@@ -185,25 +185,25 @@ function materializeRecurrences(now) {
  *     materializeRecurrences above, which re-arms it for next year if it
  *     recurs.
  */
-export function runScheduler(now = Date.now()) {
-  materializeRecurrences(now);
+export async function runScheduler(now = Date.now()) {
+  await materializeRecurrences(now);
 
-  for (const event of listEvents()) {
+  for (const event of await listEvents()) {
     if (event.status === 'active' && event.ends_at != null && event.ends_at <= now) {
-      endEvent(event.id, now);
+      await endEvent(event.id, now);
     }
   }
 
-  const arrived = listEvents()
+  const arrived = (await listEvents())
     .filter((e) => e.status === 'scheduled' && e.starts_at != null && e.starts_at <= now)
     .sort((a, b) => (a.starts_at - b.starts_at) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 
   for (const event of arrived) {
     if (event.ends_at == null || event.ends_at <= now) {
-      endEvent(event.id, now);
+      await endEvent(event.id, now);
       continue;
     }
-    activateEvent(event.id, now);
+    await activateEvent(event.id, now);
   }
 }
 
@@ -244,14 +244,14 @@ export function runScheduler(now = Date.now()) {
  * (stateService) don't need a second DB round-trip to build the API
  * response's `activeEvent` field.
  */
-export function joinEventIfEligible(userId, state, now = Date.now()) {
-  const activeEvent = getActiveEvent();
+export async function joinEventIfEligible(userId, state, now = Date.now()) {
+  const activeEvent = await getActiveEvent();
   const progress = state.meta.eventProgress;
 
   if (activeEvent && progress && progress.eventId !== activeEvent.id) {
     // The OUTGOING event, not the incoming one - supersede needs its ladder to
     // freeze the met-but-unclaimed rung set before the window is force-ended.
-    supersedeEventProgress(state.meta, now, getEvent(progress.eventId));
+    supersedeEventProgress(state.meta, now, await getEvent(progress.eventId));
   }
 
   // Runs on every load, event active or not, so records age out of the save
@@ -279,8 +279,8 @@ export function joinEventIfEligible(userId, state, now = Date.now()) {
     rungsClaimed: [],
   };
 
-  const user = getUserById(userId);
-  upsertParticipation({
+  const user = await getUserById(userId);
+  await upsertParticipation({
     userId,
     eventId: activeEvent.id,
     startedAt: now,
@@ -314,19 +314,19 @@ export function joinEventIfEligible(userId, state, now = Date.now()) {
  * (its documented past-grace code) instead of falling through to
  * `invalid_target`; the presentation routes gate on inClaimGrace() below.
  */
-export function resolvePlayerEvents(state) {
+export async function resolvePlayerEvents(state) {
   const result = { current: null, pending: [] };
 
   const ep = state.meta.eventProgress;
   if (ep && typeof ep.eventId === 'string') {
-    const event = getEvent(ep.eventId);
+    const event = await getEvent(ep.eventId);
     if (event) result.current = { event, progress: ep };
   }
 
   const pending = Array.isArray(state.meta.pendingEventClaims) ? state.meta.pendingEventClaims : [];
   for (const p of pending) {
     if (!p || typeof p.eventId !== 'string') continue;
-    const event = getEvent(p.eventId);
+    const event = await getEvent(p.eventId);
     if (event) result.pending.push({ event, progress: p });
   }
 

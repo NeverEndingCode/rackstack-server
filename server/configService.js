@@ -32,11 +32,11 @@ let effectiveCache = null;
  *    stored, persist it as a new version (audit trail via config_history)
  *    so the drift is visible, not silent.
  */
-export function ensureConfig() {
-  const row = getConfigRow();
+export async function ensureConfig() {
+  const row = await getConfigRow();
 
   if (!row) {
-    putConfigRow(1, DEFAULT_CONFIG, null);
+    await putConfigRow(1, DEFAULT_CONFIG, null);
     cache = { version: 1, data: structuredClone(DEFAULT_CONFIG) };
     return cache;
   }
@@ -61,7 +61,7 @@ export function ensureConfig() {
   const changed = JSON.stringify(data) !== JSON.stringify(raw);
   if (changed) {
     const nextVersion = row.version + 1;
-    putConfigRow(nextVersion, data, row.updated_by || null);
+    await putConfigRow(nextVersion, data, row.updated_by || null);
     cache = { version: nextVersion, data };
   } else {
     cache = { version: row.version, data };
@@ -70,8 +70,8 @@ export function ensureConfig() {
 }
 
 /** Cached { version, data }. Lazily calls ensureConfig() on first access. */
-export function getConfig() {
-  if (!cache) return ensureConfig();
+export async function getConfig() {
+  if (!cache) return await ensureConfig();
   return cache;
 }
 
@@ -108,9 +108,9 @@ export function invalidateEffectiveConfig() {
  * mergeEventModifiers has already run - validateConfig() never sees it, and
  * it must never be written back to the config table.
  */
-export function getEffectiveConfig() {
-  const { version, data } = getConfig();
-  const activeEvent = getActiveEvent();
+export async function getEffectiveConfig() {
+  const { version, data } = await getConfig();
+  const activeEvent = await getActiveEvent();
   const eventId = activeEvent ? activeEvent.id : null;
 
   if (effectiveCache && effectiveCache.version === version && effectiveCache.eventId === eventId) {
@@ -131,13 +131,13 @@ export function getEffectiveConfig() {
  * Validates and stores a brand-new config document as the next version.
  * Returns { ok: true, version } or { ok: false, errors }.
  */
-export function updateConfig(data, userId) {
+export async function updateConfig(data, userId) {
   const check = validateConfig(data);
   if (!check.ok) return { ok: false, errors: check.errors };
 
-  const current = getConfig();
+  const current = await getConfig();
   const nextVersion = current.version + 1;
-  putConfigRow(nextVersion, data, userId ?? null);
+  await putConfigRow(nextVersion, data, userId ?? null);
   cache = { version: nextVersion, data: structuredClone(data) };
   return { ok: true, version: nextVersion };
 }
@@ -147,8 +147,8 @@ export function updateConfig(data, userId) {
  * itself forward motion in the version counter, never a version rewind -
  * keeps config_history a true append-only audit log).
  */
-export function rollbackConfig(version, userId) {
-  const history = getConfigHistory();
+export async function rollbackConfig(version, userId) {
+  const history = await getConfigHistory();
   const found = history.find((h) => h.version === version);
   if (!found) return { ok: false, error: 'not_found' };
 
@@ -162,15 +162,15 @@ export function rollbackConfig(version, userId) {
   const check = validateConfig(data);
   if (!check.ok) return { ok: false, errors: check.errors };
 
-  const current = getConfig();
+  const current = await getConfig();
   const nextVersion = current.version + 1;
-  putConfigRow(nextVersion, data, userId ?? null);
+  await putConfigRow(nextVersion, data, userId ?? null);
   cache = { version: nextVersion, data: structuredClone(data) };
   return { ok: true, version: nextVersion };
 }
 
-export function getHistory() {
-  return getConfigHistory().map((h) => ({
+export async function getHistory() {
+  return (await getConfigHistory()).map((h) => ({
     version: h.version,
     data: JSON.parse(h.data),
     updatedAt: h.updated_at,

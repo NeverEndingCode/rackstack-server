@@ -29,9 +29,9 @@ export function isOwner(id) {
  * the DB-stored roles, with 'admin' implying 'event_coordinator' (admin is
  * a superset - we don't require both to be granted separately).
  */
-export function getEffectiveRoles(id) {
+export async function getEffectiveRoles(id) {
   if (isOwner(id)) return ['admin', 'event_coordinator'];
-  const stored = getRoles(id);
+  const stored = await getRoles(id);
   const effective = new Set(stored);
   if (effective.has('admin')) effective.add('event_coordinator');
   return [...effective];
@@ -41,12 +41,20 @@ export function getEffectiveRoles(id) {
  * Express middleware factory: 403s unless the requester's effective roles
  * include `role`. Always re-derived from the DB (and env for ownership) on
  * every request - never trusted from the client or cached on req.user.
+ *
+ * Express 4 does not route an async middleware's rejection to the error
+ * handler, so this must catch its own.
  */
 export function requireRole(role) {
-  return (req, res, next) => {
+  return async (req, res, next) => {
     if (!req.user) return res.status(401).json({ error: 'not authenticated' });
-    if (getEffectiveRoles(req.user.sub).includes(role)) return next();
-    return res.status(403).json({ error: 'forbidden' });
+    try {
+      const roles = await getEffectiveRoles(req.user.sub);
+      if (roles.includes(role)) return next();
+      return res.status(403).json({ error: 'forbidden' });
+    } catch (e) {
+      return next(e);
+    }
   };
 }
 
@@ -59,9 +67,9 @@ export function configurePassport() {
       clientSecret: process.env.DISCORD_CLIENT_SECRET,
       callbackURL: process.env.DISCORD_CALLBACK_URL,
       scope: ['identify'],
-    }, (accessToken, refreshToken, profile, done) => {
+    }, async (accessToken, refreshToken, profile, done) => {
       try {
-        const user = upsertUser({
+        const user = await upsertUser({
           provider: 'discord',
           providerId: profile.id,
           username: profile.username,
@@ -80,9 +88,9 @@ export function configurePassport() {
       clientID: process.env.GITHUB_CLIENT_ID,
       clientSecret: process.env.GITHUB_CLIENT_SECRET,
       callbackURL: process.env.GITHUB_CALLBACK_URL,
-    }, (accessToken, refreshToken, profile, done) => {
+    }, async (accessToken, refreshToken, profile, done) => {
       try {
-        const user = upsertUser({
+        const user = await upsertUser({
           provider: 'github',
           providerId: profile.id,
           username: profile.username || profile.displayName,

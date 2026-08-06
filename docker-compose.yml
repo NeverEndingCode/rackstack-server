@@ -1,11 +1,46 @@
 services:
+  postgres:
+    image: postgres:16
+    container_name: rackstack-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: rackstack
+      POSTGRES_PASSWORD: rackstack
+      POSTGRES_DB: rackstack
+    volumes:
+      - ./pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rackstack"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   rackstack:
     build: .
     container_name: rackstack
     restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
     ports:
       - "3000:3000"
     volumes:
       - ./data:/app/data
+    environment:
+      # Compose gives `environment:` precedence over `env_file:`, so a bare
+      # literal here would win over .env and make the documented rollback
+      # ("blank out DATABASE_URL and restart") a no-op on this deployment -
+      # the operator would have to edit this file instead, at exactly the
+      # moment they least want to be editing files. The ${VAR:-default} form
+      # keeps the working default for a fresh `docker compose up` while
+      # letting .env override it, including overriding it to empty to fall
+      # back to SQLite.
+      #
+      # `${VAR-default}`, NOT `${VAR:-default}`: the colon form treats an
+      # empty value as absent and would substitute the default right back in,
+      # so `DATABASE_URL=` in .env - the exact thing the rollback instructions
+      # tell you to do - would silently keep pointing at Postgres. Without the
+      # colon, only a genuinely unset variable takes the default.
+      DATABASE_URL: ${DATABASE_URL-postgresql://rackstack:rackstack@postgres:5432/rackstack}
     env_file:
       - .env

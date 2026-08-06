@@ -119,7 +119,7 @@ process.env.NODE_ENV = 'test';
 // Dynamic imports (not hoisted above the env assignments above) - server/db.js
 // reads DB_PATH and server/auth.js reads JWT_SECRET/SUPER_ADMIN_IDS at
 // module-evaluation time.
-const { upsertUser, putSave, getSave, setToursCompleted, db } = await import(path.join(REPO_ROOT, 'server', 'db.js'));
+const { upsertUser, putSave, getSave, setToursCompleted, driver } = await import(path.join(REPO_ROOT, 'server', 'db.js'));
 const { TOUR_IDS } = await import(path.join(REPO_ROOT, 'shared', 'tours.js'));
 const { issueToken, COOKIE_NAME } = await import(path.join(REPO_ROOT, 'server', 'auth.js'));
 const { initialState } = await import(path.join(REPO_ROOT, 'shared', 'state.js'));
@@ -130,8 +130,11 @@ const { jobDurationSec } = await import(path.join(REPO_ROOT, 'shared', 'coldStor
 // seeding, plus the spawned server for real traffic) - WAL mode allows
 // concurrent readers/writers, but give writers a generous busy timeout so a
 // harmless lock collision during a concurrent write retries instead of
-// throwing outright.
-db.pragma('busy_timeout = 5000');
+// throwing outright. Postgres has no such pragma (MVCC handles concurrent
+// writers instead), so only apply this against the SQLite driver.
+if (driver.__backend === 'sqlite') {
+  driver.__raw.pragma('busy_timeout = 5000');
+}
 
 let serverProc = null;
 let browser = null;
@@ -206,9 +209,9 @@ function assert(cond, message) {
 // start with the guided tours already completed - otherwise the onboarding
 // tour auto-starts over the built client and its overlay swallows the clicks
 // these checks depend on. New-player tour behaviour is covered by smoke-v16.
-function seedUser({ provider, providerId, username }) {
-  const user = upsertUser({ provider, providerId, username, avatarUrl: null });
-  setToursCompleted(user.id, TOUR_IDS);
+async function seedUser({ provider, providerId, username }) {
+  const user = await upsertUser({ provider, providerId, username, avatarUrl: null });
+  await setToursCompleted(user.id, TOUR_IDS);
   return user;
 }
 
@@ -270,11 +273,11 @@ async function clickAndAwaitFlush(page, locator) {
 // writes it back with `putSave` - the same direct-seeding trick used
 // throughout this suite to short-circuit real-time mechanics (block arrival,
 // offline job accrual) instead of waiting on wall-clock time in a test.
-function mutateSave(userId, mutator) {
-  const row = getSave(userId);
+async function mutateSave(userId, mutator) {
+  const row = await getSave(userId);
   const data = row ? JSON.parse(row.data) : initialState();
   mutator(data);
-  putSave(userId, data, Date.now());
+  await putSave(userId, data, Date.now());
   return data;
 }
 
@@ -291,12 +294,12 @@ async function main() {
   browser = await pw.chromium.launch();
 
   // --- Seed all users up front -------------------------------------------
-  const owner = seedUser({ provider: 'github', providerId: '37058311', username: 'owner_cs_e2e' });
-  const nonAdmin = seedUser({ provider: 'discord', providerId: 'e2e-cs-nonadmin', username: 'nonadmin_cs_e2e' });
-  const lockedUser = seedUser({ provider: 'discord', providerId: 'e2e-cs-locked', username: 'locked_cs_e2e' });
-  const trackUser = seedUser({ provider: 'discord', providerId: 'e2e-cs-track', username: 'track_cs_e2e' });
-  const jobUser = seedUser({ provider: 'discord', providerId: 'e2e-cs-job', username: 'job_cs_e2e' });
-  const tapeUser = seedUser({ provider: 'discord', providerId: 'e2e-cs-tape', username: 'tape_cs_e2e' });
+  const owner = await seedUser({ provider: 'github', providerId: '37058311', username: 'owner_cs_e2e' });
+  const nonAdmin = await seedUser({ provider: 'discord', providerId: 'e2e-cs-nonadmin', username: 'nonadmin_cs_e2e' });
+  const lockedUser = await seedUser({ provider: 'discord', providerId: 'e2e-cs-locked', username: 'locked_cs_e2e' });
+  const trackUser = await seedUser({ provider: 'discord', providerId: 'e2e-cs-track', username: 'track_cs_e2e' });
+  const jobUser = await seedUser({ provider: 'discord', providerId: 'e2e-cs-job', username: 'job_cs_e2e' });
+  const tapeUser = await seedUser({ provider: 'discord', providerId: 'e2e-cs-tape', username: 'tape_cs_e2e' });
 
   assert(`${owner.id}` === OWNER_ID, `expected seeded owner id ${OWNER_ID}, got ${owner.id}`);
 
@@ -306,7 +309,7 @@ async function main() {
   {
     const s = initialState();
     s.run.credits = 1_000_000;
-    putSave(lockedUser.id, s, Date.now());
+    await putSave(lockedUser.id, s, Date.now());
   }
 
   // trackUser: Server Room owned (unlocks the tab) + trackStartedAt pushed
@@ -316,7 +319,7 @@ async function main() {
     const s = initialState();
     s.run.tiers[4].owned = 1;
     s.meta.coldStorage.trackStartedAt = Date.now() - 17 * 6 * 3600 * 1000;
-    putSave(trackUser.id, s, Date.now());
+    await putSave(trackUser.id, s, Date.now());
   }
 
   // jobUser: Server Room owned, otherwise fresh - the job itself is started
@@ -325,7 +328,7 @@ async function main() {
   {
     const s = initialState();
     s.run.tiers[4].owned = 1;
-    putSave(jobUser.id, s, Date.now());
+    await putSave(jobUser.id, s, Date.now());
   }
 
   // tapeUser: Server Room owned + a pile of tapes so the upgrade-purchase
@@ -336,7 +339,7 @@ async function main() {
     const s = initialState();
     s.run.tiers[4].owned = 1;
     s.meta.coldStorage.tapes = 1_000_000;
-    putSave(tapeUser.id, s, Date.now());
+    await putSave(tapeUser.id, s, Date.now());
   }
 
   // --- Check A: Cold Storage tab locked until Server Room owned, then
@@ -454,7 +457,7 @@ async function main() {
     // time-based mechanics like heatCooldownUntil).
     const cfg = await apiFetch(page, '/api/config', { method: 'GET' });
     const durationSec = jobDurationSec('defrag', cfg.body.data);
-    mutateSave(jobUser.id, (data) => {
+    await mutateSave(jobUser.id, (data) => {
       data.meta.coldStorage.job = { type: 'defrag', accruedOfflineSec: durationSec, startedAt: Date.now() - durationSec * 1000 };
     });
 

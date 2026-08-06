@@ -3,12 +3,20 @@
 // the pre-fix behaviour actually was - all six were reproduced against a real
 // server before being fixed, and all six were invisible to the pre-existing
 // suites.
-process.env.DB_PATH = ':memory:';
+import { describe, it, expect, afterAll } from 'vitest';
+import { provisionDatabase } from './helpers/backend.js';
 
-import { describe, it, expect } from 'vitest';
+// Provision before importing the facade: DATABASE_URL/DB_PATH must be set
+// before the dynamic import below, since the facade resolves its driver at
+// module-evaluation time.
+const provisioned = await provisionDatabase();
 
 const dbMod = await import('../server/db.js');
 const { upsertUser, putEvent, getEvent, setEventStatus } = dbMod;
+afterAll(async () => {
+  if (dbMod.driver.__backend === 'pg') await dbMod.driver.__raw.end();
+  await provisioned.cleanup();
+});
 const { ensureConfig } = await import('../server/configService.js');
 const eventService = await import('../server/eventService.js');
 const {
@@ -19,7 +27,7 @@ const { applyAction, EVENT_CLAIM_GRACE_MS } = await import('../shared/reducer.js
 const { validateRecurrence } = await import('../shared/events.js');
 const { DEFAULT_CONFIG } = await import('../shared/configSchema.js');
 
-ensureConfig();
+await ensureConfig();
 
 // applyAction needs a FULL config document, not just the __claimableEvent /
 // __pendingClaimables runtime fields these tests care about: v1.5's automatic
@@ -35,16 +43,16 @@ function withDefaults(runtimeFields) {
 const DAY_MS = 24 * 60 * 60 * 1000;
 let seq = 0;
 
-function makeUser() {
+async function makeUser() {
   seq += 1;
-  return upsertUser({
+  return await upsertUser({
     provider: 'discord', providerId: `ff${seq}`, username: `ffuser${seq}`, avatarUrl: null,
   });
 }
 
-function makeEvent(overrides = {}) {
+async function makeEvent(overrides = {}) {
   seq += 1;
-  return putEvent({
+  return await putEvent({
     id: `ff-evt-${seq}`,
     name: `Final Fix Event ${seq}`,
     description: null,
@@ -60,8 +68,8 @@ function makeEvent(overrides = {}) {
 }
 
 /** Clears every event row's status back to 'draft' with no window. */
-function quiesce() {
-  for (const e of dbMod.listEvents()) setEventStatus(e.id, 'draft', { startsAt: null, endsAt: null });
+async function quiesce() {
+  for (const e of await dbMod.listEvents()) await setEventStatus(e.id, 'draft', { startsAt: null, endsAt: null });
 }
 
 // ---------------------------------------------------------------------------
@@ -69,26 +77,26 @@ function quiesce() {
 // ---------------------------------------------------------------------------
 
 describe('activateEvent: refuses an already-elapsed window (guard in the primitive, so BOTH callers inherit it)', () => {
-  it('rejects invalid_target when ends_at is already past', () => {
-    quiesce();
+  it('rejects invalid_target when ends_at is already past', async () => {
+    await quiesce();
     const now = Date.now();
-    const evt = makeEvent();
-    setEventStatus(evt.id, 'scheduled', { startsAt: now - 20 * DAY_MS, endsAt: now - 10 * DAY_MS });
+    const evt = await makeEvent();
+    await setEventStatus(evt.id, 'scheduled', { startsAt: now - 20 * DAY_MS, endsAt: now - 10 * DAY_MS });
 
-    const result = activateEvent(evt.id, now);
+    const result = await activateEvent(evt.id, now);
     expect(result).toEqual({ ok: false, error: 'invalid_target' });
-    expect(getEvent(evt.id).status).toBe('scheduled');
+    expect((await getEvent(evt.id)).status).toBe('scheduled');
   });
 
-  it('still activates a window that is currently open', () => {
-    quiesce();
+  it('still activates a window that is currently open', async () => {
+    await quiesce();
     const now = Date.now();
-    const evt = makeEvent();
-    setEventStatus(evt.id, 'scheduled', { startsAt: now - 1000, endsAt: now + DAY_MS });
+    const evt = await makeEvent();
+    await setEventStatus(evt.id, 'scheduled', { startsAt: now - 1000, endsAt: now + DAY_MS });
 
-    expect(activateEvent(evt.id, now)).toEqual({ ok: true });
-    expect(getEvent(evt.id).status).toBe('active');
-    endEvent(evt.id, now);
+    expect(await activateEvent(evt.id, now)).toEqual({ ok: true });
+    expect((await getEvent(evt.id)).status).toBe('active');
+    await endEvent(evt.id, now);
   });
 });
 
@@ -99,30 +107,30 @@ describe('runScheduler: a scheduled window that fully elapsed while the server w
   // (host reboot, container redeploy, Unraid update) would activate the dead
   // event on next boot - wiping mid-grace players' progress and joining them
   // to a window that expired days earlier.
-  it('marks it ended instead of activating it, and never activates it on a later tick', () => {
-    quiesce();
+  it('marks it ended instead of activating it, and never activates it on a later tick', async () => {
+    await quiesce();
     const now = Date.now();
-    const evt = makeEvent();
-    setEventStatus(evt.id, 'scheduled', { startsAt: now - 20 * DAY_MS, endsAt: now - 10 * DAY_MS });
+    const evt = await makeEvent();
+    await setEventStatus(evt.id, 'scheduled', { startsAt: now - 20 * DAY_MS, endsAt: now - 10 * DAY_MS });
 
-    runScheduler(now);
-    expect(getEvent(evt.id).status).toBe('ended');
+    await runScheduler(now);
+    expect((await getEvent(evt.id)).status).toBe('ended');
 
     // Idempotent: it must not bounce back to 'scheduled' and become a
     // candidate again on the next hourly tick.
-    runScheduler(now + 3600 * 1000);
-    expect(getEvent(evt.id).status).toBe('ended');
+    await runScheduler(now + 3600 * 1000);
+    expect((await getEvent(evt.id)).status).toBe('ended');
   });
 
-  it('still activates a scheduled event whose window is genuinely open', () => {
-    quiesce();
+  it('still activates a scheduled event whose window is genuinely open', async () => {
+    await quiesce();
     const now = Date.now();
-    const evt = makeEvent();
-    setEventStatus(evt.id, 'scheduled', { startsAt: now - 1000, endsAt: now + DAY_MS });
+    const evt = await makeEvent();
+    await setEventStatus(evt.id, 'scheduled', { startsAt: now - 1000, endsAt: now + DAY_MS });
 
-    runScheduler(now);
-    expect(getEvent(evt.id).status).toBe('active');
-    endEvent(evt.id, now);
+    await runScheduler(now);
+    expect((await getEvent(evt.id)).status).toBe('active');
+    await endEvent(evt.id, now);
   });
 });
 
@@ -131,55 +139,55 @@ describe('runScheduler: a scheduled window that fully elapsed while the server w
 // ---------------------------------------------------------------------------
 
 describe('runScheduler: annual recurrence re-arms after the event has ended', () => {
-  it('re-schedules an ended recurring event to next year once its window is past + grace', () => {
-    quiesce();
+  it('re-schedules an ended recurring event to next year once its window is past + grace', async () => {
+    await quiesce();
     // A July 1-15 recurrence that already ran in 2026 and ended.
-    const evt = makeEvent({ recurrence: { month: 7, day: 1, durationDays: 14 } });
+    const evt = await makeEvent({ recurrence: { month: 7, day: 1, durationDays: 14 } });
     const ran2026Start = Date.UTC(2026, 6, 1);
     const ran2026End = ran2026Start + 14 * DAY_MS;
-    setEventStatus(evt.id, 'ended', { startsAt: ran2026Start, endsAt: ran2026End });
+    await setEventStatus(evt.id, 'ended', { startsAt: ran2026Start, endsAt: ran2026End });
 
     // Pre-fix this stayed 'ended' with its 2026 window forever, so every
     // seasonal was permanently dead after its first year despite the README
     // promising annual materialization.
-    runScheduler(Date.UTC(2026, 8, 1));
-    const rearmed = getEvent(evt.id);
+    await runScheduler(Date.UTC(2026, 8, 1));
+    const rearmed = await getEvent(evt.id);
     expect(rearmed.status).toBe('scheduled');
     expect(rearmed.starts_at).toBe(Date.UTC(2027, 6, 1));
     expect(rearmed.ends_at).toBe(Date.UTC(2027, 6, 1) + 14 * DAY_MS);
   });
 
-  it('does not re-arm inside the claim-grace settle period right after ending', () => {
-    quiesce();
-    const evt = makeEvent({ recurrence: { month: 7, day: 1, durationDays: 14 } });
+  it('does not re-arm inside the claim-grace settle period right after ending', async () => {
+    await quiesce();
+    const evt = await makeEvent({ recurrence: { month: 7, day: 1, durationDays: 14 } });
     const endedAt = Date.UTC(2026, 6, 15);
-    setEventStatus(evt.id, 'ended', { startsAt: Date.UTC(2026, 6, 1), endsAt: endedAt });
+    await setEventStatus(evt.id, 'ended', { startsAt: Date.UTC(2026, 6, 1), endsAt: endedAt });
 
-    runScheduler(endedAt + EVENT_CLAIM_GRACE_MS - 1000);
-    expect(getEvent(evt.id).status).toBe('ended');
+    await runScheduler(endedAt + EVENT_CLAIM_GRACE_MS - 1000);
+    expect((await getEvent(evt.id)).status).toBe('ended');
   });
 
-  it('exempts an event a coordinator ended EARLY, mid-window', () => {
-    quiesce();
+  it('exempts an event a coordinator ended EARLY, mid-window', async () => {
+    await quiesce();
     const now = Date.UTC(2026, 6, 5);
-    const evt = makeEvent({ recurrence: { month: 7, day: 1, durationDays: 14 } });
+    const evt = await makeEvent({ recurrence: { month: 7, day: 1, durationDays: 14 } });
     // Window still open (ends 2026-07-15) but the coordinator ended it now.
-    setEventStatus(evt.id, 'ended', { startsAt: Date.UTC(2026, 6, 1), endsAt: Date.UTC(2026, 6, 15) });
+    await setEventStatus(evt.id, 'ended', { startsAt: Date.UTC(2026, 6, 1), endsAt: Date.UTC(2026, 6, 15) });
 
-    runScheduler(now);
-    expect(getEvent(evt.id).status).toBe('ended');
-    expect(getEvent(evt.id).starts_at).toBe(Date.UTC(2026, 6, 1));
+    await runScheduler(now);
+    expect((await getEvent(evt.id)).status).toBe('ended');
+    expect((await getEvent(evt.id)).starts_at).toBe(Date.UTC(2026, 6, 1));
   });
 
-  it('skips a row whose stored recurrence is not a valid {month, day, durationDays}', () => {
-    quiesce();
-    const evt = makeEvent({ recurrence: 'weekly' });
-    setEventStatus(evt.id, 'ended', { startsAt: Date.UTC(2026, 0, 1), endsAt: Date.UTC(2026, 0, 8) });
+  it('skips a row whose stored recurrence is not a valid {month, day, durationDays}', async () => {
+    await quiesce();
+    const evt = await makeEvent({ recurrence: 'weekly' });
+    await setEventStatus(evt.id, 'ended', { startsAt: Date.UTC(2026, 0, 1), endsAt: Date.UTC(2026, 0, 8) });
 
-    runScheduler(Date.UTC(2027, 0, 1));
+    await runScheduler(Date.UTC(2027, 0, 1));
     // Not re-armed with a NaN window - left alone.
-    expect(getEvent(evt.id).status).toBe('ended');
-    expect(getEvent(evt.id).ends_at).toBe(Date.UTC(2026, 0, 8));
+    expect((await getEvent(evt.id)).status).toBe('ended');
+    expect((await getEvent(evt.id)).ends_at).toBe(Date.UTC(2026, 0, 8));
   });
 });
 
@@ -205,42 +213,42 @@ describe('joinEventIfEligible: superseding preserves the claim right', () => {
     return s;
   }
 
-  it('moves the superseded window into meta.pendingEventClaims instead of destroying it', () => {
-    quiesce();
+  it('moves the superseded window into meta.pendingEventClaims instead of destroying it', async () => {
+    await quiesce();
     const now = Date.now();
-    const eventA = makeEvent();
-    const eventB = makeEvent();
-    setEventStatus(eventA.id, 'ended', { startsAt: now - 3 * DAY_MS, endsAt: now - DAY_MS });
-    setEventStatus(eventB.id, 'scheduled', { startsAt: now - 1000, endsAt: now + DAY_MS });
-    expect(activateEvent(eventB.id, now)).toEqual({ ok: true });
+    const eventA = await makeEvent();
+    const eventB = await makeEvent();
+    await setEventStatus(eventA.id, 'ended', { startsAt: now - 3 * DAY_MS, endsAt: now - DAY_MS });
+    await setEventStatus(eventB.id, 'scheduled', { startsAt: now - 1000, endsAt: now + DAY_MS });
+    expect(await activateEvent(eventB.id, now)).toEqual({ ok: true });
 
-    const user = makeUser();
+    const user = await makeUser();
     // Personal window for A ended an hour ago -> still 47h of claim grace.
     const state = joinedState(eventA.id, now - 3600 * 1000);
-    joinEventIfEligible(user.id, state, now);
+    await joinEventIfEligible(user.id, state, now);
 
     expect(state.meta.eventProgress.eventId).toBe(eventB.id);
     expect(state.meta.pendingEventClaims).toHaveLength(1);
     expect(state.meta.pendingEventClaims[0].eventId).toBe(eventA.id);
 
-    endEvent(eventB.id, now);
+    await endEvent(eventB.id, now);
   });
 
-  it('the preserved rung is still claimable, and pays out', () => {
-    quiesce();
+  it('the preserved rung is still claimable, and pays out', async () => {
+    await quiesce();
     const now = Date.now();
-    const eventA = makeEvent();
-    const eventB = makeEvent();
-    setEventStatus(eventA.id, 'ended', { startsAt: now - 3 * DAY_MS, endsAt: now - DAY_MS });
-    setEventStatus(eventB.id, 'scheduled', { startsAt: now - 1000, endsAt: now + DAY_MS });
-    activateEvent(eventB.id, now);
+    const eventA = await makeEvent();
+    const eventB = await makeEvent();
+    await setEventStatus(eventA.id, 'ended', { startsAt: now - 3 * DAY_MS, endsAt: now - DAY_MS });
+    await setEventStatus(eventB.id, 'scheduled', { startsAt: now - 1000, endsAt: now + DAY_MS });
+    await activateEvent(eventB.id, now);
 
-    const user = makeUser();
+    const user = await makeUser();
     const state = joinedState(eventA.id, now - 3600 * 1000);
-    joinEventIfEligible(user.id, state, now);
+    await joinEventIfEligible(user.id, state, now);
 
     // Exactly what stateService attaches for this player.
-    const { current, pending } = resolvePlayerEvents(state);
+    const { current, pending } = await resolvePlayerEvents(state);
     const config = withDefaults({
       __claimableEvent: {
         id: current.event.id, ladder: current.event.ladder, endsAt: current.event.ends_at,
@@ -262,33 +270,33 @@ describe('joinEventIfEligible: superseding preserves the claim right', () => {
     const second = applyAction(after, { type: 'claimEventRung', index: 0, eventId: eventA.id }, config, now).result;
     expect(second).toEqual({ ok: false, error: 'invalid_target' });
 
-    endEvent(eventB.id, now);
+    await endEvent(eventB.id, now);
   });
 
   // The window is FORCE-ENDED, not merely preserved: a superseded ladder must
   // stop climbing. Otherwise it keeps advancing against live meta alongside
   // the new event's ladder and a single grind pays out BOTH - spec §5.3 keeps
   // open only the rungs already qualified at the moment of the supersede.
-  it('freezes the superseded ladder: rungs met only AFTER the supersede are not claimable', () => {
-    quiesce();
+  it('freezes the superseded ladder: rungs met only AFTER the supersede are not claimable', async () => {
+    await quiesce();
     const now = Date.now();
     // Rung 0 is met at supersede time (500 lifetime FLOPS vs target 100);
     // rung 1 is nowhere near it, and only becomes met from post-supersede
     // earnings that belong entirely to the NEW event.
-    const eventA = makeEvent({
+    const eventA = await makeEvent({
       ladder: [
         { metric: 'flopsEarned', target: 100, reward: { wafers: 20 } },
         { metric: 'flopsEarned', target: 10000, reward: { wafers: 40 } },
       ],
     });
-    const eventB = makeEvent();
-    setEventStatus(eventA.id, 'ended', { startsAt: now - 3 * DAY_MS, endsAt: now - DAY_MS });
-    setEventStatus(eventB.id, 'scheduled', { startsAt: now - 1000, endsAt: now + DAY_MS });
-    activateEvent(eventB.id, now);
+    const eventB = await makeEvent();
+    await setEventStatus(eventA.id, 'ended', { startsAt: now - 3 * DAY_MS, endsAt: now - DAY_MS });
+    await setEventStatus(eventB.id, 'scheduled', { startsAt: now - 1000, endsAt: now + DAY_MS });
+    await activateEvent(eventB.id, now);
 
-    const user = makeUser();
+    const user = await makeUser();
     const state = joinedState(eventA.id, now - 3600 * 1000);
-    joinEventIfEligible(user.id, state, now);
+    await joinEventIfEligible(user.id, state, now);
 
     const record = state.meta.pendingEventClaims[0];
     expect(record.claimableRungs).toEqual([0]);
@@ -298,7 +306,7 @@ describe('joinEventIfEligible: superseding preserves the claim right', () => {
     // Grind 20k FLOPS entirely under event B. Rung 1 is now met on live meta.
     state.meta.stats.lifetimeFlopsAllTime += 20000;
 
-    const { current, pending } = resolvePlayerEvents(state);
+    const { current, pending } = await resolvePlayerEvents(state);
     const config = withDefaults({
       __claimableEvent: {
         id: current.event.id, ladder: current.event.ladder, endsAt: current.event.ends_at,
@@ -319,39 +327,39 @@ describe('joinEventIfEligible: superseding preserves the claim right', () => {
     ).result;
     expect(early).toMatchObject({ ok: true, rungIndex: 0, eventId: eventA.id });
 
-    endEvent(eventB.id, now);
+    await endEvent(eventB.id, now);
   });
 
-  it('drops a superseded window whose own grace has already run out', () => {
-    quiesce();
+  it('drops a superseded window whose own grace has already run out', async () => {
+    await quiesce();
     const now = Date.now();
-    const eventA = makeEvent();
-    const eventB = makeEvent();
-    setEventStatus(eventB.id, 'scheduled', { startsAt: now - 1000, endsAt: now + DAY_MS });
-    activateEvent(eventB.id, now);
+    const eventA = await makeEvent();
+    const eventB = await makeEvent();
+    await setEventStatus(eventB.id, 'scheduled', { startsAt: now - 1000, endsAt: now + DAY_MS });
+    await activateEvent(eventB.id, now);
 
-    const user = makeUser();
+    const user = await makeUser();
     const state = joinedState(eventA.id, now - EVENT_CLAIM_GRACE_MS - DAY_MS);
-    joinEventIfEligible(user.id, state, now);
+    await joinEventIfEligible(user.id, state, now);
 
     expect(state.meta.pendingEventClaims).toEqual([]);
-    endEvent(eventB.id, now);
+    await endEvent(eventB.id, now);
   });
 
-  it('prunes pending records once their grace lapses, on a later load', () => {
-    quiesce();
+  it('prunes pending records once their grace lapses, on a later load', async () => {
+    await quiesce();
     const now = Date.now();
-    const user = makeUser();
-    const evt = makeEvent();
+    const user = await makeUser();
+    const evt = await makeEvent();
     const state = initialState();
     state.meta.pendingEventClaims = [{
       eventId: evt.id, joinedAt: now - DAY_MS, endsAt: now - 1000, baseline: {}, rungsClaimed: [],
     }];
 
-    joinEventIfEligible(user.id, state, now);
+    await joinEventIfEligible(user.id, state, now);
     expect(state.meta.pendingEventClaims).toHaveLength(1);
 
-    joinEventIfEligible(user.id, state, now + EVENT_CLAIM_GRACE_MS + 1000);
+    await joinEventIfEligible(user.id, state, now + EVENT_CLAIM_GRACE_MS + 1000);
     expect(state.meta.pendingEventClaims).toEqual([]);
   });
 });
@@ -361,16 +369,16 @@ describe('joinEventIfEligible: superseding preserves the claim right', () => {
 // ---------------------------------------------------------------------------
 
 describe('validateRecurrence', () => {
-  it('accepts null/undefined (no recurrence at all)', () => {
+  it('accepts null/undefined (no recurrence at all)', async () => {
     expect(validateRecurrence(null)).toEqual({ ok: true });
     expect(validateRecurrence(undefined)).toEqual({ ok: true });
   });
 
-  it('accepts a well-formed annual recurrence', () => {
+  it('accepts a well-formed annual recurrence', async () => {
     expect(validateRecurrence({ month: 7, day: 1, durationDays: 14 })).toEqual({ ok: true });
   });
 
-  it('rejects the shapes that permanently stranded an event', () => {
+  it('rejects the shapes that permanently stranded an event', async () => {
     // `{}` and a bare string both promoted the event to 'scheduled' with a
     // NaN window it could never leave (DELETE is draft-only, activate answers
     // not_scheduled).
@@ -385,7 +393,7 @@ describe('validateRecurrence', () => {
     expect(validateRecurrence({ month: 7, day: 1, durationDays: 1.5 }).ok).toBe(false);
   });
 
-  it('rejects an authoring typo rather than silently defaulting it to NaN', () => {
+  it('rejects an authoring typo rather than silently defaulting it to NaN', async () => {
     const res = validateRecurrence({ month: 7, day: 1, durationDay: 14 });
     expect(res.ok).toBe(false);
     expect(res.errors.some((e) => e.includes('durationDay'))).toBe(true);

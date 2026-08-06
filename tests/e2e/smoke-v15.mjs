@@ -114,7 +114,7 @@ process.env.SUPER_ADMIN_IDS = OWNER_ID;
 process.env.DB_PATH = DB_PATH;
 process.env.NODE_ENV = 'test';
 
-const { upsertUser, putSave, getSave, setLeaderboardOptOut, setToursCompleted, db } = await import(path.join(REPO_ROOT, 'server', 'db.js'));
+const { upsertUser, putSave, getSave, setLeaderboardOptOut, setToursCompleted, driver } = await import(path.join(REPO_ROOT, 'server', 'db.js'));
 const { TOUR_IDS } = await import(path.join(REPO_ROOT, 'shared', 'tours.js'));
 const { issueToken, COOKIE_NAME } = await import(path.join(REPO_ROOT, 'server', 'auth.js'));
 const { initialState } = await import(path.join(REPO_ROOT, 'shared', 'state.js'));
@@ -122,7 +122,13 @@ const { DEFAULT_CONFIG } = await import(path.join(REPO_ROOT, 'shared', 'configSc
 const { contractsForState, contractDef } = await import(path.join(REPO_ROOT, 'shared', 'contracts.js'));
 const { utcDateKey } = await import(path.join(REPO_ROOT, 'shared', 'daily.js'));
 
-db.pragma('busy_timeout = 5000');
+// Multiple processes hold this same SQLite file open (this harness for
+// seeding, plus the spawned server for real traffic); busy_timeout is a
+// SQLite-only pragma (Postgres uses MVCC instead), so only apply it against
+// the SQLite driver.
+if (driver.__backend === 'sqlite') {
+  driver.__raw.pragma('busy_timeout = 5000');
+}
 
 let serverProc = null;
 let browser = null;
@@ -191,19 +197,19 @@ function assert(cond, message) {
 // ---------------------------------------------------------------------------
 
 let seq = 0;
-function seedUser(mutate) {
+async function seedUser(mutate) {
   seq += 1;
-  const user = upsertUser({
+  const user = await upsertUser({
     provider: 'discord', providerId: `v15-${seq}`, username: `v15user${seq}`, avatarUrl: null,
   });
   const s = initialState();
   if (mutate) mutate(s);
-  putSave(user.id, s, Date.now());
+  await putSave(user.id, s, Date.now());
   // v1.6: this suite exercises v1.5 features over the built client, so the
   // player starts with the guided tours already completed - otherwise the
   // onboarding tour auto-starts and its overlay swallows the clicks these
   // checks depend on. New-player tour behaviour is covered by smoke-v16.
-  setToursCompleted(user.id, TOUR_IDS);
+  await setToursCompleted(user.id, TOUR_IDS);
   return user;
 }
 
@@ -276,8 +282,8 @@ async function main() {
   // --- 1 + 2: determinism, per-player scaling, snapshotting ----------------
 
   await check('two players on the same day get the same three contract types', async () => {
-    const a = seedUser(withRacks(20));
-    const b = seedUser(withRacks(5000));
+    const a = await seedUser(withRacks(20));
+    const b = await seedUser(withRacks(5000));
     const { ctx: ca, page: pa } = await newPageFor(a); track(ca);
     const { ctx: cb, page: pb } = await newPageFor(b); track(cb);
     const sa = await boot(pa);
@@ -306,7 +312,7 @@ async function main() {
   });
 
   await check('a contract target does not move when output changes mid-day', async () => {
-    const u = seedUser(withRacks(20));
+    const u = await seedUser(withRacks(20));
     const { ctx, page } = await newPageFor(u); track(ctx);
     const before = await boot(page);
     const targetsBefore = before.meta.contracts.targets;
@@ -329,7 +335,7 @@ async function main() {
   // --- 7: locked Cold Storage never yields a dead contract -----------------
 
   await check('a player without Cold Storage gets only base-lane contracts', async () => {
-    const u = seedUser(withRacks(20, { cold: false }));
+    const u = await seedUser(withRacks(20, { cold: false }));
     const { ctx, page } = await newPageFor(u); track(ctx);
     const state = await boot(page);
     const resolved = contractsForState(state.meta);
@@ -347,7 +353,7 @@ async function main() {
   await check('claiming a met contract through the UI pays once and cannot repeat', async () => {
     // Seed a player whose c_minigames-style counter is already far past any
     // plausible target, so at least one slot is claimable on first load.
-    const u = seedUser((s) => {
+    const u = await seedUser((s) => {
       withRacks(20)(s);
       s.meta.stats.minigamesWon = 0;
     });
@@ -355,11 +361,11 @@ async function main() {
     const state = await boot(page);
 
     // Push every selected metric past its target, server-side, then reload.
-    const saved = JSON.parse(getSave(u.id).data);
+    const saved = JSON.parse((await getSave(u.id)).data);
     for (const c of contractsForState(saved.meta)) {
       saved.meta.stats[c.def.metric] = (saved.meta.contracts.baseline[c.def.metric] || 0) + c.target;
     }
-    putSave(u.id, saved, Date.now());
+    await putSave(u.id, saved, Date.now());
 
     await boot(page);
     await openSocialTab(page);
@@ -412,7 +418,7 @@ async function main() {
   // --- 4: the streak banner ------------------------------------------------
 
   await check('the streak banner pays on day 1 and refuses a second same-day claim', async () => {
-    const u = seedUser(withRacks(50));
+    const u = await seedUser(withRacks(50));
     const { ctx, page } = await newPageFor(u); track(ctx);
     const before = await boot(page);
     assert(before.meta.streak.count === 0, 'expected a fresh streak');
@@ -447,13 +453,13 @@ async function main() {
   // --- 5: achievements unlock automatically, with no payout ----------------
 
   await check('an achievement unlocks automatically with no payout and shows in the badge case', async () => {
-    const u = seedUser((s) => {
+    const u = await seedUser((s) => {
       withRacks(20)(s);
       s.meta.stats.singularities = 1; // 'first_singularity' condition met
     });
     const { ctx, page } = await newPageFor(u); track(ctx);
 
-    const saved = JSON.parse(getSave(u.id).data);
+    const saved = JSON.parse((await getSave(u.id)).data);
     const before = {
       wafers: saved.meta.wafers,
       xp: saved.meta.xp,
@@ -492,8 +498,8 @@ async function main() {
   // --- 6: leaderboards + opt-out ------------------------------------------
 
   await check('the leaderboard ranks players and honours the opt-out checkbox', async () => {
-    const low = seedUser((s) => { s.meta.stats.lifetimeFlopsAllTime = 1000; s.meta.level = 2; });
-    const high = seedUser((s) => { s.meta.stats.lifetimeFlopsAllTime = 5e9; s.meta.level = 30; });
+    const low = await seedUser((s) => { s.meta.stats.lifetimeFlopsAllTime = 1000; s.meta.level = 2; });
+    const high = await seedUser((s) => { s.meta.stats.lifetimeFlopsAllTime = 5e9; s.meta.level = 30; });
     const { ctx: cl, page: pl } = await newPageFor(low); track(cl);
     await boot(pl);
 

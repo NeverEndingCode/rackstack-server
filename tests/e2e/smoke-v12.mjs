@@ -116,7 +116,7 @@ process.env.NODE_ENV = 'test';
 // reasoning as tests/api.test.js and tests/db.test.js: server/db.js reads
 // DB_PATH and server/auth.js reads JWT_SECRET/SUPER_ADMIN_IDS at
 // module-evaluation time.
-const { upsertUser, putSave, setToursCompleted, db } = await import(path.join(REPO_ROOT, 'server', 'db.js'));
+const { upsertUser, putSave, setToursCompleted, driver } = await import(path.join(REPO_ROOT, 'server', 'db.js'));
 const { TOUR_IDS } = await import(path.join(REPO_ROOT, 'shared', 'tours.js'));
 const { issueToken, COOKIE_NAME } = await import(path.join(REPO_ROOT, 'server', 'auth.js'));
 const { initialState } = await import(path.join(REPO_ROOT, 'shared', 'state.js'));
@@ -126,8 +126,11 @@ const { fmt } = await import(path.join(REPO_ROOT, 'shared', 'gameRules.js'));
 // seeding, plus the spawned server for real traffic) - WAL mode allows
 // concurrent readers/writers, but give writers a generous busy timeout so a
 // harmless lock collision during a concurrent write retries instead of
-// throwing outright.
-db.pragma('busy_timeout = 5000');
+// throwing outright. Postgres has no such pragma (MVCC handles concurrent
+// writers instead), so only apply this against the SQLite driver.
+if (driver.__backend === 'sqlite') {
+  driver.__raw.pragma('busy_timeout = 5000');
+}
 
 let serverProc = null;
 let browser = null;
@@ -203,10 +206,10 @@ let seq = 0;
 // start with the guided tours already completed - otherwise the onboarding
 // tour auto-starts over the built client and its overlay swallows the clicks
 // these checks depend on. New-player tour behaviour is covered by smoke-v16.
-function seedUser({ provider, providerId, username }) {
+async function seedUser({ provider, providerId, username }) {
   seq += 1;
-  const user = upsertUser({ provider, providerId, username, avatarUrl: null });
-  setToursCompleted(user.id, TOUR_IDS);
+  const user = await upsertUser({ provider, providerId, username, avatarUrl: null });
+  await setToursCompleted(user.id, TOUR_IDS);
   return user;
 }
 
@@ -260,12 +263,12 @@ async function main() {
   browser = await pw.chromium.launch();
 
   // --- Seed all users up front -------------------------------------------
-  const owner = seedUser({ provider: 'github', providerId: '37058311', username: 'owner_e2e' });
-  const fixtureUser = seedUser({ provider: 'discord', providerId: 'e2e-fixture', username: 'fixture_e2e' });
-  const econUser = seedUser({ provider: 'discord', providerId: 'e2e-econ', username: 'econ_e2e' });
-  const nameUser1 = seedUser({ provider: 'discord', providerId: 'e2e-name1', username: 'name1_e2e' });
-  const nameUser2 = seedUser({ provider: 'discord', providerId: 'e2e-name2', username: 'name2_e2e' });
-  const gamesUser = seedUser({ provider: 'discord', providerId: 'e2e-games', username: 'games_e2e' });
+  const owner = await seedUser({ provider: 'github', providerId: '37058311', username: 'owner_e2e' });
+  const fixtureUser = await seedUser({ provider: 'discord', providerId: 'e2e-fixture', username: 'fixture_e2e' });
+  const econUser = await seedUser({ provider: 'discord', providerId: 'e2e-econ', username: 'econ_e2e' });
+  const nameUser1 = await seedUser({ provider: 'discord', providerId: 'e2e-name1', username: 'name1_e2e' });
+  const nameUser2 = await seedUser({ provider: 'discord', providerId: 'e2e-name2', username: 'name2_e2e' });
+  const gamesUser = await seedUser({ provider: 'discord', providerId: 'e2e-games', username: 'games_e2e' });
 
   assert(`${owner.id}` === OWNER_ID, `expected seeded owner id ${OWNER_ID}, got ${owner.id}`);
 
@@ -273,7 +276,7 @@ async function main() {
   const v11Fixture = JSON.parse(
     readFileSync(path.join(REPO_ROOT, 'tests', 'fixtures', 'v11-save.json'), 'utf8'),
   );
-  putSave(fixtureUser.id, v11Fixture, Date.now() - 2 * 3600 * 1000);
+  await putSave(fixtureUser.id, v11Fixture, Date.now() - 2 * 3600 * 1000);
 
   // econUser: flush credits so buy/collect/vent are trivially affordable
   // through the real action API (this is what we're testing - not the cost
@@ -281,7 +284,7 @@ async function main() {
   {
     const s = initialState();
     s.run.credits = 1_000_000;
-    putSave(econUser.id, s, Date.now());
+    await putSave(econUser.id, s, Date.now());
   }
 
   // nameUser1: fixed heat, zero overclock nodes (so it never changes on its
@@ -292,7 +295,7 @@ async function main() {
     const s = initialState();
     s.run.heat = 50;
     s.run.tiers[3].owned = 1;
-    putSave(nameUser1.id, s, Date.now());
+    await putSave(nameUser1.id, s, Date.now());
   }
 
   // --- Check A: v1.1 fixture migrates + renders, offline gain fires ------
@@ -431,7 +434,7 @@ async function main() {
     // itself (evaluate()'s heat-cap crossing -> cooldown, zero heat,
     // one-shot `overheated` flag, no owned-count change) is exactly what's
     // under test here, not the production math (covered by unit tests).
-    putSave(econUser.id, {
+    await putSave(econUser.id, {
       run: { ...beforeOverheat.body.run, heat: 95 },
       meta: beforeOverheat.body.meta,
       server: beforeOverheat.body.server,

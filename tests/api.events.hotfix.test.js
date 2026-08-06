@@ -11,34 +11,44 @@
 // (not a hand-built config/state), same supertest conventions as
 // tests/api.events.test.js.
 process.env.JWT_SECRET = 'test-secret-for-hotfix-events';
-process.env.DB_PATH = ':memory:';
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterAll } from 'vitest';
 import request from 'supertest';
 import jwt from 'jsonwebtoken';
+import { provisionDatabase } from './helpers/backend.js';
+
+// Provision before importing the facade: DATABASE_URL/DB_PATH must be set
+// before the dynamic import below, since the facade resolves its driver at
+// module-evaluation time.
+const provisioned = await provisionDatabase();
 
 const { buildApp } = await import('../server/app.js');
 const { ensureConfig } = await import('../server/configService.js');
 const {
-  upsertUser, setRoles, putEvent, getParticipation,
+  upsertUser, setRoles, putEvent, getParticipation, driver,
 } = await import('../server/db.js');
 const { activateEvent } = await import('../server/eventService.js');
 const { COOKIE_NAME } = await import('../server/auth.js');
 
-ensureConfig();
+await ensureConfig();
 const app = buildApp();
 
+afterAll(async () => {
+  if (driver.__backend === 'pg') await driver.__raw.end();
+  await provisioned.cleanup();
+});
+
 let seq = 0;
-function makeUser() {
+async function makeUser() {
   seq += 1;
-  return upsertUser({
+  return await upsertUser({
     provider: 'discord', providerId: `hf${seq}`, username: `hfuser${seq}`, avatarUrl: null,
   });
 }
 
-function makeCoordinator() {
-  const u = makeUser();
-  setRoles(u.id, ['event_coordinator']);
+async function makeCoordinator() {
+  const u = await makeUser();
+  await setRoles(u.id, ['event_coordinator']);
   return u;
 }
 
@@ -79,12 +89,12 @@ function sampleEvent(overrides = {}) {
 describe('bug (b): event_participation.rungs_claimed stays in sync after claims, end-to-end over HTTP', () => {
   it('leaderboard reflects real rungsClaimed counts (not frozen at 0) and orders more-progressed players first', async () => {
     const now = Date.now();
-    const coordinator = makeCoordinator();
-    putEvent(sampleEvent({ id: 'leaderboard-sync-evt', startsAt: now - 1000, endsAt: now + 100000 }));
-    expect(activateEvent('leaderboard-sync-evt', now)).toEqual({ ok: true });
+    const coordinator = await makeCoordinator();
+    await putEvent(sampleEvent({ id: 'leaderboard-sync-evt', startsAt: now - 1000, endsAt: now + 100000 }));
+    expect(await activateEvent('leaderboard-sync-evt', now)).toEqual({ ok: true });
 
-    const alice = makeUser();
-    const bob = makeUser();
+    const alice = await makeUser();
+    const bob = await makeUser();
 
     // Both join by hitting a state-reading route (GET /api/event, real
     // join-on-login path).
@@ -94,7 +104,7 @@ describe('bug (b): event_participation.rungs_claimed stays in sync after claims,
     // Sanity: the participation row is still frozen at 0 pre-claim (this is
     // the pre-fix state, and remains correct post-fix too - nothing to sync
     // yet).
-    expect(getParticipation(alice.id, 'leaderboard-sync-evt').rungs_claimed).toBe(0);
+    expect((await getParticipation(alice.id, 'leaderboard-sync-evt')).rungs_claimed).toBe(0);
 
     // Alice claims BOTH rungs over two separate POST /api/actions calls -
     // the real client action-queue path, not a hand-built reducer call.
@@ -115,11 +125,11 @@ describe('bug (b): event_participation.rungs_claimed stays in sync after claims,
     // Bob never claims anything.
 
     // The DB row itself must now read 2, not the join-time 0.
-    const aliceParticipation = getParticipation(alice.id, 'leaderboard-sync-evt');
+    const aliceParticipation = await getParticipation(alice.id, 'leaderboard-sync-evt');
     expect(aliceParticipation.rungs_claimed).toBe(2);
     expect(aliceParticipation.last_progress_at).toBeGreaterThanOrEqual(now);
 
-    const bobParticipation = getParticipation(bob.id, 'leaderboard-sync-evt');
+    const bobParticipation = await getParticipation(bob.id, 'leaderboard-sync-evt');
     expect(bobParticipation.rungs_claimed).toBe(0);
 
     // GET /api/event's leaderboard (listLeaderboard, `ORDER BY rungs_claimed
@@ -151,11 +161,11 @@ async function endEventReq(coordinator, id) {
 describe('bug (a) over real HTTP: claim during grace succeeds and pays out; past grace returns cooldown_active', () => {
   it('a claim made after the event globally ends (within the players own grace window) succeeds; a claim past grace returns cooldown_active', async () => {
     const now = Date.now();
-    const coordinator = makeCoordinator();
-    putEvent(sampleEvent({ id: 'grace-http-evt', startsAt: now - 1000, endsAt: now + 5000 }));
-    expect(activateEvent('grace-http-evt', now)).toEqual({ ok: true });
+    const coordinator = await makeCoordinator();
+    await putEvent(sampleEvent({ id: 'grace-http-evt', startsAt: now - 1000, endsAt: now + 5000 }));
+    expect(await activateEvent('grace-http-evt', now)).toEqual({ ok: true });
 
-    const player = makeUser();
+    const player = await makeUser();
     const joinRes = await request(app).get('/api/event').set('Cookie', cookieFor(player));
     expect(joinRes.status).toBe(200);
     expect(joinRes.body.progress.eventId ?? 'grace-http-evt').toBeTruthy();
