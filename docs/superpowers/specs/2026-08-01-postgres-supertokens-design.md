@@ -257,8 +257,9 @@ Starts only after v1.7 is confirmed running in production.
 >
 > Implementation plan: `docs/superpowers/plans/2026-08-06-v1.8-supertokens.md`.
 > Operator runbook: `docs/supertokens-rollout-runbook.md`.
-> Progress: Tasks 1–2 of 7 built (the `AUTH_MODE` switch; SuperTokens init,
-> provider config and conditional mounting).
+> Progress: Tasks 1–3 of 7 built (the `AUTH_MODE` switch; SuperTokens init,
+> provider config and conditional mounting; the identity mapping and its
+> ordering guarantee).
 
 ### 5.1 Containers
 
@@ -317,7 +318,23 @@ In the `signInUp` override:
 
 1. Look up `identities` by `(provider, provider_id)`.
 2. Resolve the existing `users.id` (or create user + identity for a new player).
-3. Call `createUserIdMapping({ supertokensUserId, externalUserId: users.id })`.
+3. Call `createUserIdMapping({ superTokensUserId, externalUserId: users.id })`.
+
+> **Spelling correction (2026-08-06, Task 3).** Note the capital T in
+> `superTokensUserId`. This document and the implementation plan both
+> originally wrote `supertokensUserId`, which `supertokens-node@24` accepts
+> silently as `undefined` — no throw, no log, and no mapping created. Since
+> the whole failure mode below is invisible, a typo here would be
+> indistinguishable from never having written the step at all.
+
+Because the core translates user ids in every response once a mapping exists,
+a *returning* login receives the external id back from `signInUp`. The
+override therefore checks `getUserIdMapping` first and only creates a mapping
+when there genuinely is none — treating `UNKNOWN_SUPERTOKENS_USER_ID_ERROR` as
+a failure would break every login after the first. A mapping that exists but
+points at a *different* `users.id` than `identities` resolves fails the login
+loudly, since guessing between two disagreeing sources of truth is how a
+player ends up on someone else's save.
 
 Afterwards `session.getUserId()` returns e.g. `github:37058311`, so saves,
 roles, event participation and `SUPER_ADMIN_IDS` all continue to resolve.

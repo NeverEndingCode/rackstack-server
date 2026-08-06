@@ -22,6 +22,7 @@
 
 import { isSuperTokensEnabled } from '../authMode.js';
 import { buildProviders, resolvePublicOrigin } from './providers.js';
+import { buildSignInUpOverride } from './mapping.js';
 
 // SuperTokens' own default API base path. It is also why the runbook widens
 // the GitHub OAuth registration to /auth: SuperTokens serves its callbacks at
@@ -86,7 +87,16 @@ export async function initSuperTokens({ env = process.env, mode } = {}) {
       websiteBasePath: '/',
     },
     recipeList: [
-      ThirdParty.init({ signInUpFeature: { providers } }),
+      ThirdParty.init({
+        signInUpFeature: { providers },
+        // The override is on `functions` (the recipe function), NOT `apis`.
+        // SuperTokens creates the session in the API layer after the recipe
+        // function returns, so an `apis` override would run too late to get
+        // the user id mapping in place first - and a session carrying
+        // SuperTokens' internal id resolves to no save at all. See
+        // ./mapping.js and design section 5.3.
+        override: { functions: buildSignInUpOverride({ supertokens }) },
+      }),
       Session.init(),
     ],
   });

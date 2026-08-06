@@ -21,6 +21,7 @@ export const {
   setEventStatus, deleteEvent, upsertParticipation, getParticipation,
   updateParticipationProgress, listParticipation, setLeaderboardOptOut,
   listLeaderboard, getLatestEventId, seedSeasonalEvents, listIdentities,
+  getIdentity, setSupertokensUserId,
 } = driver;
 
 export { driver };

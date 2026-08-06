@@ -194,6 +194,49 @@ export async function createPgDriver({ url }) {
       return all('SELECT * FROM identities WHERE user_id = $1 ORDER BY created_at ASC', [userId]);
     },
 
+    /**
+     * One login method by its (provider, provider_id) pair - the primary key -
+     * or `undefined` when that pair has never logged in.
+     *
+     * This is the read SuperTokens' signInUp override keys off (v1.8): it maps
+     * `thirdPartyId`/`thirdPartyUserId` onto exactly this pair, and the
+     * `user_id` it returns is what gets registered as the external user id.
+     * Deliberately separate from upsertUser's internal lookup, because the
+     * override must be able to ask "does this player already exist?" WITHOUT
+     * the side effect of creating them.
+     */
+    async getIdentity(provider, providerId) {
+      return one('SELECT * FROM identities WHERE provider = $1 AND provider_id = $2', [provider, providerId]);
+    },
+
+    /**
+     * Records the SuperTokens-internal user id that has been mapped onto this
+     * identity. Bookkeeping on our side only - the mapping that actually
+     * governs what `session.getUserId()` returns lives in the SuperTokens
+     * core, created by `createUserIdMapping`.
+     *
+     * Safe to call on every login. The column is UNIQUE, but re-writing a row's
+     * own existing value is not a conflict with itself, so the re-login path
+     * needs no guard. A conflict here means two identities were handed the same
+     * SuperTokens id, which is real corruption and must surface, so it is
+     * deliberately NOT swallowed.
+     *
+     * A missing identity row is a silent no-op, matching setRoles /
+     * setToursCompleted. Throwing instead would be actively dangerous in the
+     * one place this is called from: it runs immediately AFTER
+     * createUserIdMapping, so a throw would fail the login while leaving the
+     * core-side mapping in place - and the retry would then fail on the
+     * already-exists mapping instead, locking the account out permanently.
+     * Callers reach here having just resolved or created the identity, so a
+     * miss cannot happen without a caller-side bug.
+     */
+    async setSupertokensUserId(provider, providerId, supertokensUserId) {
+      await run(
+        'UPDATE identities SET supertokens_user_id = $1 WHERE provider = $2 AND provider_id = $3',
+        [supertokensUserId, provider, providerId],
+      );
+    },
+
     async getSave(userId) {
       return one('SELECT * FROM saves WHERE user_id = $1', [userId]);
     },
