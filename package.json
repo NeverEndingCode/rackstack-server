@@ -10,6 +10,7 @@
     "test:sqlite": "TEST_BACKEND=sqlite vitest run",
     "test:all": "npm run test:sqlite && npm test",
     "migrate:pg": "node server/db/migrate.js",
+    "shadow:check": "node server/supertokens/shadowCheck.js",
     "smoke": "for f in tests/e2e/smoke-v1*.mjs; do node \"$f\" || exit 1; done",
     "smoke:pg": "TEST_BACKEND=pg npm run smoke"
   },

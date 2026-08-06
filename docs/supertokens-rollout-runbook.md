@@ -15,9 +15,9 @@ Do not set `AUTH_MODE` to anything but blank or `passport` yet.
 |---|---|---|
 | `AUTH_MODE` switch + validation | 1 | ✅ built |
 | SuperTokens init + provider config | 2 | ✅ built |
-| Identity mapping (`signInUp` override) | 3 | ⬜ not started |
-| Auth middleware chain | 4 | ⬜ not started |
-| Shadow-mode verification | 5 | ⬜ not started |
+| Identity mapping (`signInUp` override) | 3 | ✅ built |
+| Auth middleware chain | 4 | ✅ built |
+| Shadow-mode verification | 5 | ✅ built — **not yet run against production** |
 | OAuth callback URL changes | 6 | 📄 documented below, not yet needed |
 | Deployment config + release | 7 | ⬜ not started |
 
@@ -232,19 +232,84 @@ step that actually changes behaviour.
 
 ## Part C — Shadow-mode verification gate
 
-*Pending Task 5.*
+**Cutover to `dual` is gated on this reporting 100%.** Nothing in Part D
+happens until it does.
 
-Will cover: running a SuperTokens login in shadow mode, which computes
-`provider:thirdPartyUserId` and compares it against the existing `identities`
-rows without touching the caller's session or writing anything.
+### C1. Why there is a gate at all
 
-**Cutover is gated on a 100% match.** This exists because the assumption that
-SuperTokens' `thirdPartyUserId` equals passport's `profile.id` is load-bearing
-and unverified — and if it is wrong, the symptom is a player silently landing
-on a brand-new empty save rather than an error anyone would notice.
+The release rests on one equality: the id SuperTokens computes for a provider
+is the same string passport already stored. That has two halves, and only one
+of them can be checked by reading code:
 
-**This has not been run against production identities.** It cannot be until
-the owner's export is available.
+| Half | How it was checked | Result |
+|---|---|---|
+| What SuperTokens *will* compute | Read both providers' source at the pinned versions | Verified — see "The one assumption" above |
+| What is *already stored* in your `identities` rows | Cannot be read from code. Those rows were written by whatever library versions were installed the day each player first logged in, going back to v1.0. | **This is what Part C checks** |
+
+If they ever disagreed, there would be no error and no log line. A returning
+player would simply land on a brand-new empty save — and if they played on it
+before anyone noticed, their old save could only come back from a restore.
+
+### C2. Run the audit (do this first — it needs nothing switched on)
+
+```bash
+npm run shadow:check
+```
+
+It reads whichever database your usual environment variables point at
+(`DATABASE_URL`, or `DB_PATH` for SQLite) and checks every identity row.
+
+**It is read-only.** It issues nothing but SELECTs, touches no session, and
+creates nothing. Safe to run against production with players online — and safe
+to run against a restored export on a laptop, which is the intended use, since
+this has to clear *before* the SuperTokens stack is switched on.
+
+A clean run:
+
+```
+[shadow] MATCH github:37058311 -> github:37058311
+[shadow] MATCH discord:536626725380161537 -> discord:536626725380161537
+
+=== SuperTokens shadow-mode report ===
+logins compared:      2
+matched:              2
+mismatched:           0
+no existing identity: 0 (new players - not failures)
+match rate:           100.00%
+
+GATE: PASS - 100% of comparable logins matched. Cutover to AUTH_MODE=dual is cleared.
+```
+
+Exit code 0 means pass; anything else means do not proceed.
+
+### C3. Reading the result
+
+| Report says | Meaning | Do |
+|---|---|---|
+| `GATE: PASS` | Every stored identity has the shape the mapping expects. | Proceed to Part D. |
+| `GATE: FAIL` | One or more players would land on the wrong save. Every offending pair is named in the output. | **Stop.** Do not set `AUTH_MODE`. This needs looking at per row. |
+| `GATE: NOT RUN` | Nothing was compared — usually the wrong database. | Check `DATABASE_URL`/`DB_PATH`. An empty run is **not** a pass. |
+
+That last row is why the script exits non-zero on an empty run: a gate that
+reported success because it read nothing would manufacture exactly the false
+confidence it exists to prevent.
+
+### C4. The live per-login check (optional, during `dual`)
+
+`createShadowRun()` in `server/supertokens/shadow.js` does the same comparison
+for an actual completed SuperTokens login, logging one line each, and likewise
+writes nothing and does not touch the caller's session. It is useful as
+belt-and-braces once `dual` is on, but it cannot be the gate — it needs the
+SuperTokens stack reachable and someone logging in through it, which is most of
+what the gate is meant to clear beforehand. **C2 is the gate.**
+
+### C5. Status
+
+> **This has not been run against production identities.** The owner's current
+> Unraid export has not been supplied, and v1.7 has not been cut over on that
+> box yet. The audit is built and tested — including against a database
+> deliberately containing a bad row — but it has only ever run against test
+> data. **No cutover has happened, and none is cleared.**
 
 ## Part D — Cutover
 
