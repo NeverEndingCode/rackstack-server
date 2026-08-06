@@ -19,6 +19,13 @@ Postgres support, with automatic migration from SQLite.
   purpose rather than serve an empty game over live save data - the log
   names the table that failed. The same logic is available standalone via
   `npm run migrate:pg`.
+- **Per-user request serialization**: save updates are a read-modify-write
+  (load, evaluate, persist). Under SQLite those three steps used to run in a
+  single uninterruptible turn, because every database call was synchronous;
+  making the interface async removed that guarantee. Requests for one account
+  are now queued behind each other explicitly, so two open tabs can't load the
+  same state and have one overwrite the other's progress. Different players
+  never block each other.
 - **`identities` table**: authentication identity records (provider +
   provider id) are now split from `users` into their own table, in
   preparation for the SuperTokens migration planned for v1.8.

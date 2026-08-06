@@ -173,7 +173,7 @@ export async function createSqliteDriver({ path: dbPath }) {
                  LIMIT 1) AS provider
         FROM users u
         LEFT JOIN saves s ON s.user_id = u.id
-        ORDER BY u.created_at DESC
+        ORDER BY u.created_at DESC, u.id ASC
       `).all();
     },
 
@@ -337,7 +337,11 @@ export async function createSqliteDriver({ path: dbPath }) {
     },
 
     async listEvents() {
-      return db.prepare('SELECT * FROM live_events ORDER BY created_at ASC').all().map(parseEventRow);
+      // `, id ASC` matches driver.pg.js's ordering exactly. seedSeasonalEvents
+      // inserts all four seasonal events with the same `now`, so ties are
+      // guaranteed rather than hypothetical, and without a tiebreak the admin
+      // Events list comes back in a different order on each backend.
+      return db.prepare('SELECT * FROM live_events ORDER BY created_at ASC, id ASC').all().map(parseEventRow);
     },
 
     async getEvent(id) {

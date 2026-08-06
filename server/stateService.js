@@ -7,6 +7,7 @@ import { getEffectiveConfig } from './configService.js';
 import { joinEventIfEligible, resolvePlayerEvents } from './eventService.js';
 import { rolloverContracts } from '../shared/contracts.js';
 import { checkAchievements } from '../shared/achievements.js';
+import { withUserLock } from './userLock.js';
 
 function safeParse(text, userId) {
   try {
@@ -122,11 +123,21 @@ export async function loadEvaluateAndSchedule(userId, now) {
   return { state, gained, config, activeEvent, unlockedAchievements };
 }
 
-/** Loads, evaluates, persists, and returns { state, gained, activeEvent } for GET /api/state. */
+/**
+ * Loads, evaluates, persists, and returns { state, gained, activeEvent } for
+ * GET /api/state.
+ *
+ * Serialized per user: this is a read-modify-write (load -> evaluate ->
+ * putSave) and every step now awaits, so without the lock a concurrent
+ * request for the same user reads the same pre-write state and the later
+ * putSave silently discards the earlier one. See server/userLock.js.
+ */
 export async function loadAndEvaluate(userId, now = Date.now()) {
-  const { state, gained, activeEvent, unlockedAchievements } = await loadEvaluateAndSchedule(userId, now);
-  await putSave(userId, state, now);
-  return { state, gained, activeEvent, unlockedAchievements };
+  return withUserLock(userId, async () => {
+    const { state, gained, activeEvent, unlockedAchievements } = await loadEvaluateAndSchedule(userId, now);
+    await putSave(userId, state, now);
+    return { state, gained, activeEvent, unlockedAchievements };
+  });
 }
 
 /**
@@ -139,8 +150,18 @@ export async function loadAndEvaluate(userId, now = Date.now()) {
  * buyUpgrade/buyShardUpgrade/claimGoal/claimRepeatable/buyTapeUpgrade all
  * pass `{ type, id: <string identifier> }`) - echoing back `action.id`
  * here instead used to silently clobber those actions' own id client-side.
+ *
+ * Serialized per user for the same reason loadAndEvaluate is: the load and
+ * the putSave are separated by awaits, so a concurrent request for this user
+ * would evaluate against the same pre-write state and one of the two writes
+ * would be lost. The lock spans the participation-progress writes at the end
+ * too, since those are derived from the state this call just persisted.
  */
 export async function applyActions(userId, actions, now = Date.now()) {
+  return withUserLock(userId, () => applyActionsUnlocked(userId, actions, now));
+}
+
+async function applyActionsUnlocked(userId, actions, now) {
   const {
     state: loaded, config, unlockedAchievements: loadUnlocked,
   } = await loadEvaluateAndSchedule(userId, now);

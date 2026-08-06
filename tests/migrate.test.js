@@ -1,5 +1,5 @@
 import {
-  describe, it, expect, beforeEach, afterEach,
+  describe, it, expect, beforeEach, afterEach, vi,
 } from 'vitest';
 import pg from 'pg';
 import Database from 'better-sqlite3';
@@ -19,6 +19,34 @@ import { migrateSqliteToPostgres, verifyMigration, TABLES } from '../server/db/m
 const skip = process.env.TEST_BACKEND === 'sqlite';
 
 const FIXTURE = path.resolve('tests/fixtures/v11-sqlite.db');
+
+/**
+ * Runs `body` with pg.Pool.prototype.end spied, then asserts the migrator
+ * ended the pool it opened.
+ *
+ * The intuitive-looking alternative - "make a second, legitimate call and
+ * watch it succeed" - proves nothing about pool leaks, and this suite used it
+ * in three places. migrateSqliteToPostgres constructs its OWN pool per call
+ * (server/db/migrate.js:270), so a pool leaked by the first call cannot
+ * affect the second, and in the nonexistent-target case the leaked pool never
+ * established a connection at all, so it holds no handles and no timers.
+ * Those assertions passed identically with the `catch { await pool.end(); }`
+ * wrappers deleted. This spy does not: the pool is constructed before every
+ * failure point exercised here, so a missing end() fails the assertion.
+ *
+ * The follow-up "a later call still succeeds" assertions are kept where they
+ * appear - they are meaningful as *target not left half-populated* checks,
+ * which is a different property, and are labelled as such.
+ */
+async function expectPoolEnded(body) {
+  const end = vi.spyOn(pg.Pool.prototype, 'end');
+  try {
+    await body();
+    expect(end, 'migrateSqliteToPostgres must end the pool it opened before propagating').toHaveBeenCalled();
+  } finally {
+    end.mockRestore();
+  }
+}
 
 // Tracks scratch files created by individual tests (temp copies of the
 // fixture, WAL-mode databases, etc.) so they can be cleaned up afterward
@@ -247,15 +275,17 @@ describe.skipIf(skip)('sqlite -> postgres migration', () => {
     blocker.prepare('SELECT * FROM users').all();
 
     try {
-      await expect(migrateSqliteToPostgres({ sqlitePath: tmp, databaseUrl: db.url }))
-        .rejects.toThrow(/could not checkpoint the sqlite wal/i);
+      await expectPoolEnded(async () => {
+        await expect(migrateSqliteToPostgres({ sqlitePath: tmp, databaseUrl: db.url }))
+          .rejects.toThrow(/could not checkpoint the sqlite wal/i);
+      });
     } finally {
       blocker.exec('COMMIT');
       blocker.close();
     }
 
-    // The refusal must not have left the target half-populated or the pg
-    // pool leaked - a normal run right after must still succeed cleanly.
+    // Separate property from the pool check above: the refusal must not have
+    // left the target half-populated, so a normal run right after succeeds.
     // Deliberately a *fresh* scratch copy rather than reusing `tmp`:
     // reopening the exact same file immediately after `blocker.close()`
     // raced SQLite's own lock-release timing in practice (multi-second
@@ -280,14 +310,15 @@ describe.skipIf(skip)('sqlite -> postgres migration', () => {
     const tmp = path.join(os.tmpdir(), `migrate-corrupt-dir-${Date.now()}.db`);
     fs.mkdirSync(tmp);
     try {
-      await expect(migrateSqliteToPostgres({ sqlitePath: tmp, databaseUrl: db.url }))
-        .rejects.toThrow(/could not checkpoint the sqlite wal/i);
+      await expectPoolEnded(async () => {
+        await expect(migrateSqliteToPostgres({ sqlitePath: tmp, databaseUrl: db.url }))
+          .rejects.toThrow(/could not checkpoint the sqlite wal/i);
+      });
     } finally {
       fs.rmdirSync(tmp);
     }
 
-    // Same pool-leak concern as the blocked-checkpoint case: a subsequent,
-    // legitimate call against the same target must still work.
+    // As above, the separate "target not left half-populated" property.
     const result = await migrateSqliteToPostgres({ sqlitePath: FIXTURE, databaseUrl: db.url });
     expect(result.migrated).toBe(true);
   });
@@ -295,15 +326,14 @@ describe.skipIf(skip)('sqlite -> postgres migration', () => {
   it('ends the pg pool after an early failure connecting to the target, so a later call is unaffected', async () => {
     // Covers the applyPgSchema/emptiness-check try/catch specifically (as
     // opposed to the sqlite-side failures above): a nonexistent target
-    // database fails on the pool's very first query. A leaked pool here
-    // wouldn't necessarily throw its own error in this test, but it would
-    // eventually starve later connections - proven the same way as the
-    // sqlite-side cases, by a legitimate call succeeding promptly right
-    // after.
+    // database fails on the pool's very first query, so the catch at
+    // server/db/migrate.js:313 is the only thing that ends the pool.
     const badUrl = new URL(db.url);
     badUrl.pathname = '/rackstack_test_migrate_leak_probe_does_not_exist';
-    await expect(migrateSqliteToPostgres({ sqlitePath: FIXTURE, databaseUrl: badUrl.toString() }))
-      .rejects.toThrow();
+    await expectPoolEnded(async () => {
+      await expect(migrateSqliteToPostgres({ sqlitePath: FIXTURE, databaseUrl: badUrl.toString() }))
+        .rejects.toThrow();
+    });
 
     const result = await migrateSqliteToPostgres({ sqlitePath: FIXTURE, databaseUrl: db.url });
     expect(result.migrated).toBe(true);

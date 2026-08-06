@@ -50,6 +50,11 @@ export async function createPgDriver({ url }) {
   // the account out.
   async function insertUserAndIdentity(user, identityRow) {
     const client = await pool.connect();
+    // Set once the client is known to be in a clean state; on any other exit
+    // the client is destroyed rather than returned to the pool. Releasing a
+    // client that might still hold an open transaction would hand the next
+    // caller a connection mid-transaction.
+    let releasable = false;
     try {
       await client.query('BEGIN');
       await client.query(
@@ -65,11 +70,23 @@ export async function createPgDriver({ url }) {
         ],
       );
       await client.query('COMMIT');
+      releasable = true;
     } catch (e) {
-      await client.query('ROLLBACK');
+      // The ROLLBACK is best-effort: if it throws (the connection died
+      // mid-transaction, say), letting that error propagate would REPLACE
+      // `e` - and `e` is load-bearing here. upsertUser's caller inspects it
+      // for SQLSTATE 23505 to drive the username-collision retry; swapping
+      // in a rollback error turns a recoverable collision into a 500.
+      try {
+        await client.query('ROLLBACK');
+        releasable = true;
+      } catch (rollbackError) {
+        console.error('[db] ROLLBACK failed after a failed user insert; discarding the connection', rollbackError);
+      }
       throw e;
     } finally {
-      client.release();
+      // release(err) destroys the client instead of returning it to the pool.
+      client.release(releasable ? undefined : new Error('connection left in an unknown transaction state'));
     }
   }
 

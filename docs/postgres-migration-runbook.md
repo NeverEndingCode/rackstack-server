@@ -124,13 +124,15 @@ Set on the rackstack container:
 DATABASE_URL=postgresql://rackstack:PASSWORD@192.168.x.x:5432/rackstack
 ```
 
-Three ways this line commonly goes wrong:
+Two ways this line commonly goes wrong:
 
-- It must be `postgresql://`. `postgres://` is rejected outright.
 - Use the host's LAN IP, not `localhost` or `127.0.0.1` — inside the container
   those point at the container itself.
 - **Leave the `/app/data` volume mapping in place.** It is the migration source
   and your rollback path. Removing it is the one irreversible mistake here.
+- `postgresql://` and `postgres://` are both accepted — they are the same
+  scheme to the driver. If a connection fails, the scheme is not the cause;
+  check the host, port, password and that Postgres accepts remote connections.
 
 ### B4. Start and watch
 

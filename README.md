@@ -185,15 +185,26 @@ The two things operators most often get wrong:
 
 Short version: add a `postgres:16` container with its own appdata path and a
 `rackstack` database, stop rackstack, back up as above, set `DATABASE_URL`
-(must be `postgresql://`, and the host must not be `localhost` from inside a
-container), and start rackstack. Watch the log for `[migrate]` - you should
-see a verified row count for each table, then `committed`. If verification
-fails the container refuses to start on purpose, so it never serves an empty
-game over your save data; your SQLite data is untouched either way. To roll
-back, blank out `DATABASE_URL` and restart.
+(the host must not be `localhost` from inside a container), and start
+rackstack. Watch the log for `[migrate]` - you should see a verified row
+count for each table, then `committed`. If verification fails the container
+refuses to start on purpose, so it never serves an empty game over your save
+data; your SQLite data is untouched either way.
 
-**Cutting a release:** bump `version` in `package.json` and
-`client/package.json`, commit, then:
+To roll back, blank out `DATABASE_URL` and restart — but note where that
+variable actually lives for your deployment:
+
+| Deployment | Where to blank `DATABASE_URL` |
+|---|---|
+| Unraid / plain `docker run` | The container's Variable in the Unraid UI (or the `-e` flag) |
+| Docker Compose | `.env` — `docker-compose.yml` reads it via `${DATABASE_URL:-...}` |
+| Local `npm start` | `.env` |
+
+**Cutting a release:** bump `version` in `package.json` (the single release-
+version authority - `client/vite.config.js` reads it for `__APP_VERSION__`,
+and `client/package.json`'s own version is deliberately not kept in sync),
+update `CHANGELOG.md` and the Dockerfile's
+`org.opencontainers.image.version` label, commit, then:
 
 ```bash
 git tag vX.Y.Z

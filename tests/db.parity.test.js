@@ -88,4 +88,44 @@ describe('cross-dialect parity', () => {
     await db.seedSeasonalEvents();
     expect((await db.listEvents()).length).toBe(first);
   });
+
+  it('orders listEvents by (created_at, id) so both backends agree', async () => {
+    // seedSeasonalEvents stamps every seasonal event with the same `now`, so
+    // created_at ties are the normal case, not an edge case. Asserting only
+    // `.length` (as the idempotence test above does) cannot catch a backend
+    // ordering the ties differently, which is how the two drivers drifted:
+    // pg had `ORDER BY created_at ASC, id ASC`, sqlite had no tiebreak, and
+    // the admin Events list rendered in a different order per backend.
+    await db.seedSeasonalEvents();
+    const events = await db.listEvents();
+    expect(events.length).toBeGreaterThan(1);
+
+    const expected = [...events].sort((a, b) => (
+      a.created_at - b.created_at || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+    ));
+    expect(events.map((e) => e.id)).toEqual(expected.map((e) => e.id));
+
+    // The tie must actually be exercised, or the assertion above is just
+    // re-sorting an already-distinct list and proves nothing.
+    const byCreatedAt = new Map();
+    for (const e of events) byCreatedAt.set(e.created_at, (byCreatedAt.get(e.created_at) || 0) + 1);
+    expect(Math.max(...byCreatedAt.values())).toBeGreaterThan(1);
+  });
+
+  it('orders getAllUsersWithSaves by (created_at DESC, id) so both backends agree', async () => {
+    // Same created_at on purpose: upsertUser stamps it from the clock, so
+    // several accounts created in the same millisecond is ordinary.
+    await db.upsertUser({ provider: 'github', providerId: 'ord-c', username: 'ordc', avatarUrl: null });
+    await db.upsertUser({ provider: 'github', providerId: 'ord-a', username: 'orda', avatarUrl: null });
+    await db.upsertUser({ provider: 'github', providerId: 'ord-b', username: 'ordb', avatarUrl: null });
+
+    const rows = await db.getAllUsersWithSaves();
+    const mine = rows.filter((r) => r.id.startsWith('github:ord-'));
+    expect(mine).toHaveLength(3);
+
+    const expected = [...mine].sort((a, b) => (
+      b.created_at - a.created_at || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+    ));
+    expect(mine.map((r) => r.id)).toEqual(expected.map((r) => r.id));
+  });
 });

@@ -22,7 +22,7 @@ import fs from 'fs';
 import crypto from 'node:crypto';
 import './pgTypes.js'; // side effect: registers the BIGINT->Number type parser
 import { applySchema as applyPgSchema } from './schema.pg.js';
-import { dedupeUsernameRows } from './shared.js';
+import { dedupeUsernameRows, resolveSqlitePath } from './shared.js';
 
 // Every table the migrator knows how to move, in an order that respects the
 // foreign keys declared in schema.pg.js (users/identities before saves and
@@ -161,11 +161,39 @@ function logError(logger, ...args) {
   (logger.error ?? logger.log).call(logger, ...args);
 }
 
-function sortByKey(rows, key) {
+/** How fingerprint() renders one cell; reused as a tiebreak so the sort and
+ *  the hash agree on what "equal" means. */
+function cellText(v) {
+  return v === null || v === undefined ? '\x00NULL' : String(v);
+}
+
+/**
+ * Sorts rows by `key`, falling back to the rendered contents of
+ * `tieColumns` when the key does not distinguish two rows.
+ *
+ * The fallback is load-bearing, not tidiness. Only `config_history` has a
+ * non-unique key in TABLES (`version`, `updated_at`), and both sides are
+ * ordered by it alone: the target's rows come back from SQL `ORDER BY
+ * version, updated_at`, which is free to order ties however it likes, while
+ * the source's are re-sorted here by a stable JS sort. Two history rows
+ * sharing a version and a millisecond would therefore be free to land in
+ * opposite orders on the two sides, producing a content-fingerprint
+ * mismatch over data that is in fact identical - and that mismatch aborts
+ * the migration and, under auto-migrate-on-boot, refuses to start the
+ * server. A total order computed the same way on both sides removes the
+ * failure mode instead of making it rarer.
+ */
+function sortByKey(rows, key, tieColumns = null) {
   return [...rows].sort((a, b) => {
     for (const k of key) {
       if (a[k] < b[k]) return -1;
       if (a[k] > b[k]) return 1;
+    }
+    for (const c of tieColumns || []) {
+      const av = cellText(a[c]);
+      const bv = cellText(b[c]);
+      if (av < bv) return -1;
+      if (av > bv) return 1;
     }
     return 0;
   });
@@ -239,8 +267,6 @@ export async function verifyMigration({ client, sqlite, tables = TABLES, logger 
     } else {
       srcRows = sqlite.prepare(`SELECT * FROM ${name} ORDER BY ${key.map((k) => `"${k}"`).join(', ')}`).all();
     }
-    srcRows = sortByKey(srcRows, key);
-
     if (srcRows.length !== pgRows.length) {
       throw new Error(
         `verification failed for ${name}: source has ${srcRows.length} rows, target has ${pgRows.length}`,
@@ -253,13 +279,42 @@ export async function verifyMigration({ client, sqlite, tables = TABLES, logger 
     // target that has no such columns - fingerprinting them would compare
     // a column that was never supposed to survive the move).
     const columns = Object.keys(srcRows[0]).filter((c) => c in pgRows[0]).sort();
-    const srcFp = fingerprint(srcRows, columns);
-    const pgFp = fingerprint(pgRows, columns);
+    // Both sides re-sorted here, with the same total order over the same
+    // columns - the SQL ORDER BY above only settles the key, and for a
+    // non-unique key (config_history) that leaves ties to chance.
+    const srcFp = fingerprint(sortByKey(srcRows, key, columns), columns);
+    const pgFp = fingerprint(sortByKey(pgRows, key, columns), columns);
     if (srcFp !== pgFp) {
       throw new Error(`verification failed for ${name}: content fingerprint mismatch`);
     }
     logger.log(`[migrate] ${name}: verified ${srcRows.length} rows (${srcFp.slice(0, 12)})`);
   }
+
+  // A cross-table invariant, which no per-table fingerprint can catch: each
+  // table above was verified against its own source independently, so a
+  // target with populated `users` and empty `identities` passes all of them
+  // and COMMITs a database in which every account is permanently locked
+  // out. upsertUser's identity lookup would miss, it would retry INSERT
+  // INTO users on an id that already exists, read the resulting SQLSTATE
+  // 23505 as a username collision, and 500 on every login with no recovery
+  // path short of hand-writing identity rows. Not reachable from any schema
+  // this codebase produces - which is exactly why it would go unnoticed
+  // until the first login after a one-shot run against irreplaceable data.
+  // Deliberately NOT checked here: "every migrated user has an identity row."
+  // An orphaned user is a real and nasty condition - that account can never
+  // log in again, because upsertUser's identity lookup misses, it retries
+  // INSERT INTO users on an id that already exists, and reads the resulting
+  // SQLSTATE 23505 as a username collision - but a cross-table check for it
+  // would be unreachable code. The per-table verification above already
+  // proves target `users` and target `identities` each match their source
+  // exactly, in both count and content fingerprint; two sets that each equal
+  // their source cannot disagree about which users have identities. The only
+  // way to reach a mismatch is for one of those per-table checks to have
+  // failed first, which throws before this point.
+  //
+  // A source that already has an orphaned user is copied faithfully, which is
+  // correct: refusing the cutover over pre-existing state the operator cannot
+  // fix from here would be worse than migrating it as-is.
 }
 
 export async function migrateSqliteToPostgres({ sqlitePath, databaseUrl, logger = console }) {
@@ -533,7 +588,9 @@ export async function migrateSqliteToPostgres({ sqlitePath, databaseUrl, logger 
  */
 export async function maybeAutoMigrate({ env = process.env, logger = console } = {}) {
   if (!env.DATABASE_URL) return { migrated: false, reason: 'DATABASE_URL not set; using SQLite' };
-  const sqlitePath = env.DB_PATH || '/app/data/rackstack.db';
+  // Must be the same path db/index.js would open, or a mismatch silently
+  // turns "your data is over there" into "fresh Postgres install".
+  const sqlitePath = resolveSqlitePath(env);
   if (!fs.existsSync(sqlitePath)) {
     return { migrated: false, reason: 'no SQLite database to migrate; fresh Postgres install' };
   }
@@ -568,7 +625,7 @@ export function describeFatalMigrationError(e) {
 
 // Runnable by hand: npm run migrate:pg
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const sqlitePath = process.env.DB_PATH || '/app/data/rackstack.db';
+  const sqlitePath = resolveSqlitePath(process.env);
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) { console.error('DATABASE_URL is required'); process.exit(1); }
   migrateSqliteToPostgres({ sqlitePath, databaseUrl })

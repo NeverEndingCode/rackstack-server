@@ -2,6 +2,40 @@
 // this file touches SQL - it's pure JS logic that must behave identically
 // regardless of which driver calls it, so it lives here once instead of
 // being duplicated (and risking drift) per driver.
+//
+// This module must stay free of side effects: db/migrate.js imports it, and
+// migrate.js runs BEFORE db/index.js is allowed to evaluate (see the boot
+// sequence in server/index.js). Anything here that reached db/index.js would
+// open a driver against the un-migrated database.
+
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+/**
+ * The one authority on where the SQLite database lives.
+ *
+ * Both the driver facade (db/index.js, which opens it) and the migrator
+ * (db/migrate.js, which reads it as the migration source) must resolve the
+ * same path from the same environment. They previously each had their own
+ * literal default, and the defaults disagreed: the migrator fell back to
+ * '/app/data/rackstack.db' while the facade fell back to a repo-relative
+ * path. With DATABASE_URL set and DB_PATH unset - any run outside the
+ * Docker image, since only the Dockerfile supplies DB_PATH - the migrator
+ * probed a path that did not exist, reported 'fresh Postgres install',
+ * skipped the migration, and the server then came up serving an empty
+ * Postgres while the real save data sat untouched and invisible at the
+ * facade's default. That is the "serve an empty game" outcome the fatal
+ * boot guard exists to prevent, reached through the one branch that is not
+ * fatal.
+ *
+ * The default is repo-relative because that is what the driver actually
+ * opens; the container overrides it via the Dockerfile's ENV DB_PATH.
+ */
+export function resolveSqlitePath(env = process.env) {
+  return env.DB_PATH || path.join(__dirname, '..', '..', 'data', 'rackstack.db');
+}
 
 /**
  * Returns a username derived from `desiredName` that `isTaken` reports as

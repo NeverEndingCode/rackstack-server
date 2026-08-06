@@ -1,6 +1,23 @@
 import 'dotenv/config';
 import { maybeAutoMigrate, describeFatalMigrationError } from './db/migrate.js';
 
+/**
+ * Prints the one line an operator gets when boot refuses, then exits.
+ *
+ * The explicit stderr flush is not ceremony: writes to a *pipe* - which is
+ * what Docker's log driver hands the container - are asynchronous in Node,
+ * and process.exit() discards whatever has not drained yet. Exiting straight
+ * after console.error can therefore produce a container that dies silently,
+ * which is the worst possible outcome for the only diagnostic there is.
+ * Passing a callback to write() defers the exit until the queued output has
+ * actually gone out.
+ */
+async function fatal(reason) {
+  console.error('[migrate] FATAL - refusing to start:', reason);
+  await new Promise((resolve) => { process.stderr.write('', resolve); });
+  process.exit(1);
+}
+
 try {
   const result = await maybeAutoMigrate();
   if (result.migrated) {
@@ -17,8 +34,7 @@ try {
   // is always '' - logging that verbatim would print this line with
   // nothing after the colon, defeating the point of it being the operator's
   // only signal for why boot refused.
-  console.error('[migrate] FATAL - refusing to start:', describeFatalMigrationError(e));
-  process.exit(1);
+  await fatal(describeFatalMigrationError(e));
 }
 
 // Dynamic imports: server/db/index.js (imported transitively by db.js,
@@ -27,10 +43,26 @@ try {
 // would open the pool - and start serving the un-migrated (or, for a fresh
 // Postgres target, empty) database - before maybeAutoMigrate() above ever
 // got a chance to run.
-const { ensureConfig } = await import('./configService.js');
-const { seedSeasonalEvents } = await import('./db.js');
-const { runScheduler } = await import('./eventService.js');
-const { buildApp } = await import('./app.js');
+//
+// Wrapped in the same fatal handler as the migration itself. These imports
+// are where the driver actually connects, and maybeAutoMigrate returns
+// without touching Postgres whenever there is no SQLite file to migrate - so
+// an unreachable or misconfigured Postgres on a fresh install surfaces HERE,
+// not above. Unwrapped, that arrives as a raw ERR_UNHANDLED_REJECTION stack
+// with no mention of the database, for the single most likely first-run
+// misconfiguration there is.
+let ensureConfig;
+let seedSeasonalEvents;
+let runScheduler;
+let buildApp;
+try {
+  ({ ensureConfig } = await import('./configService.js'));
+  ({ seedSeasonalEvents } = await import('./db.js'));
+  ({ runScheduler } = await import('./eventService.js'));
+  ({ buildApp } = await import('./app.js'));
+} catch (e) {
+  await fatal(describeFatalMigrationError(e));
+}
 
 await ensureConfig();
 await seedSeasonalEvents();

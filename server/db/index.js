@@ -1,10 +1,10 @@
-import path from 'path';
-import { fileURLToPath } from 'url';
 import { createSqliteDriver } from './driver.sqlite.js';
 import { createPgDriver } from './driver.pg.js';
+import { resolveSqlitePath } from './shared.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DB_PATH = process.env.DB_PATH || path.join(__dirname, '..', '..', 'data', 'rackstack.db');
+// Shared with db/migrate.js so the path the migrator reads as its source is
+// always the path this facade would have opened. See resolveSqlitePath.
+const DB_PATH = resolveSqlitePath(process.env);
 
 // Top-level await: every consumer does `import { getSave } from './db.js'`,
 // so the driver must be resolved before this module finishes evaluating.

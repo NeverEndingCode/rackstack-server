@@ -22,6 +22,7 @@ import {
   activateEvent, endEvent, resolvePlayerEvents, inClaimGrace,
 } from '../eventService.js';
 import { loadAndEvaluate, loadEvaluateAndSchedule, applyActions } from '../stateService.js';
+import { withUserLock } from '../userLock.js';
 import { getLeaderboards, invalidateLeaderboards } from '../leaderboardService.js';
 import { minigameWafers } from '../../shared/gameRules.js';
 import { USERNAME_RE } from '../../shared/validation.js';
@@ -371,26 +372,38 @@ router.post('/api/minigame/finish', requireAuth, async (req, res, next) => {
 
     // Single load+evaluate (not persisted yet) so wafer/stat/cooldown
     // mutations below land in one putSave, matching applyActions' pattern.
-    const { state } = await loadEvaluateAndSchedule(req.user.sub, now);
+    //
+    // Held under the per-user lock (server/userLock.js) for the whole
+    // read-modify-write. loadEvaluateAndSchedule is the *unlocked* primitive -
+    // stateService's own entry points take the lock themselves, so calling it
+    // here rather than loadAndEvaluate is what keeps this non-reentrant.
+    // Without the lock a concurrent GET /api/state would load the same state,
+    // then overwrite it after this handler's putSave, erasing the wafer credit
+    // and the cooldown stamp while this request still returned 200 with them.
+    const { state, wafers, onCooldown } = await withUserLock(req.user.sub, async () => {
+      const { state: loaded } = await loadEvaluateAndSchedule(req.user.sub, now);
 
-    // Re-check the cooldown against the freshly-evaluated state, not just at
-    // start time: a burst of sessions opened concurrently for the same game
-    // (each individually valid when it was opened) must not all be redeemable
-    // once the first win of the batch sets the cooldown. The session is still
-    // marked finished below either way, so a blocked attempt can't be replayed.
-    const cooldownUntil = state.server.gameCooldowns[session.game] || 0;
-    const onCooldown = now < cooldownUntil;
-    const wafers = !onCooldown && won ? minigameWafers(session.game, clamped, state.meta, config) : 0;
+      // Re-check the cooldown against the freshly-evaluated state, not just at
+      // start time: a burst of sessions opened concurrently for the same game
+      // (each individually valid when it was opened) must not all be redeemable
+      // once the first win of the batch sets the cooldown. The session is still
+      // marked finished below either way, so a blocked attempt can't be replayed.
+      const cooldownUntil = loaded.server.gameCooldowns[session.game] || 0;
+      const cooling = now < cooldownUntil;
+      const earned = !cooling && won ? minigameWafers(session.game, clamped, loaded.meta, config) : 0;
 
-    if (wafers > 0) {
-      state.meta.wafers += wafers;
-      state.meta.stats.minigamesWon += 1;
-      state.meta.stats.totalWafersEarned += wafers;
-      state.server.gameCooldowns[session.game] = now + config.minigames.winCooldownMs;
-    }
+      if (earned > 0) {
+        loaded.meta.wafers += earned;
+        loaded.meta.stats.minigamesWon += 1;
+        loaded.meta.stats.totalWafersEarned += earned;
+        loaded.server.gameCooldowns[session.game] = now + config.minigames.winCooldownMs;
+      }
 
-    await putSave(req.user.sub, state, now);
-    await finishMinigameSession(sessionId, clamped);
+      await putSave(req.user.sub, loaded, now);
+      await finishMinigameSession(sessionId, clamped);
+
+      return { state: loaded, wafers: earned, onCooldown: cooling };
+    });
 
     if (onCooldown) {
       return res.status(429).json({ error: 'cooldown_active' });
