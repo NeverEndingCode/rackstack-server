@@ -200,6 +200,37 @@ variable actually lives for your deployment:
 | Docker Compose | `.env` — `docker-compose.yml` reads it via `${DATABASE_URL:-...}` |
 | Local `npm start` | `.env` |
 
+### Authentication stack (`AUTH_MODE`)
+
+RackStack is gaining SuperTokens as an alternative login stack, rolled out
+behind a switch rather than swapped in one step. **If you do nothing, nothing
+changes** — the default is the passport + JWT stack that has always shipped,
+and the SuperTokens SDK is not even loaded.
+
+| `AUTH_MODE` | Behaviour |
+|---|---|
+| *(blank)* or `passport` | Default. Exactly as before; SuperTokens is not initialised. |
+| `dual` | Both login paths live, sessions from either accepted. Where the rollout happens. |
+| `supertokens` | SuperTokens only; the legacy OAuth routes are not registered. |
+
+Two properties worth knowing before you touch it:
+
+- **Changing this never logs anyone out.** Existing login cookies stay valid
+  for their full 90 days through every transition, in both directions, so
+  rollback is just setting it back to `passport` and restarting.
+- **A typo stops the container** instead of quietly falling back to the
+  default. `AUTH_MODE=supertoken` would otherwise serve the legacy stack while
+  looking like a finished rollout — the kind of thing you'd discover weeks
+  later, from the wrong symptom.
+
+`SUPERTOKENS_CONNECTION_URI` points at the SuperTokens core container and is
+read only in `dual`/`supertokens`. That core needs its **own** database on
+your Postgres server, separate from the rackstack one.
+
+Full walkthrough — including the OAuth redirect-URL change that has to happen
+*before* `dual`, and the verification gate before cutover — is in
+[`docs/supertokens-rollout-runbook.md`](./docs/supertokens-rollout-runbook.md).
+
 **Cutting a release:** bump `version` in `package.json` (the single release-
 version authority - `client/vite.config.js` reads it for `__APP_VERSION__`,
 and `client/package.json`'s own version is deliberately not kept in sync),

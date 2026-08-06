@@ -42,5 +42,11 @@ services:
       # tell you to do - would silently keep pointing at Postgres. Without the
       # colon, only a genuinely unset variable takes the default.
       DATABASE_URL: ${DATABASE_URL-postgresql://rackstack:rackstack@postgres:5432/rackstack}
+      # v1.8 auth stack selector. Defaults to the legacy passport + JWT stack,
+      # so `docker compose up` behaves exactly as it did before v1.8. Same
+      # non-colon ${VAR-default} form and the same reason: `AUTH_MODE=` in
+      # .env must mean "the default", not "unset, so substitute the default"
+      # - which is what the colon form would do, defeating the rollback.
+      AUTH_MODE: ${AUTH_MODE-passport}
     env_file:
       - .env
