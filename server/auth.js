@@ -193,7 +193,11 @@ export async function requireAuth(req, res, next) {
     const token = req.cookies && req.cookies[COOKIE_NAME];
     if (!token) return res.status(401).json({ error: 'not authenticated' });
     try {
-      req.user = jwt.verify(token, JWT_SECRET);
+      // Algorithm pinned explicitly. jsonwebtoken v9 already restricts a string
+      // secret to HMAC and rejects `alg: none`, so this closes no live hole -
+      // it just stops the guarantee depending on a library default, which is
+      // the sort of thing that changes in a major version nobody re-audits.
+      req.user = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] });
     } catch (e) {
       return res.status(401).json({ error: 'invalid or expired token' });
     }

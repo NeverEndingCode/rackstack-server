@@ -3,7 +3,9 @@ process.env.JWT_SECRET = 'test-secret-st-init';
 import { describe, it, expect, beforeEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { buildProviders, resolvePublicOrigin, PROVIDER_IDS } from '../server/supertokens/providers.js';
-import { initSuperTokens, __isInitialised, __resetForTests } from '../server/supertokens/init.js';
+import {
+  initSuperTokens, __isInitialised, __resetForTests, isLoopback,
+} from '../server/supertokens/init.js';
 
 const CREDS = {
   GITHUB_CLIENT_ID: 'gh-id',
@@ -12,6 +14,9 @@ const CREDS = {
   DISCORD_CLIENT_SECRET: 'dc-secret',
   PUBLIC_ORIGIN: 'https://rackstack.example.com',
   SUPERTOKENS_CONNECTION_URI: 'http://supertokens:3567',
+  // The core is not on loopback here, so a key is mandatory - see the
+  // 'refuses a non-loopback core with no API key' test below.
+  SUPERTOKENS_API_KEY: 'test-core-api-key',
 };
 
 beforeEach(() => { __resetForTests(); });
@@ -130,13 +135,28 @@ describe('initSuperTokens containment', () => {
 
   it('mounts nothing extra on the app in passport mode', async () => {
     // app.js's middleware stack in passport mode must be what it was before
-    // v1.8 existed. Comparing route-layer counts is the cheapest way to see
-    // an accidental extra `app.use`.
+    // v1.8 existed.
+    //
+    // This used to assert `layerNames` did not contain 'middleware' or
+    // 'errorHandler' - which could never fail, because SuperTokens' express
+    // bindings are ANONYMOUS functions and appear on the stack as
+    // '<anonymous>'. The assertion passed whether or not they were mounted,
+    // i.e. it tested nothing at all. Found while fixing the mutation-detected
+    // gap that nothing asserted the POSITIVE case either
+    // (tests/supertokens.middleware.test.js now does, by count and by HTTP).
+    //
+    // Counting layers is the honest version: the two SuperTokens layers are
+    // exactly the difference between the two modes.
     const { buildApp } = await import('../server/app.js');
     const app = await buildApp({ env: { ...process.env, AUTH_MODE: 'passport' } });
-    const layerNames = app._router.stack.map((l) => l.name);
-    expect(layerNames).not.toContain('middleware');
-    expect(layerNames).not.toContain('errorHandler');
+
+    const names = app._router.stack.map((l) => l.name);
+    // Recorded explicitly so an accidental `app.use` shows up as a diff here
+    // rather than passing silently.
+    expect(names).toEqual([
+      'query', 'expressInit', 'initialize', 'cookieParser', 'jsonParser',
+      'router', 'router', 'serveStatic', 'bound dispatch',
+    ]);
   });
 });
 
@@ -227,6 +247,40 @@ describe('initSuperTokens configuration errors', () => {
     } = CREDS;
     await expect(initSuperTokens({ env, mode: 'dual' }))
       .rejects.toThrow(/public origin/i);
+  });
+
+  it('refuses a non-loopback core with no API key', async () => {
+    // Review-found: the shipped compose file ran the core with no API_KEYS and
+    // published its port. A core without a key serves its whole API open, and
+    // POST /recipe/session mints a session for ANY userId - which the id
+    // mapping then turns into a real RackStack session for any SUPER_ADMIN_IDS
+    // value, without a single request reaching Express.
+    const { SUPERTOKENS_API_KEY: _omit, ...env } = CREDS;
+    await expect(initSuperTokens({
+      env: { ...env, SUPERTOKENS_CONNECTION_URI: 'http://supertokens.example.com:3567' },
+      mode: 'dual',
+    })).rejects.toThrow(/SUPERTOKENS_API_KEY/);
+  });
+
+  it('allows a loopback core without a key, since only this host can reach it', async () => {
+    // Requiring one there would only teach people to set a dummy value, which
+    // is worse than an exemption that is explained.
+    const { SUPERTOKENS_API_KEY: _omit, ...env } = CREDS;
+    await expect(initSuperTokens({
+      env: { ...env, SUPERTOKENS_CONNECTION_URI: 'http://127.0.0.1:3567' },
+      mode: 'dual',
+    })).resolves.toBe(true);
+    __resetForTests();
+  });
+
+  it('does not treat a lookalike hostname as loopback', async () => {
+    // A substring check for '127.0.0.1' would wave through
+    // http://127.0.0.1.evil.com - the classic way this exemption goes wrong.
+    expect(isLoopback('http://127.0.0.1.evil.com:3567')).toBe(false);
+    expect(isLoopback('http://localhost.attacker.net:3567')).toBe(false);
+    expect(isLoopback('http://127.0.0.1:3567')).toBe(true);
+    expect(isLoopback('http://localhost:3567')).toBe(true);
+    expect(isLoopback('not a url')).toBe(false);
   });
 
   it('refuses when no OAuth provider is configured', async () => {

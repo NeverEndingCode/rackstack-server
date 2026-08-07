@@ -38,6 +38,7 @@ import {
   upsertUser as dbUpsertUser,
   setSupertokensUserId as dbSetSupertokensUserId,
 } from '../db/index.js';
+import { withUserLock } from '../userLock.js';
 
 /**
  * The default database dependency set. Injected rather than imported directly
@@ -110,6 +111,22 @@ export async function resolveExternalUserId(input, db = defaultDb) {
     );
   }
 
+  // `users.id` is `${provider}:${providerId}`, so the provider id is about to
+  // become half of a composite primary key that three foreign keys point at.
+  // Both current providers return opaque numeric ids, and cross-provider
+  // collision is impossible anyway because the prefixes are disjoint - so this
+  // is not reachable today. It is asserted rather than inherited because the
+  // invariant is load-bearing and the next provider added might not be numeric:
+  // a provider id containing a colon would make the composition ambiguous, and
+  // ambiguity in an account identifier is not a thing to discover later.
+  if (!/^[A-Za-z0-9._~-]+$/.test(thirdPartyUserId)) {
+    throw new Error(
+      'SuperTokens supplied a provider user id with unexpected characters '
+      + `(${thirdPartyId}:${thirdPartyUserId}). users.id is composed from it, so refusing `
+      + 'rather than minting an ambiguous account identifier.',
+    );
+  }
+
   const identity = await db.getIdentity(thirdPartyId, thirdPartyUserId);
   if (identity) return { externalUserId: identity.user_id, created: false };
 
@@ -148,6 +165,24 @@ export async function linkExternalUserId(
     userId: supertokensUserId, userIdType: 'ANY',
   });
 
+  // The value to record on our side. It is NOT always the `supertokensUserId`
+  // argument: on a returning login the core has already translated, so what
+  // arrives here is the EXTERNAL id. Writing that back would overwrite the real
+  // SuperTokens id with our own `users.id` on every login after the first -
+  // which is what this code did until the v1.8 final review caught it.
+  //
+  // The consequences were all latent but real: the column stopped recording the
+  // linkage exactly when a rollout would need to reverse-map an ST id to a
+  // player; a crash between the two writes self-healed into the wrong value
+  // rather than the right one; and once account linking ships, two identities
+  // on one `users.id` would both write that same `users.id` and collide on the
+  // UNIQUE constraint - turning a benign case into a permanent login failure,
+  // and hollowing out the constraint's documented meaning ("two identities were
+  // handed the same SuperTokens id - genuine corruption").
+  //
+  // The OK branch has the authoritative value to hand: the core just told us.
+  let recordedSupertokensUserId = supertokensUserId;
+
   if (existing.status === 'OK') {
     if (existing.externalUserId !== externalUserId) {
       throw new Error(
@@ -156,6 +191,7 @@ export async function linkExternalUserId(
         + `'${externalUserId}'. Refusing to issue a session rather than serve the wrong save.`,
       );
     }
+    recordedSupertokensUserId = existing.superTokensUserId;
   } else {
     const result = await supertokens.createUserIdMapping({
       superTokensUserId: supertokensUserId,
@@ -174,6 +210,12 @@ export async function linkExternalUserId(
           userId: supertokensUserId, userIdType: 'ANY',
         });
         if (raced.status === 'OK' && raced.externalUserId === externalUserId) {
+          // Fall through to the bookkeeping write rather than returning early.
+          // The race loser used to skip it, which was the one successful path
+          // that recorded nothing - and, after the fix above, the one path that
+          // would have left the column empty rather than merely wrong.
+          recordedSupertokensUserId = raced.superTokensUserId;
+          await db.setSupertokensUserId(thirdPartyId, thirdPartyUserId, recordedSupertokensUserId);
           return externalUserId;
         }
       }
@@ -187,7 +229,7 @@ export async function linkExternalUserId(
 
   // Our-side bookkeeping, deliberately last: the core-side mapping is what
   // governs the session, and this column only records that it happened.
-  await db.setSupertokensUserId(thirdPartyId, thirdPartyUserId, supertokensUserId);
+  await db.setSupertokensUserId(thirdPartyId, thirdPartyUserId, recordedSupertokensUserId);
   return externalUserId;
 }
 
@@ -223,14 +265,32 @@ export function buildSignInUpOverride({ db = defaultDb, supertokens } = {}) {
       if (response.status !== 'OK') return response;
 
       const supertokensUserId = readSupertokensUserId(response);
-      const { externalUserId } = await resolveExternalUserId(input, db);
 
-      await linkExternalUserId({
-        supertokensUserId,
-        externalUserId,
-        thirdPartyId: input.thirdPartyId,
-        thirdPartyUserId: input.thirdPartyUserId,
-      }, { db, supertokens });
+      // Serialized per player for the same reason every save write is: there
+      // are three awaited round trips between "does this identity exist?" and
+      // the insert that creates it, and two simultaneous FIRST logins for one
+      // player both saw "no" and both inserted. On Postgres the loser hit
+      // SQLSTATE 23505 on users_pkey, which upsertUser's catch misread as a
+      // USERNAME collision, renamed and retried the same primary key, and
+      // failed again uncaught - a failed login, verified against a real
+      // container by the v1.8 final review. SQLite happened to be safe, since
+      // nothing awaits between its read and insert: dialect drift, which is
+      // precisely what the two-backend rule exists to surface.
+      //
+      // The lock key is available before the user exists - it is literally the
+      // users.id about to be created. Not reentrant, but nothing on this path
+      // takes the same lock.
+      const lockKey = `${input.thirdPartyId}:${input.thirdPartyUserId}`;
+      await withUserLock(lockKey, async () => {
+        const { externalUserId } = await resolveExternalUserId(input, db);
+
+        await linkExternalUserId({
+          supertokensUserId,
+          externalUserId,
+          thirdPartyId: input.thirdPartyId,
+          thirdPartyUserId: input.thirdPartyUserId,
+        }, { db, supertokens });
+      });
 
       return response;
     },

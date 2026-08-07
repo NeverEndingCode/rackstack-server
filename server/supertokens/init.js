@@ -77,16 +77,72 @@ export function rejectRawOAuthTokens(originalImplementation) {
       ? undefined
       : async function signInUpPOST(input) {
         if (input.redirectURIInfo === undefined) {
-          throw new Error(
-            'signInUp requires the redirect-URI flow. Submitting oAuthTokens directly is '
-            + 'not accepted: RackStack cannot verify that such a token was issued to this '
-            + 'application, so honouring it would let any third-party token authenticate as '
-            + 'its owner.',
-          );
+          // GENERAL_ERROR rather than a thrown Error. Throwing here reached
+          // Express's default handler as a 500, which is both less precise and
+          // actively misleading: a 500 reads as transient, so a client would
+          // retry a request that can never succeed. (No internals leaked - the
+          // shipped image sets NODE_ENV=production - but a bare-metal
+          // `npm start` without it would have returned the stack.)
+          // GENERAL_ERROR is the SDK's own contract for "refused, do not
+          // retry", and it carries the reason to the caller.
+          return {
+            status: 'GENERAL_ERROR',
+            message:
+              'signInUp requires the redirect-URI flow. Submitting oAuthTokens directly is '
+              + 'not accepted: RackStack cannot verify that such a token was issued to this '
+              + 'application, so honouring it would let any third-party token authenticate as '
+              + 'its owner.',
+          };
         }
         return originalImplementation.signInUpPOST(input);
       },
   };
+}
+
+/**
+ * Removes the Session recipe's stock `POST /auth/signout`.
+ *
+ * The Session recipe registers that endpoint automatically, and it revokes the
+ * SuperTokens session while leaving RackStack's legacy JWT cookie untouched.
+ * `requireAuth`'s fallback branch then re-authenticates the supposedly
+ * logged-out user on the very next request: the UI says signed out, the server
+ * disagrees, and on a shared machine that is account exposure rather than a
+ * cosmetic bug.
+ *
+ * It is exactly the half-logout `server/routes/authRoutes.js` was written to
+ * prevent - the guarantee was simply enforced on `/auth/logout`, the route the
+ * current client happens to call, while the SDK quietly published a second
+ * door. The SuperTokens frontend SDK's `signOut()` targets `/auth/signout`, so
+ * this would have become the DEFAULT path the moment the planned Phase 5
+ * frontend work landed.
+ *
+ * Removed rather than patched: `/auth/logout` already clears both stacks, and
+ * one logout route that is known to be complete beats two that must be kept in
+ * agreement forever. A client calling `/auth/signout` gets a 404, which is
+ * loud - and a logout that fails loudly is strictly better than one that half
+ * works.
+ */
+/**
+ * Whether a connection URI points at this host only.
+ *
+ * Parsed rather than string-matched, so `http://127.0.0.1.evil.com:3567` is
+ * correctly treated as remote - a substring check for '127.0.0.1' would wave
+ * it through, which is the classic way this kind of exemption goes wrong.
+ */
+export function isLoopback(uri) {
+  try {
+    const { hostname } = new URL(uri);
+    return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1'
+      || hostname === '[::1]';
+  } catch {
+    // Unparseable means we cannot establish it is local, so treat it as remote
+    // and require the key. Failing towards "more authentication" is correct.
+    return false;
+  }
+}
+
+export function disableStockSignOut(originalImplementation) {
+  return { ...originalImplementation, signOutPOST: undefined };
 }
 
 /**
@@ -128,6 +184,36 @@ export async function initSuperTokens({ env = process.env, mode } = {}) {
     );
   }
 
+  // Last gate before anything is loaded, and deliberately after the plain
+  // configuration errors above - an operator with three things wrong should
+  // hear about the missing origin before the security posture.
+  //
+  // A SuperTokens core with no API key serves its whole API unauthenticated,
+  // and that API is the trust root: POST /recipe/session mints a session for
+  // ANY userId, and the user-id mapping makes session.getUserId() return
+  // `github:37058311` verbatim - so anyone who can reach the core can mint a
+  // session for any SUPER_ADMIN_IDS value, which are deterministic and
+  // effectively public. No request to the Express app is involved, so none of
+  // the guards in this codebase apply to it.
+  //
+  // Enforced here rather than in docker-compose.yml because Compose
+  // interpolates the whole file before filtering by profile: a required
+  // variable there would break `docker compose up` for every deployment that
+  // never enables SuperTokens. Here it fires only for operators who opted in.
+  //
+  // Loopback is exempt: such a core is reachable only from this host, which is
+  // the normal shape for a local development run, and demanding a key there
+  // would only teach people to set a dummy one.
+  if (!env.SUPERTOKENS_API_KEY && !isLoopback(connectionURI)) {
+    throw new Error(
+      `AUTH_MODE='${mode}' requires SUPERTOKENS_API_KEY when the SuperTokens core is not on `
+      + `loopback (got ${connectionURI}). An unauthenticated core lets anyone who can reach `
+      + 'it mint a session for any user id, including every value in SUPER_ADMIN_IDS. '
+      + 'Generate one with `openssl rand -hex 32`, set it as API_KEYS on the core and '
+      + "SUPERTOKENS_API_KEY here, and do not publish the core's port to the network.",
+    );
+  }
+
   const [supertokens, Session, ThirdParty] = await Promise.all([
     import('supertokens-node').then((m) => m.default ?? m),
     import('supertokens-node/recipe/session').then((m) => m.default ?? m),
@@ -160,7 +246,7 @@ export async function initSuperTokens({ env = process.env, mode } = {}) {
           apis: rejectRawOAuthTokens,
         },
       }),
-      Session.init(),
+      Session.init({ override: { apis: disableStockSignOut } }),
     ],
   });
 

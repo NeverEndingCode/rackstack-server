@@ -41,16 +41,25 @@ describe('rejectRawOAuthTokens (authentication bypass guard)', () => {
   const passThrough = { signInUpPOST: async (input) => ({ status: 'OK', echoed: input }) };
 
   it('rejects a request that submits raw oAuthTokens', async () => {
+    // GENERAL_ERROR, not a thrown Error. A throw reached Express's default
+    // handler as a 500, which reads as transient - so a client would retry a
+    // request that can never succeed. GENERAL_ERROR is the SDK's own contract
+    // for "refused, do not retry". What matters either way is that the stock
+    // implementation is never reached.
     const guarded = rejectRawOAuthTokens(passThrough);
-    await expect(guarded.signInUpPOST({
+    const res = await guarded.signInUpPOST({
       oAuthTokens: { access_token: 'gho_stolen_from_another_app' },
-    })).rejects.toThrow(/redirect-URI flow/);
+    });
+    expect(res.status).toBe('GENERAL_ERROR');
+    expect(res.status).not.toBe('OK');
+    expect(res.echoed).toBeUndefined();
+    expect(res.message).toMatch(/redirect-URI flow/);
   });
 
   it('names why, not merely that it refused', async () => {
     const guarded = rejectRawOAuthTokens(passThrough);
-    await expect(guarded.signInUpPOST({ oAuthTokens: { access_token: 'x' } }))
-      .rejects.toThrow(/issued to this application/);
+    const res = await guarded.signInUpPOST({ oAuthTokens: { access_token: 'x' } });
+    expect(res.message).toMatch(/issued to this application/);
   });
 
   it('lets the legitimate redirect-URI flow through untouched', async () => {

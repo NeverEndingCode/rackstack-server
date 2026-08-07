@@ -153,6 +153,25 @@ export async function createPgDriver({ url }) {
         // block that account from ever logging in. Pick a free variant using
         // the same suffixing convention as dedupeUsernames and retry once.
         if (e.code !== '23505') throw e; // unique_violation
+
+        // Not every 23505 here is a username collision, and treating them all
+        // as one is how a race turned into a failed login. Two simultaneous
+        // FIRST logins for the same player both see no identity and both
+        // insert; the loser violates `users_pkey`, not the username index.
+        // Renaming and retrying then re-inserts the SAME primary key, fails
+        // again, and this time propagates - so the player's very first login
+        // errors out. (SQLite avoids this by accident: nothing awaits between
+        // its identity read and its insert. Dialect drift, found by the v1.8
+        // final review against a real Postgres container.)
+        //
+        // The winner's row is correct and complete, so the right recovery is
+        // simply to adopt it.
+        if (e.constraint === 'users_pkey') {
+          const winner = await one('SELECT * FROM users WHERE id = $1', [id]);
+          if (winner) return winner;
+          throw e;
+        }
+
         user.username = await findAvailableUsername(username, isUsernameTakenInDb);
         await insertUserAndIdentity(user, identityRow);
       }

@@ -33,15 +33,30 @@ services:
   # on a container it will not use is a good way to turn an unrelated
   # SuperTokens problem into a RackStack outage.
   supertokens:
-    image: registry.supertokens.io/supertokens/supertokens-postgresql:latest
+    # Pinned, not :latest. This container signs and validates every session in
+    # supertokens/dual mode; silently pulling a new major on the next `up -d`
+    # is not a risk worth taking for the component that IS the trust root.
+    image: registry.supertokens.io/supertokens/supertokens-postgresql:9.3
     container_name: rackstack-supertokens
     profiles: ["supertokens"]
     restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
-    ports:
-      - "3567:3567"
+    # NOTE: the port is deliberately NOT published to the host.
+    #
+    # A SuperTokens core with no API key serves its entire API unauthenticated,
+    # and that API is the trust root of the whole stack: POST /recipe/session
+    # mints a session for ANY userId, and because the user-id mapping makes
+    # session.getUserId() return `github:37058311` verbatim, anyone who can
+    # reach this port can mint a valid RackStack session for any value in
+    # SUPER_ADMIN_IDS - which are deterministic and effectively public. That
+    # bypasses every guard in the Express app without touching it.
+    #
+    # rackstack reaches the core over the compose network as `supertokens:3567`
+    # and does not need a published port. To poke it by hand, use
+    #   docker compose exec supertokens bash -c ':> /dev/tcp/127.0.0.1/3567'
+    # rather than re-adding a `ports:` mapping.
     environment:
       # Its OWN database, never the rackstack one - SuperTokens manages its
       # own schema and must not share a database with application tables.
@@ -51,6 +66,18 @@ services:
       # own DATABASE_URL above accepts either - v1.7 verified that directly,
       # against an earlier claim to the contrary.)
       POSTGRESQL_CONNECTION_URI: postgresql://rackstack:rackstack@postgres:5432/supertokens
+      # Defence in depth behind the unpublished port: even on the compose
+      # network, the core should not answer to anything that merely reaches it.
+      # Must match SUPERTOKENS_API_KEY on the rackstack service. Generate with
+      # `openssl rand -hex 32` and put it in .env.
+      #
+      # Deliberately NOT the ${VAR:?error} form. Compose interpolates the whole
+      # file before it filters by profile, so a required-variable error here
+      # would break plain `docker compose up` for every deployment that never
+      # touches SuperTokens. The requirement is enforced in server code
+      # instead (see initSuperTokens), where it can fire only for operators who
+      # have actually opted in.
+      API_KEYS: ${SUPERTOKENS_API_KEY:-}
     healthcheck:
       test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/3567' || exit 1"]
       interval: 10s

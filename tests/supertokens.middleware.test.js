@@ -53,6 +53,9 @@ await ensureConfig();
 const ST_ENV = {
   ...process.env,
   SUPERTOKENS_CONNECTION_URI: 'http://supertokens.invalid:3567',
+  // Required for a non-loopback core - an unauthenticated one lets anyone who
+  // can reach it mint a session for any user id, SUPER_ADMIN_IDS included.
+  SUPERTOKENS_API_KEY: 'test-core-api-key',
   PUBLIC_ORIGIN: 'https://rackstack.example.com',
 };
 
@@ -152,6 +155,111 @@ describe('passport route gating', () => {
 
     const cleared = (res.headers['set-cookie'] ?? []).join(';');
     expect(cleared).toContain(COOKIE_NAME);
+  });
+});
+
+describe('the SuperTokens middleware is actually mounted', () => {
+  // Mutation-found gap: deleting `middleware()` or `errorHandler()` from
+  // app.js passed the ENTIRE suite. The only related assertion was one-sided -
+  // passport mode must NOT have them - with no positive counterpart, and no
+  // test anywhere issued a request against a SuperTokens endpoint. Meanwhile
+  // the runbook and authentication-methods.md both assert "the server side is
+  // complete, the middleware serves /auth/authorisationurl and
+  // /auth/signinup". Since the client never calls those, a broken mount would
+  // also be invisible in production.
+
+  it('adds exactly two layers over passport mode - the middleware and the error handler', () => {
+    // Counted, not matched by name: both are anonymous functions on the stack,
+    // so the pre-existing `expect(layerNames).not.toContain('middleware')`
+    // assertion in supertokens.init.test.js could never have failed - it was
+    // vacuous in the strongest sense. The delta is what pins errorHandler
+    // specifically, since the behavioural assertions below only exercise the
+    // middleware.
+    expect(apps.dual._router.stack.length).toBe(apps.passport._router.stack.length + 2);
+  });
+
+  it('serves /auth/authorisationurl as JSON in dual mode - the endpoint the docs promise', async () => {
+    // Content-type is the signal, not the status. Offline (no core reachable)
+    // this answers 400 rather than 200, but a JSON body at all proves
+    // SuperTokens handled the request; an unmounted middleware falls through
+    // to the SPA, which answers 200 text/html - a status check alone would
+    // therefore have read the BROKEN case as healthier than the working one.
+    const res = await request(apps.dual).get('/auth/authorisationurl?thirdPartyId=github');
+    expect(res.headers['content-type'] ?? '').toContain('application/json');
+  });
+
+  it('serves the Session recipe endpoints in dual mode', async () => {
+    // A second, independent endpoint from a different recipe, so the mount is
+    // not proven by ThirdParty alone.
+    const res = await request(apps.dual).post('/auth/session/refresh');
+    expect(res.headers['content-type'] ?? '').toContain('application/json');
+    expect(res.status).toBe(401);
+  });
+
+  it('serves neither in passport mode', async () => {
+    // Containment: both must fall through to the SPA or 404, never JSON.
+    const auth = await request(apps.passport).get('/auth/authorisationurl?thirdPartyId=github');
+    expect(auth.headers['content-type'] ?? '').not.toContain('application/json');
+
+    const refresh = await request(apps.passport).post('/auth/session/refresh');
+    expect(refresh.headers['content-type'] ?? '').not.toContain('application/json');
+  });
+
+  it('removes the stock POST /auth/signout, which would half-log-out a dual-stack user', async () => {
+    // The Session recipe registers /auth/signout automatically. It revokes the
+    // SuperTokens session and leaves the legacy JWT cookie, so requireAuth's
+    // fallback re-authenticates the "logged out" user on the next request -
+    // exactly the half-logout authRoutes.js exists to prevent, and the default
+    // path the SuperTokens frontend SDK's signOut() would have used.
+    const res = await request(apps.dual)
+      .post('/auth/signout')
+      .set('Cookie', legacyCookie(player));
+
+    expect(res.status).toBe(404);
+
+    // And the cookie is untouched by it, which is why leaving it registered
+    // would have been unsafe.
+    const stillWorks = await request(apps.dual).get('/api/me').set('Cookie', legacyCookie(player));
+    expect(stillWorks.status).toBe(200);
+  });
+});
+
+describe('logout revokes both stacks', () => {
+  it('revokes the SuperTokens session, not just the legacy cookie', async () => {
+    // Mutation-found gap: wrapping the revocation in `if (false)` passed
+    // everything. The plan's Task 4 Step 2 is explicit that logout must clear
+    // BOTH, and the unverified half was the security-relevant one - a logout
+    // that leaves a live session is worse than one that fails loudly.
+    const Session = await loadSessionRecipe();
+    let revoked = false;
+    const spy = vi.spyOn(Session, 'getSession').mockResolvedValue({
+      getUserId: () => 'github:chain-1',
+      revokeSession: async () => { revoked = true; },
+    });
+
+    try {
+      const res = await request(apps.dual).post('/auth/logout').set('Cookie', legacyCookie(player));
+      expect(res.status).toBe(200);
+      expect(revoked, 'logout did not revoke the SuperTokens session').toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('still clears the legacy cookie when revocation throws', async () => {
+    // Best-effort by design: a SuperTokens session that cannot even be read is
+    // not one this request can revoke, and failing the whole logout would
+    // leave the user MORE logged in than reporting success does.
+    const Session = await loadSessionRecipe();
+    const spy = vi.spyOn(Session, 'getSession').mockRejectedValue(new Error('core unreachable'));
+
+    try {
+      const res = await request(apps.dual).post('/auth/logout').set('Cookie', legacyCookie(player));
+      expect(res.status).toBe(200);
+      expect((res.headers['set-cookie'] ?? []).join(';')).toContain(COOKIE_NAME);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 

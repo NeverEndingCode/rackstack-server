@@ -307,6 +307,78 @@ describe('supertokens identity mapping - identity outcomes', () => {
     expect(created).toHaveLength(1);
   });
 
+  it('resolves a DIVERGENT identity row to its stored user_id, not a reconstructed one', async () => {
+    // Mutation-found gap: replacing `return identity.user_id` with
+    // `` return `${thirdPartyId}:${thirdPartyUserId}` `` passed the entire
+    // suite, because every other fixture has the two equal. That is not a
+    // hypothetical shape - it is exactly what the shadow gate exists to hunt
+    // for, and tests/supertokens.shadow.test.js deliberately constructs one.
+    // So the code path that RESCUES such a player had no test at all, while
+    // the code that detects them had several.
+    const now = Date.now();
+    await upsertUser({
+      provider: 'discord', providerId: 'real-owner', username: 'realowner', avatarUrl: null,
+    });
+    await putSave('discord:real-owner', { wafers: 4242, marker: 'divergent' }, 7);
+
+    // An identity whose user_id is NOT `provider:provider_id`. upsertUser
+    // cannot produce this, which is the point - older code could.
+    if (driver.__backend === 'sqlite') {
+      driver.__raw.prepare(
+        'INSERT INTO identities (provider, provider_id, user_id, created_at) VALUES (?, ?, ?, ?)',
+      ).run('discord', 'divergent-1', 'discord:real-owner', now);
+    } else {
+      await driver.__raw.query(
+        'INSERT INTO identities (provider, provider_id, user_id, created_at) VALUES ($1, $2, $3, $4)',
+        ['discord', 'divergent-1', 'discord:real-owner', now],
+      );
+    }
+
+    const { session } = await createHarness().signInUpPOST(loginInput('discord', 'divergent-1'));
+
+    // The stored user_id wins. Reconstructing would have produced
+    // 'discord:divergent-1' - a user that does not exist - and stranded them.
+    expect(session.getUserId()).toBe('discord:real-owner');
+    expect(session.getUserId()).not.toBe('discord:divergent-1');
+
+    const save = await getSave(session.getUserId());
+    expect(JSON.parse(save.data).marker).toBe('divergent');
+  });
+
+  it('records the real SuperTokens id, and keeps recording it across re-logins', async () => {
+    // Review-found bug: on a returning login the core hands back the EXTERNAL
+    // id, and that value was being written back over the real SuperTokens id -
+    // so the column held our own users.id from the second login onwards. The
+    // old idempotence test could not see it: it asserted identity COUNT and
+    // createUserIdMapping CALL count, never re-read the column.
+    const h = createHarness();
+    await h.signInUpPOST(loginInput('github', 'record-1'));
+
+    const stId = [...h.core.mappings.keys()].find(
+      (k) => h.core.mappings.get(k) === 'github:record-1',
+    );
+    expect(stId).toMatch(/^st-/);
+    expect((await getIdentity('github', 'record-1')).supertokens_user_id).toBe(stId);
+
+    await h.signInUpPOST(loginInput('github', 'record-1'));
+    await h.signInUpPOST(loginInput('github', 'record-1'));
+
+    const after = await getIdentity('github', 'record-1');
+    expect(after.supertokens_user_id).toBe(stId);
+    // The specific corruption: never our own users.id.
+    expect(after.supertokens_user_id).not.toBe('github:record-1');
+  });
+
+  it('refuses a provider user id that would make users.id ambiguous', async () => {
+    // users.id is `${provider}:${providerId}`, so the provider id becomes half
+    // of a composite key three foreign keys point at. Not reachable with
+    // today's numeric providers; asserted so the invariant is explicit before
+    // a non-numeric provider is ever added.
+    await expect(resolveExternalUserId({
+      thirdPartyId: 'github', thirdPartyUserId: 'has:colon',
+    })).rejects.toThrow(/unexpected characters/i);
+  });
+
   it('refuses to issue a session when the core maps this login to a different player', async () => {
     // The one case where failing the login is the correct outcome: the core
     // and identities disagree about who this is, and guessing means serving
