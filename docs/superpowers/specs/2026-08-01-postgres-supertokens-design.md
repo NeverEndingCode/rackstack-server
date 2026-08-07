@@ -261,12 +261,23 @@ Starts only after v1.7 is confirmed running in production.
 > Postgres, 39 e2e smoke assertions, and a real boot verified in each of the
 > three `AUTH_MODE` values. Version bumped to 1.8.0; not yet tagged.
 >
-> One gap found in Task 4 and deliberately not closed in this release: the
-> client does not use the SuperTokens frontend SDK, so it cannot refresh an
-> expired access token. This does not affect `dual` (the legacy cookie still
-> authenticates and the player stays logged in), but a `supertokens`-only
-> cutover needs frontend refresh handling first. **`dual` is the intended
-> resting state for v1.8.**
+> **The client side of this design was never in scope and is not built.** Two
+> gaps, both frontend, neither affecting `dual`:
+>
+> 1. **No SuperTokens login flow.** `client/src/Login.jsx` drives its buttons
+>    at the passport routes, which `supertokens` mode does not register — so in
+>    that mode the buttons silently do nothing and nobody can log in. The
+>    server side is complete (the middleware serves `/auth/authorisationurl`
+>    and `/auth/signinup`); the client has never been taught to call it.
+> 2. **No session refresh.** No frontend SDK, so no interceptor to refresh an
+>    expired access token. Invisible in `dual` because the legacy cookie still
+>    authenticates.
+>
+> **`dual` is the intended resting state for v1.8**, and it is worth being
+> precise about what `dual` proves: since the client still logs in through
+> passport, enabling `dual` makes SuperTokens sessions *acceptable* without
+> routing live traffic through them. See
+> `docs/authentication-methods.md` Phase 5.
 >
 > Still true, and unchanged by any of the above: shadow mode has not been run
 > against production identities, and no cutover has happened anywhere.

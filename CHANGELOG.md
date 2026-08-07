@@ -40,10 +40,14 @@ Everything below is inert until an operator opts in.
   keeps working), standing up the core, the shadow gate, cutover and rollback.
 
 **Not yet run anywhere.** Shadow mode has not been run against production
-identities, and no cutover has happened. `dual` is the intended resting state
-for this release: `supertokens`-only mode is implemented and tested but needs
-frontend token-refresh handling before it is cut over to. The runbook says all
-of this in its opening section.
+identities, and no cutover has happened.
+
+**`dual` is the intended resting state for this release.** The server side of
+`supertokens`-only mode is complete and tested, but the client has never been
+taught to talk to SuperTokens: the login buttons point at the passport routes,
+which that mode does not register, so logins would silently do nothing — and
+there is no token refresh. Both are frontend work that has not been started.
+The runbook and `docs/authentication-methods.md` cover this in full.
 
 ## v1.7.0
 
