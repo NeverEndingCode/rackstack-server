@@ -221,7 +221,7 @@ variable actually lives for your deployment:
 | Deployment | Where to blank `DATABASE_URL` |
 |---|---|
 | Unraid / plain `docker run` | The container's Variable in the Unraid UI (or the `-e` flag) |
-| Docker Compose | `.env` — `docker-compose.yml` reads it via `${DATABASE_URL:-...}` |
+| Docker Compose | `.env` — `docker-compose.yml` reads it via `${DATABASE_URL-...}` (no colon, so `DATABASE_URL=` means "blank", not "unset" — that is what makes the documented rollback work) |
 | Local `npm start` | `.env` |
 
 ### Authentication stack (`AUTH_MODE`)
@@ -235,7 +235,7 @@ and the SuperTokens SDK is not even loaded.
 |---|---|
 | *(blank)* or `passport` | Default. Exactly as before; SuperTokens is not initialised. |
 | `dual` | Both login paths live, sessions from either accepted. Where the rollout happens. |
-| `supertokens` | SuperTokens only; the legacy OAuth routes are not registered. |
+| `supertokens` | ⚠️ **Not usable yet** — SuperTokens only; the legacy OAuth routes are not registered, and the client has no SuperTokens login flow, so **nobody can log in**. See below. |
 
 Two properties worth knowing before you touch it:
 
@@ -247,9 +247,25 @@ Two properties worth knowing before you touch it:
   looking like a finished rollout — the kind of thing you'd discover weeks
   later, from the wrong symptom.
 
+- **`dual` is the intended resting state.** `supertokens`-only mode is *not*
+  usable yet: `client/src/Login.jsx` points its buttons at the passport routes,
+  which that mode does not register, so they silently do nothing and no one can
+  sign in. Existing sessions keep working via the JWT fallback, which is what
+  makes it easy to miss. There is no token refresh in the client either. Both
+  are frontend work that has not been started — see
+  [`docs/authentication-methods.md`](./docs/authentication-methods.md) Phase 5.
+
 `SUPERTOKENS_CONNECTION_URI` points at the SuperTokens core container and is
 read only in `dual`/`supertokens`. That core needs its **own** database on
 your Postgres server, separate from the rackstack one.
+
+**Set `SUPERTOKENS_API_KEY`, and do not publish the core's port.** A
+SuperTokens core with no API key serves its entire API unauthenticated, and
+that API can mint a session for *any* user id — including every value in
+`SUPER_ADMIN_IDS`, without any request reaching RackStack. The server refuses
+to start in `dual`/`supertokens` if the core is not on loopback and no key is
+set. Generate one with `openssl rand -hex 32` and set it as `API_KEYS` on the
+core and `SUPERTOKENS_API_KEY` here.
 
 Full walkthrough — including the OAuth redirect-URL change that has to happen
 *before* `dual`, and the verification gate before cutover — is in

@@ -102,11 +102,17 @@ these breaks every consumer.
   SuperTokens id — genuine corruption — and is deliberately allowed to throw.
 
   A missing identity row is a silent no-op, matching `setRoles` /
-  `setToursCompleted`. Deliberate rather than lenient: the sole caller runs
-  immediately after `createUserIdMapping`, so throwing here would fail the
-  login while leaving the core-side mapping in place, and the retry would
-  then fail on the already-exists mapping — a permanent lockout, which is
-  strictly worse than an unrecorded bookkeeping column.
+  `setToursCompleted`. The caller resolves or creates the identity immediately
+  beforehand, so a miss cannot happen without a caller-side bug — and failing
+  a login over an unrecorded bookkeeping column would be a poor trade.
+
+  > An earlier version of this note justified the no-op by claiming a throw
+  > would strand the core-side mapping and cause a permanent lockout on retry.
+  > That was wrong, and the v1.8 final review caught it: `linkExternalUserId`
+  > reads `getUserIdMapping` *first* and takes the already-mapped branch on a
+  > retry, and separately handles `USER_ID_MAPPING_ALREADY_EXISTS_ERROR`. There
+  > is no lockout. The no-op is still right; the stated mechanism was fiction,
+  > and would have sent the next maintainer looking for a broken retry path.
 
 ## Schema versioning
 

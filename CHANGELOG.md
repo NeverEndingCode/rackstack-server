@@ -39,6 +39,31 @@ Everything below is inert until an operator opts in.
   redirect widening (additive and reversible — nothing is removed, so passport
   keeps working), standing up the core, the shadow gate, cutover and rollback.
 
+**Hardening from the pre-merge review.** A whole-branch security and code
+review was run before merge. Everything below was found and fixed while
+`AUTH_MODE` still defaulted to `passport`, so none of it was ever live:
+
+- An **authentication bypass** in SuperTokens' stock `signinup` endpoint, which
+  accepted a caller-supplied OAuth token as proof of identity. Any GitHub token
+  able to read `/user` — including one from an unrelated app, or a leaked PAT —
+  would have authenticated as its owner. Only the browser redirect flow is
+  accepted now.
+- The **SuperTokens core shipped unauthenticated with its port published.** An
+  open core will mint a session for any user id, `SUPER_ADMIN_IDS` included,
+  without any request reaching RackStack. The port is no longer published, the
+  image is pinned, and the server refuses to start against a remote core with
+  no `SUPERTOKENS_API_KEY`.
+- **`npm run shadow:check` was not read-only** despite saying so: it ran the
+  schema migration on load, which on SQLite renames colliding usernames and
+  rebuilds a table. Pointed at a pre-v1.7 export it quietly rewrote it. It now
+  opens its own read-only connection and issues one SELECT.
+- The gate could not see **identity rows orphaned from `users`** (a player who
+  can never log in) and reported PASS for a run that compared nothing.
+- **`POST /auth/signout`** revoked the SuperTokens session but left the legacy
+  cookie, so the "logged out" user stayed authenticated. Removed;
+  `/auth/logout` clears both.
+- Two **simultaneous first logins** raced on Postgres and failed the login.
+
 **Not yet run anywhere.** Shadow mode has not been run against production
 identities, and no cutover has happened.
 

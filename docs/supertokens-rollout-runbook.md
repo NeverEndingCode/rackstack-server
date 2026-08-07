@@ -261,12 +261,32 @@ docker compose --profile supertokens up -d
 ```
 
 **Unraid** — add a container from
-`registry.supertokens.io/supertokens/supertokens-postgresql`, publish port
-3567, and set one variable:
+`registry.supertokens.io/supertokens/supertokens-postgresql:9.3` (pin the tag;
+this container signs every session, and a silent major upgrade is not a risk
+worth taking). Set **two** variables, and **do not publish port 3567**:
 
 ```
 POSTGRESQL_CONNECTION_URI=postgresql://rackstack:PASSWORD@192.168.x.x:5432/supertokens
+API_KEYS=<openssl rand -hex 32>
 ```
+
+> **The API key is not optional, and neither is keeping the port private.**
+> A SuperTokens core with no `API_KEYS` serves its entire API unauthenticated,
+> and that API is the trust root of the whole stack: it will mint a session for
+> **any** user id you ask it for. Because the id mapping makes
+> `session.getUserId()` return `github:37058311` verbatim, anyone who can reach
+> that port can mint a valid RackStack session for any value in
+> `SUPER_ADMIN_IDS` — which are deterministic and effectively public — without
+> a single request touching RackStack, and therefore without meeting any of its
+> guards.
+>
+> Set the same value as `SUPERTOKENS_API_KEY` on the RackStack container.
+> RackStack refuses to start in `dual`/`supertokens` if the core is not on
+> loopback and no key is set, so a missed key fails loudly at boot rather than
+> quietly at 3am.
+>
+> Found by the v1.8 final review: the shipped compose file did both of these
+> wrong.
 
 Two ways this line goes wrong, both worth reading twice:
 
@@ -281,15 +301,17 @@ Two ways this line goes wrong, both worth reading twice:
 ### B3. Check it came up
 
 ```bash
-curl -s http://127.0.0.1:3567/hello
+docker compose exec supertokens bash -c 'curl -s http://127.0.0.1:3567/hello'
 ```
 
-Expect `Hello`. If it does not respond, check the core's log for a connection
+Expect `Hello`. (Run from inside the container, since the port is deliberately
+not published to the host.) If it does not respond, check the core's log for a connection
 error against the database from B1 — that is the overwhelmingly common cause.
 
 ### B4. Point RackStack at it — but do not switch yet
 
-Set `SUPERTOKENS_CONNECTION_URI` on the RackStack container. **Leave
+Set `SUPERTOKENS_CONNECTION_URI` **and `SUPERTOKENS_API_KEY`** (the same value
+you put in `API_KEYS` on the core) on the RackStack container. **Leave
 `AUTH_MODE` blank.** The variable is only read in `dual`/`supertokens`, so
 setting it now is inert and gets the configuration out of the way before the
 step that actually changes behaviour.
@@ -323,10 +345,18 @@ npm run shadow:check
 It reads whichever database your usual environment variables point at
 (`DATABASE_URL`, or `DB_PATH` for SQLite) and checks every identity row.
 
-**It is read-only.** It issues nothing but SELECTs, touches no session, and
-creates nothing. Safe to run against production with players online — and safe
-to run against a restored export on a laptop, which is the intended use, since
-this has to clear *before* the SuperTokens stack is switched on.
+**It is read-only.** It opens its own connection — SQLite read-only, Postgres
+in a `READ ONLY` transaction — issues one SELECT, and creates nothing. Safe to
+run against production with players online, and safe against a restored export
+on a laptop, which is the intended use since this has to clear *before* the
+SuperTokens stack is switched on.
+
+> **This was not true before v1.8.0-rc.** The audit used to go through the
+> normal database module, and merely *loading* that runs the schema migration —
+> which on SQLite renames case-colliding usernames and rebuilds the `users`
+> table. Pointed at a pre-v1.7 export it quietly upgraded and rewrote it, then
+> printed `GATE: PASS`. Found by the v1.8 final review. If you are running an
+> older build, do not point `shadow:check` at anything you care about.
 
 A clean run:
 
@@ -335,13 +365,14 @@ A clean run:
 [shadow] MATCH discord:536626725380161537 -> discord:536626725380161537
 
 === SuperTokens shadow-mode report ===
-logins compared:      2
+identities compared:  2
 matched:              2
 mismatched:           0
-no existing identity: 0 (new players - not failures)
+orphaned:             0 (identity points at a missing user)
+no existing identity: 0 (new players - not failures, not compared)
 match rate:           100.00%
 
-GATE: PASS - 100% of comparable logins matched. Cutover to AUTH_MODE=dual is cleared.
+GATE: PASS - 100% of comparable identities matched. Cutover to AUTH_MODE=dual is cleared.
 ```
 
 Exit code 0 means pass; anything else means do not proceed.
@@ -411,6 +442,7 @@ message names the cause; the three common ones:
 | `Invalid AUTH_MODE` | Typo. Values are exact lowercase. | `passport`, `dual`, `supertokens` |
 | `requires SUPERTOKENS_CONNECTION_URI` | Part B4 not done | Set it, restart |
 | `needs to know this server's public origin` | No `PUBLIC_ORIGIN` and no callback URL to derive it from | Set `PUBLIC_ORIGIN` |
+| `requires SUPERTOKENS_API_KEY` | The core is not on loopback and no key is set — it would be answering to anyone who can reach it | Set `API_KEYS` on the core and `SUPERTOKENS_API_KEY` here to the same value |
 
 A refusal to start is the designed behaviour for a misconfiguration, not a
 failure of the rollout. Nothing has changed for players at that point — the
@@ -495,3 +527,6 @@ gone wrong and will send you chasing the wrong problem.
 | GitHub login fails with `redirect_uri` mismatch | Part A2 — widen the registered callback to `/auth`. |
 | Anything looks wrong during rollout | `AUTH_MODE=passport`, restart. Nobody is logged out. |
 | Everyone got logged out | Check `JWT_SECRET` is unchanged before anything else. |
+| Container won't start, wants `SUPERTOKENS_API_KEY` | Correct and deliberate. An unauthenticated core can mint a session for any user id, `SUPER_ADMIN_IDS` included. Set `API_KEYS` on the core and the same value here. |
+| `shadow:check` says the database predates the v1.7 split | You restored a pre-v1.7 export. Migrate it to v1.7 first, or point at the right database. |
+| `shadow:check` reports `ORPHAN` rows | An identity points at a user that does not exist; that player cannot log in. Investigate before cutting over — do not ignore it. |

@@ -257,9 +257,10 @@ Starts only after v1.7 is confirmed running in production.
 >
 > Implementation plan: `docs/superpowers/plans/2026-08-06-v1.8-supertokens.md`.
 > Operator runbook: `docs/supertokens-rollout-runbook.md`.
-> Progress: **all 7 tasks built.** 589 tests green on SQLite, 612 on
-> Postgres, 39 e2e smoke assertions, and a real boot verified in each of the
-> three `AUTH_MODE` values. Version bumped to 1.8.0; not yet tagged.
+> Progress: **all 7 tasks built, and the whole-branch final review run and its
+> findings fixed.** 614 tests green on SQLite, 637 on Postgres, 39 e2e smoke
+> assertions, and a real boot verified in each of the three `AUTH_MODE`
+> values. Version bumped to 1.8.0; not yet tagged.
 >
 > **The client side of this design was never in scope and is not built.** Two
 > gaps, both frontend, neither affecting `dual`:
