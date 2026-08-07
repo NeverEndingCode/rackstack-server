@@ -74,14 +74,17 @@ Three consequences worth internalising:
 | SuperTokens init, provider config, mounting | ✅ built, tested |
 | Identity mapping (`signInUp` override) | ✅ built, tested, mutation-verified |
 | Auth chain (SuperTokens → JWT → 401) | ✅ built, tested in all three modes |
-| Shadow-mode gate (`npm run shadow:check`) | ✅ built, tested — **never run against production** |
+| Shadow-mode gate (`npm run shadow:check`) | ✅ built, tested, now genuinely read-only — **never run against production** |
 | `oAuthTokens` bypass fix | ✅ built, tested, mutation-verified |
+| SuperTokens core hardening (API key, port) | ✅ enforced at boot |
+| Whole-branch security & code review | ✅ run; all findings fixed |
 | **Client-side SuperTokens login flow** | ❌ **does not exist** |
 | **Client-side session refresh** | ❌ **does not exist** |
 | Account linking | ❌ out of scope, by design |
 
-The server side of the rollout is complete. The **client side has not been
-started**, and that is what bounds how far the rollout can go — see Phase 4.
+The server side of the rollout is complete and has been through a three-reviewer
+audit whose findings are fixed. The **client side has not been started**, and
+that is what bounds how far the rollout can go — see Phase 5.
 
 ## Phase 0 — Prerequisites (not yet met)
 
@@ -128,9 +131,26 @@ Inert while `AUTH_MODE` is blank; RackStack never contacts it.
   rejects `postgres://` — this is specific to the core; RackStack's own
   `DATABASE_URL` accepts either) and must not use `localhost` from inside a
   container.
+- **Set an API key, and do not publish port 3567.** A SuperTokens core with no
+  `API_KEYS` serves its entire API unauthenticated, and that API will mint a
+  session for *any* user id you ask for. Because the id mapping makes
+  `session.getUserId()` return `github:37058311` verbatim, anyone who can reach
+  that port can mint a valid RackStack session for any value in
+  `SUPER_ADMIN_IDS` — which are deterministic and effectively public — without
+  a single request touching RackStack, and therefore without meeting any of its
+  guards. Generate with `openssl rand -hex 32`, set it as `API_KEYS` on the
+  core and `SUPERTOKENS_API_KEY` on RackStack. The server refuses to start in
+  `dual`/`supertokens` against a non-loopback core with no key.
 - Set `SUPERTOKENS_CONNECTION_URI` on RackStack but **leave `AUTH_MODE` blank.**
 
-**Gate:** `curl http://127.0.0.1:3567/hello` returns `Hello`.
+> **Your Postgres role is `rackstack_user`, not `rackstack`.** Every example in
+> this repo says `rackstack`, because `docker-compose.yml` stands up its own
+> Postgres container with that user. On the real deployment substitute
+> `rackstack_user` in `CREATE DATABASE ... OWNER`, in
+> `POSTGRESQL_CONNECTION_URI`, and in `DATABASE_URL`.
+
+**Gate:** the core answers `Hello`. With the port unpublished, ask from inside:
+`docker compose exec supertokens bash -c 'curl -s http://127.0.0.1:3567/hello'`.
 
 ## Phase 3 — The shadow gate
 
@@ -138,14 +158,32 @@ Inert while `AUTH_MODE` is blank; RackStack never contacts it.
 npm run shadow:check
 ```
 
-Read-only; safe against production with players online, and against a restored
-export on a laptop. It audits every `identities` row and asks the one question
-that cannot be answered by reading library source: does `user_id` equal
-`provider:provider_id` for every row actually stored?
+Genuinely read-only: it opens its own connection (SQLite read-only, Postgres in
+a `READ ONLY` transaction) and issues one SELECT. Safe against production with
+players online, and against a restored export on a laptop.
 
-**Gate: `GATE: PASS` (exit 0).** `GATE: FAIL` names each offending pair — stop
-and investigate per row. `GATE: NOT RUN` means it compared nothing, usually the
-wrong database; that is deliberately not a pass.
+It audits every `identities` row and asks the two questions that cannot be
+answered by reading library source:
+
+- does `user_id` equal `provider:provider_id` for every row actually stored?
+- does each row's `user_id` point at a user that **exists**?
+
+**Gate: `GATE: PASS` (exit 0).**
+
+| Result | Meaning |
+|---|---|
+| `MISMATCH` | That player would land on the wrong save. |
+| `ORPHAN` | The identity points at a user that does not exist — that player cannot log in at all. |
+| `NOT RUN` | Nothing comparable was found, usually the wrong database. Deliberately **not** a pass; exits non-zero. |
+
+A run of nothing but brand-new players is `NOT RUN`, not `PASS` — comparing
+zero rows is not evidence of anything.
+
+> Before v1.8.0-rc this command was **not** read-only: it ran the schema
+> migration on load, which on SQLite renames case-colliding usernames and
+> rebuilds `users`. Pointed at a pre-v1.7 export it quietly rewrote it and
+> still printed `GATE: PASS`. If you are on an older build, do not point it at
+> anything you care about.
 
 ## Phase 4 — `AUTH_MODE=dual`
 

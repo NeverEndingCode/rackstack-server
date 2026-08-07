@@ -239,12 +239,19 @@ Safe to do at any time. The core sitting there unused changes nothing: with
 
 ### B1. Give it its own database
 
+> **On the owner's deployment the Postgres role is `rackstack_user`, not
+> `rackstack`.** Every example in this repo says `rackstack`, because
+> `docker-compose.yml` stands up its own Postgres container with that user.
+> Substitute `rackstack_user` wherever a role name appears below — in
+> `CREATE DATABASE ... OWNER`, in `psql -U`, in `pg_dump -U`, and in every
+> connection string.
+
 SuperTokens manages its own schema and must not share a database with
 RackStack's tables. This is a separate **database** on the same Postgres
 server — not a separate server, and not a schema inside `rackstack`.
 
 ```bash
-psql -U rackstack -d rackstack -c 'CREATE DATABASE supertokens OWNER rackstack;'
+psql -U rackstack_user -d rackstack -c 'CREATE DATABASE supertokens OWNER rackstack_user;'
 ```
 
 On Docker Compose with a *fresh* `pgdata`, `docker/init-supertokens-db.sql`
@@ -266,7 +273,7 @@ this container signs every session, and a silent major upgrade is not a risk
 worth taking). Set **two** variables, and **do not publish port 3567**:
 
 ```
-POSTGRESQL_CONNECTION_URI=postgresql://rackstack:PASSWORD@192.168.x.x:5432/supertokens
+POSTGRESQL_CONNECTION_URI=postgresql://rackstack_user:PASSWORD@192.168.x.x:5432/supertokens
 API_KEYS=<openssl rand -hex 32>
 ```
 
