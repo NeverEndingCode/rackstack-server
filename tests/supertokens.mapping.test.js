@@ -369,6 +369,108 @@ describe('supertokens identity mapping - identity outcomes', () => {
     expect(after.supertokens_user_id).not.toBe('github:record-1');
   });
 
+  it('records the winner\'s SuperTokens id when it loses the create race', async () => {
+    // The ALREADY_EXISTS branch. Unreachable through the harness fake - its
+    // getUserIdMapping does a reverse lookup, so any existing mapping is found
+    // by the OK branch first - which is why a mutation restoring the old
+    // "return early, record nothing" behaviour survived the whole suite. This
+    // drives linkExternalUserId directly with a stub that reproduces the race:
+    // no mapping on the first look, someone else's create lands, ours fails
+    // ALREADY_EXISTS, and the re-read finds it pointing where ours would have.
+    await upsertUser({
+      provider: 'github', providerId: 'raced-1', username: 'raced', avatarUrl: null,
+    });
+
+    let lookups = 0;
+    const core = {
+      async getUserIdMapping() {
+        lookups += 1;
+        // First look: nothing yet. Second (after our create lost): the
+        // winner's mapping, pointing at the same external id.
+        return lookups === 1
+          ? { status: 'UNKNOWN_MAPPING_ERROR' }
+          : { status: 'OK', superTokensUserId: 'st-winner', externalUserId: 'github:raced-1' };
+      },
+      async createUserIdMapping() {
+        return {
+          status: 'USER_ID_MAPPING_ALREADY_EXISTS_ERROR',
+          doesSuperTokensUserIdExist: true,
+          doesExternalUserIdExist: true,
+        };
+      },
+    };
+
+    const result = await linkExternalUserId({
+      supertokensUserId: 'st-ours',
+      externalUserId: 'github:raced-1',
+      thirdPartyId: 'github',
+      thirdPartyUserId: 'raced-1',
+    }, { supertokens: core });
+
+    expect(result).toBe('github:raced-1');
+    // The winner's id, not ours - and recorded, not skipped.
+    expect((await getIdentity('github', 'raced-1')).supertokens_user_id).toBe('st-winner');
+  });
+
+  it('still refuses when the race was lost to a mapping for a DIFFERENT player', async () => {
+    await upsertUser({
+      provider: 'github', providerId: 'raced-2', username: 'raced2', avatarUrl: null,
+    });
+    const core = {
+      async getUserIdMapping() { return { status: 'UNKNOWN_MAPPING_ERROR' }; },
+      async createUserIdMapping() {
+        return { status: 'USER_ID_MAPPING_ALREADY_EXISTS_ERROR' };
+      },
+    };
+
+    await expect(linkExternalUserId({
+      supertokensUserId: 'st-x',
+      externalUserId: 'github:raced-2',
+      thirdPartyId: 'github',
+      thirdPartyUserId: 'raced-2',
+    }, { supertokens: core })).rejects.toThrow(/Failed to map/);
+
+    expect((await getIdentity('github', 'raced-2')).supertokens_user_id).toBeNull();
+  });
+
+  it('serializes two simultaneous first logins for the same player', async () => {
+    // The lock is what makes the check-then-insert atomic. Without it two
+    // racers both see "no identity" and both insert; on Postgres the loser
+    // used to fail its login outright. Asserted by counting overlap inside the
+    // critical section rather than by outcome, since the outcome can be right
+    // by luck on a fast backend.
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const slowDb = {
+      async getIdentity(...args) {
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((r) => { setTimeout(r, 15); });
+        try {
+          return await dbMod.getIdentity(...args);
+        } finally {
+          inFlight -= 1;
+        }
+      },
+      upsertUser: dbMod.upsertUser,
+      setSupertokensUserId: dbMod.setSupertokensUserId,
+    };
+
+    const core = createFakeCore();
+    const original = createFakeRecipe(core);
+    const overridden = buildSignInUpOverride({ db: slowDb, supertokens: core })(original);
+    const input = loginInput('github', 'concurrent-1');
+
+    const results = await Promise.allSettled([
+      overridden.signInUp(input),
+      overridden.signInUp(input),
+    ]);
+
+    expect(results.every((r) => r.status === 'fulfilled')).toBe(true);
+    expect(maxInFlight, 'two logins for one player ran the identity check concurrently').toBe(1);
+    expect(await listIdentities('github:concurrent-1')).toHaveLength(1);
+  });
+
   it('refuses a provider user id that would make users.id ambiguous', async () => {
     // users.id is `${provider}:${providerId}`, so the provider id becomes half
     // of a composite key three foreign keys point at. Not reachable with

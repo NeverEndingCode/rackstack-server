@@ -23,6 +23,12 @@
 // the path at all. The same reason the audit takes its reader by injection -
 // `shadow.js` cannot reach a migrating connection even by accident.
 //
+// One honest caveat, since the last version of this banner overclaimed: for a
+// SQLite database in WAL mode - which every RackStack database is - SQLite
+// creates `-shm`/`-wal` side files even to READ it, so the directory must be
+// writable. Your DATA is not modified, and no schema statement runs; but
+// "creates nothing" was not true and is not claimed here.
+//
 // Exit code is the machine-readable gate: 0 only on a clean pass. Non-zero on
 // "nothing comparable was found" is deliberate - an empty run is not a pass,
 // and a script that exited 0 on it would quietly bless a cutover against a
@@ -43,6 +49,17 @@ const AUDIT_SQL = `
    ORDER BY i.provider, i.provider_id
 `;
 
+// A database with no `identities` table predates the v1.7 split, so there is
+// nothing for this gate to audit. Worth its own message: the runbook sends
+// operators here with "a restored export", and restoring the WRONG (pre-v1.7)
+// export is an easy mistake whose natural symptom would otherwise be a raw
+// "no such table" from deep inside a SELECT.
+const noIdentitiesTable = () => new Error(
+  'This database has no `identities` table, so it predates the v1.7 auth split and there '
+  + 'is nothing to audit. Point DB_PATH / DATABASE_URL at a v1.7-or-later database - if this '
+  + 'is a production export, migrate it to v1.7 first (see docs/postgres-migration-runbook.md).',
+);
+
 /**
  * Opens a read-only Postgres reader.
  *
@@ -50,17 +67,6 @@ const AUDIT_SQL = `
  * merely being trusted to issue a SELECT: it makes the guarantee the database
  * enforces rather than something a future edit could quietly break.
  */
-// A database with no `identities` table predates the v1.7 split, so there is
-// nothing for this gate to audit. Worth its own message: the runbook sends
-// operators here with "a restored export", and restoring the WRONG (pre-v1.7)
-// export is an easy mistake whose natural symptom would otherwise be a raw
-// "no such table" from deep inside a SELECT.
-const NO_IDENTITIES_TABLE = new Error(
-  'This database has no `identities` table, so it predates the v1.7 auth split and there '
-  + 'is nothing to audit. Point DB_PATH / DATABASE_URL at a v1.7-or-later database - if this '
-  + 'is a production export, migrate it to v1.7 first (see docs/postgres-migration-runbook.md).',
-);
-
 async function pgReader(url) {
   const pg = (await import('pg')).default;
   // Registers the BIGINT->Number parser, so counts and timestamps read back as
@@ -75,7 +81,7 @@ async function pgReader(url) {
         const present = await client.query(
           "SELECT 1 FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = 'identities'",
         );
-        if (present.rowCount === 0) throw NO_IDENTITIES_TABLE;
+        if (present.rowCount === 0) throw noIdentitiesTable();
         return (await client.query(AUDIT_SQL)).rows;
       } finally {
         await client.query('COMMIT');
@@ -95,13 +101,36 @@ async function pgReader(url) {
  */
 async function sqliteReader(path) {
   const Database = (await import('better-sqlite3')).default;
-  const db = new Database(path, { readonly: true, fileMustExist: true });
+  let db;
+  try {
+    db = new Database(path, { readonly: true, fileMustExist: true });
+    // Force SQLite to actually touch the file now, so a WAL database on
+    // read-only media fails HERE with a message an operator can act on rather
+    // than mid-audit with a raw SQLITE_READONLY_DIRECTORY.
+    db.prepare('SELECT 1').get();
+  } catch (e) {
+    if (db) db.close();
+    if (/READONLY_DIRECTORY|SQLITE_CANTOPEN|readonly database/i.test(e.message)) {
+      throw new Error(
+        `Cannot open ${path} for reading. A SQLite database in WAL mode - which every `
+        + 'RackStack database is - needs to create `-shm`/`-wal` side files even to be READ, '
+        + 'so the directory must be writable. Nothing in your data is modified; copy the '
+        + `database (and any existing -wal/-shm files) somewhere writable and point DB_PATH `
+        + `there. Underlying error: ${e.message}`,
+      );
+    }
+    throw e;
+  }
+  // Belt and braces: better-sqlite3 exposes the flag it was opened with, so
+  // the read-only guarantee is assertable rather than merely intended.
+  /* c8 ignore next */
+  if (!db.readonly) throw new Error('shadow:check opened the database read-write; refusing to continue.');
   return {
     async readAllIdentities() {
       const present = db.prepare(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'identities'",
       ).get();
-      if (!present) throw NO_IDENTITIES_TABLE;
+      if (!present) throw noIdentitiesTable();
       return db.prepare(AUDIT_SQL).all();
     },
     async close() { db.close(); },

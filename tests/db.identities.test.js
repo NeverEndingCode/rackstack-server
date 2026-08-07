@@ -266,6 +266,55 @@ describe('identities split', () => {
     expect((await getIdentity('github', 'dup-b')).supertokens_user_id).toBeNull();
   });
 
+  it.runIf(driver.__backend === 'pg')('survives two simultaneous first logins for the same player', async () => {
+    // Postgres-only by nature. There are awaited round trips between
+    // upsertUser's identity read and its insert, so two racers both see "no
+    // identity" and both insert; the loser violates users_pkey. That used to
+    // be misread as a USERNAME collision, renamed, and retried into the same
+    // primary key - failing the login outright. SQLite is safe by accident:
+    // nothing awaits between its read and insert, so the second caller sees
+    // the first's row. Exactly the dialect drift the two-backend rule exists
+    // to surface, and it shipped untested until the fix-verification review.
+    const results = await Promise.allSettled([
+      upsertUser({
+        provider: 'github', providerId: 'pgrace-1', username: 'pgracer', avatarUrl: null,
+      }),
+      upsertUser({
+        provider: 'github', providerId: 'pgrace-1', username: 'pgracer', avatarUrl: null,
+      }),
+    ]);
+
+    const rejected = results.filter((r) => r.status === 'rejected');
+    expect(rejected.map((r) => r.reason?.message ?? r.reason)).toEqual([]);
+    expect(results.map((r) => r.value.id)).toEqual(['github:pgrace-1', 'github:pgrace-1']);
+    expect(await listIdentities('github:pgrace-1')).toHaveLength(1);
+  });
+
+  it.runIf(driver.__backend === 'pg')('repairs a users row that has no identity, rather than adopting it silently', async () => {
+    // The users_pkey adopt branch is only correct because the race winner
+    // wrote BOTH rows in one transaction. A users row WITHOUT its identity can
+    // exist from outside that path (a partial restore, a manual insert), and
+    // there the pre-fix code raised 23505 on every login - loud and
+    // diagnosable. Returning the user without repairing the identity would
+    // make the login "succeed" forever while getIdentity stayed null,
+    // setSupertokensUserId no-opped forever, and the shadow gate never saw the
+    // login method at all.
+    await driver.__raw.query(
+      'INSERT INTO users (id, username, avatar_url, created_at) VALUES ($1, $2, $3, $4)',
+      ['github:no-identity-1', 'lonely', null, Date.now()],
+    );
+    expect(await listIdentities('github:no-identity-1')).toHaveLength(0);
+
+    const user = await upsertUser({
+      provider: 'github', providerId: 'no-identity-1', username: 'lonely', avatarUrl: null,
+    });
+
+    expect(user.id).toBe('github:no-identity-1');
+    const identities = await listIdentities('github:no-identity-1');
+    expect(identities, 'the missing identity row was not repaired').toHaveLength(1);
+    expect(identities[0]).toMatchObject({ provider: 'github', provider_id: 'no-identity-1' });
+  });
+
   it('migrates a pre-split SQLite database without losing saves', async () => {
     // Build a database in the OLD shape, then let applySchema() upgrade it.
     // Postgres-only test runs use this too - it's a pure SQLite in-memory

@@ -13,6 +13,59 @@ import './db.js'; // ensures tables exist on boot
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
+ * The SuperTokens endpoints RackStack actually uses.
+ *
+ * Exact paths (or a prefix, for the provider callbacks), relative to the
+ * `/auth` API base path.
+ */
+export const SUPERTOKENS_ALLOWED_PATHS = Object.freeze([
+  '/auth/authorisationurl', // start a third-party login
+  '/auth/signinup', //         complete it (redirect flow only - see rejectRawOAuthTokens)
+  '/auth/session/refresh', //  renew an access token
+]);
+const SUPERTOKENS_ALLOWED_PREFIXES = Object.freeze([
+  '/auth/callback/', //        the provider redirect target, e.g. /auth/callback/github
+]);
+
+/**
+ * Lets SuperTokens' middleware see ONLY the endpoints we use, and 404s the
+ * rest of its surface.
+ *
+ * An allowlist rather than a denylist, because the surface is not what
+ * `recipeList` implies. `supertokens.init()` auto-adds multitenancy,
+ * usermetadata, oauth2provider, openid, jwt and accountlinking alongside the
+ * two recipes we ask for - 13 extra live endpoints. Two of them mattered:
+ *
+ *   - `POST /auth/oauth/logout` revokes the session BEFORE validating its
+ *     challenge, so an authenticated call with any value kills the SuperTokens
+ *     session and leaves the legacy JWT cookie behind - `requireAuth` then
+ *     re-authenticates the "logged out" user. That is the exact half-logout
+ *     `disableStockSignOut` was written to close, reached by a second door.
+ *   - `GET /auth/.well-known/openid-configuration` answered unauthenticated,
+ *     advertising RackStack as an OAuth2 authorization server it has no
+ *     intention of being.
+ *
+ * Disabling them one by one is whack-a-mole against a dependency that adds
+ * endpoints on its own schedule; the next `supertokens-node` minor could add
+ * another and nothing here would notice. An allowlist fails closed instead: a
+ * new endpoint is simply not reachable until someone adds it here on purpose.
+ *
+ * Non-matching paths call `next()` rather than responding, so our own
+ * `/auth/github`, `/auth/discord`, the passport callbacks and `/auth/logout`
+ * (registered later, in authRoutes.js) still work, and anything else falls
+ * through to the SPA exactly as it did before v1.8.
+ */
+export function gateSuperTokensPaths(supertokensMiddleware) {
+  return function supertokensGate(req, res, next) {
+    const path = req.path;
+    const allowed = SUPERTOKENS_ALLOWED_PATHS.includes(path)
+      || SUPERTOKENS_ALLOWED_PREFIXES.some((prefix) => path.startsWith(prefix));
+    if (!allowed) return next();
+    return supertokensMiddleware(req, res, next);
+  };
+}
+
+/**
  * Builds and returns a fully-configured Express app (middleware + routes +
  * static client + SPA fallback), without binding a port. Factored out of
  * index.js so tests can exercise the app with supertest directly.
@@ -39,7 +92,7 @@ export async function buildApp({ env = process.env } = {}) {
   if (isSuperTokensEnabled(mode)) {
     await initSuperTokens({ env, mode });
     const { middleware } = await import('supertokens-node/framework/express');
-    app.use(middleware());
+    app.use(gateSuperTokensPaths(middleware()));
   }
 
   // Built per app rather than imported as a singleton: these are the only

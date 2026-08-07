@@ -14,11 +14,25 @@
 //      load on the runtime's Node version. A static import here would put
 //      that whole tree on the boot path of every deployment, opted in or not.
 //
-// Recipes are ThirdParty and Session ONLY. The design (section 7) puts every
-// other recipe out of scope, and that boundary is what keeps the nodemailer
-// advisory in supertokens-node's dependency tree unreachable: nodemailer is
-// referenced solely by the emailpassword / emailverification / passwordless /
-// webauthn SMTP delivery services, none of which are ever constructed here.
+// We ASK for ThirdParty and Session only. That is not the same as those being
+// the only recipes present, and the difference is load-bearing enough to state
+// plainly: `supertokens.init()` auto-adds multitenancy, usermetadata,
+// oauth2provider, openid, jwt and accountlinking regardless of what
+// `recipeList` says, contributing 13 further live HTTP endpoints. An earlier
+// version of this comment claimed "ThirdParty and Session ONLY", which was
+// simply false and is why `POST /auth/oauth/logout` - carrying the same
+// half-logout bug as the signout endpoint - went unnoticed until the v1.8
+// fix-verification review.
+//
+// The HTTP surface is therefore constrained in app.js by an allowlist
+// (`gateSuperTokensPaths`) rather than by what we requested here. Do not
+// reintroduce the assumption that recipeList bounds the endpoints.
+//
+// The nodemailer advisory in the dependency tree does remain unreachable, but
+// for a narrower reason than "only two recipes": none of the auto-added
+// recipes constructs an SMTP delivery service either. nodemailer is referenced
+// solely by emailpassword / emailverification / passwordless / webauthn, and
+// none of those is initialised. Adding any of them makes the advisory live.
 
 import { isSuperTokensEnabled } from '../authMode.js';
 import { buildProviders, resolvePublicOrigin } from './providers.js';
@@ -100,6 +114,68 @@ export function rejectRawOAuthTokens(originalImplementation) {
 }
 
 /**
+ * Whether a connection URI points at this host only.
+ *
+ * Parsed rather than string-matched, so `http://127.0.0.1.evil.com:3567` is
+ * correctly treated as remote - a substring check for '127.0.0.1' would wave
+ * it through, which is the classic way this kind of exemption goes wrong.
+ */
+export function isLoopback(uri) {
+  try {
+    const { hostname } = new URL(uri);
+    return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1'
+      || hostname === '[::1]';
+  } catch {
+    // Unparseable means we cannot establish it is local, so treat it as remote
+    // and require the key. Failing towards "more authentication" is correct.
+    return false;
+  }
+}
+
+/**
+ * Confirms the core actually refuses unauthenticated callers.
+ *
+ * Probes an endpoint that requires an API key when one is configured. A 401
+ * means the core is closed and all is well; a 200 means it answered a caller
+ * holding no key at all, which is the state where anyone who can reach it can
+ * mint a session for any user id.
+ *
+ * `/hello` is deliberately NOT used - it answers unauthenticated by design as
+ * a health check, so probing it would prove nothing.
+ */
+export async function assertCoreRejectsAnonymous({ connectionURI, hasKey, fetchImpl = fetch }) {
+  const url = `${connectionURI.replace(/\/$/, '')}/recipe/users/count`;
+  let response;
+  try {
+    response = await fetchImpl(url, {
+      method: 'GET',
+      headers: { 'api-version': '3.0' },
+      signal: AbortSignal.timeout(5000),
+    });
+  } catch (e) {
+    // Unreachable, DNS failure, timeout. Cannot establish anything; the core
+    // may simply still be starting. Warn rather than refuse - see the caller.
+    console.warn(
+      `[auth] could not verify that the SuperTokens core at ${connectionURI} requires `
+      + `authentication (${e.message}). If it is running without API_KEYS, anyone who can `
+      + 'reach it can mint a session for any user id.',
+    );
+    return 'unverified';
+  }
+
+  if (response.status === 401) return 'closed';
+
+  throw new Error(
+    `The SuperTokens core at ${connectionURI} answered an unauthenticated request with `
+    + `HTTP ${response.status}, which means it is running without API_KEYS. Anyone who can `
+    + 'reach it can mint a session for any user id, including every value in SUPER_ADMIN_IDS, '
+    + 'without any request reaching RackStack. Set API_KEYS on the core to the same value as '
+    + `SUPERTOKENS_API_KEY here${hasKey ? '' : ' (which is also unset)'}, and do not publish `
+    + 'its port.',
+  );
+}
+
+/**
  * Removes the Session recipe's stock `POST /auth/signout`.
  *
  * The Session recipe registers that endpoint automatically, and it revokes the
@@ -122,25 +198,6 @@ export function rejectRawOAuthTokens(originalImplementation) {
  * loud - and a logout that fails loudly is strictly better than one that half
  * works.
  */
-/**
- * Whether a connection URI points at this host only.
- *
- * Parsed rather than string-matched, so `http://127.0.0.1.evil.com:3567` is
- * correctly treated as remote - a substring check for '127.0.0.1' would wave
- * it through, which is the classic way this kind of exemption goes wrong.
- */
-export function isLoopback(uri) {
-  try {
-    const { hostname } = new URL(uri);
-    return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1'
-      || hostname === '[::1]';
-  } catch {
-    // Unparseable means we cannot establish it is local, so treat it as remote
-    // and require the key. Failing towards "more authentication" is correct.
-    return false;
-  }
-}
-
 export function disableStockSignOut(originalImplementation) {
   return { ...originalImplementation, signOutPOST: undefined };
 }
@@ -249,6 +306,19 @@ export async function initSuperTokens({ env = process.env, mode } = {}) {
       Session.init({ override: { apis: disableStockSignOut } }),
     ],
   });
+
+  // The env check above proves only that WE hold a key, not that the core
+  // demands one. Compose cannot diverge (both sides read the same variable),
+  // but Unraid - the documented primary deployment - is two hand-configured
+  // containers, and setting SUPERTOKENS_API_KEY on RackStack while leaving
+  // API_KEYS blank on the core satisfies the guard while leaving the core
+  // wide open to everyone else on the network. So ask the core directly.
+  //
+  // Fails closed only on a CONFIRMED-open core: an unreachable one is warned
+  // about, not fatal, because the core legitimately may not be up yet during a
+  // simultaneous container start, and refusing there would turn an ordering
+  // hiccup into an outage.
+  await assertCoreRejectsAnonymous({ connectionURI, hasKey: Boolean(env.SUPERTOKENS_API_KEY) });
 
   initialised = true;
   // An operator who has just flipped AUTH_MODE needs to see that it took

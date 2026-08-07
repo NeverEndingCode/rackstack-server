@@ -168,7 +168,30 @@ export async function createPgDriver({ url }) {
         // simply to adopt it.
         if (e.constraint === 'users_pkey') {
           const winner = await one('SELECT * FROM users WHERE id = $1', [id]);
-          if (winner) return winner;
+          if (winner) {
+            // Adopting the winner's users row is only correct if the identity
+            // row exists too. In the race it does - insertUserAndIdentity is
+            // one transaction, so the winner wrote both. But a `users` row
+            // WITHOUT its identity can exist from outside that path (a partial
+            // restore, a manual insert), and there the pre-fix code raised
+            // 23505 on every login - loud, and diagnosable. Returning the user
+            // without repairing the identity would convert that into permanent
+            // silence: the login "succeeds" forever, getIdentity stays null,
+            // setSupertokensUserId no-ops forever, and the shadow gate cannot
+            // see the row at all because its audit walks identities -> users.
+            // That is the mirror image of the ORPHAN blind spot fixed in the
+            // same release. Found by the fix-verification review.
+            await run(
+              `INSERT INTO identities (provider, provider_id, user_id, created_at, last_login_at)
+               VALUES ($1, $2, $3, $4, $5)
+               ON CONFLICT (provider, provider_id) DO NOTHING`,
+              [
+                identityRow.provider, identityRow.provider_id, identityRow.user_id,
+                identityRow.created_at, identityRow.last_login_at,
+              ],
+            );
+            return winner;
+          }
           throw e;
         }
 

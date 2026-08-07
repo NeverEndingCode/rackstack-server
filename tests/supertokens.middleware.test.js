@@ -224,6 +224,86 @@ describe('the SuperTokens middleware is actually mounted', () => {
   });
 });
 
+describe('the SuperTokens HTTP surface is an allowlist', () => {
+  // supertokens.init() auto-adds multitenancy, usermetadata, oauth2provider,
+  // openid, jwt and accountlinking whatever `recipeList` says - 13 extra live
+  // endpoints. Disabling them one at a time is whack-a-mole against a
+  // dependency that adds endpoints on its own schedule, so app.js gates the
+  // middleware behind an allowlist. These tests are what stop that allowlist
+  // silently widening again.
+
+  it('does not expose POST /auth/oauth/logout - a second half-logout', async () => {
+    // The one that matters most: oauth2provider revokes the session BEFORE
+    // validating the logout challenge, so an authenticated call with any value
+    // kills the SuperTokens session and leaves the legacy cookie - and
+    // requireAuth then re-authenticates the "logged out" user. Exactly the bug
+    // disableStockSignOut closes, reached by another door.
+    const res = await request(apps.dual)
+      .post('/auth/oauth/logout')
+      .set('Cookie', legacyCookie(player))
+      .send({ logoutChallenge: 'anything' });
+
+    // 404, NOT merely "not JSON". Ungated, this request genuinely reaches
+    // oauth2provider's logoutPOST and dies in the querier with "No SuperTokens
+    // core available" - a 500, which is also not JSON. A content-type check
+    // therefore passes whether the endpoint is blocked or reached-and-broken,
+    // and was vacuous here until a mutation run exposed it. 404 means nothing
+    // handled the request at all: the gate called next(), and the SPA fallback
+    // is GET-only so a POST falls off the end of the stack. SuperTokens never
+    // saw it.
+    expect(res.status).toBe(404);
+
+    // And the legacy cookie still authenticates, i.e. nothing was half-revoked.
+    const after = await request(apps.dual).get('/api/me').set('Cookie', legacyCookie(player));
+    expect(after.status).toBe(200);
+  });
+
+  it('does not advertise RackStack as an OAuth2 authorization server', async () => {
+    const res = await request(apps.dual).get('/auth/.well-known/openid-configuration');
+    expect(res.headers['content-type'] ?? '').not.toContain('application/json');
+  });
+
+  it('blocks the rest of the auto-added recipe surface', async () => {
+    // A representative sweep rather than an exhaustive one - the allowlist is
+    // the guarantee; this checks it is actually in force.
+    const blocked = [
+      ['get', '/auth/jwt/jwks.json'],
+      ['get', '/auth/oauth/auth'],
+      ['post', '/auth/oauth/token'],
+      ['get', '/auth/oauth/userinfo'],
+      ['post', '/auth/user/metadata'],
+      ['get', '/auth/loginmethods'],
+    ];
+    for (const [method, path] of blocked) {
+      // eslint-disable-next-line no-await-in-loop
+      const res = await request(apps.dual)[method](path);
+      expect(
+        res.headers['content-type'] ?? '',
+        `${method.toUpperCase()} ${path} was served by SuperTokens`,
+      ).not.toContain('application/json');
+    }
+  });
+
+  it('still serves the endpoints we do use', async () => {
+    // The allowlist must not have closed the door on ourselves.
+    const authUrl = await request(apps.dual).get('/auth/authorisationurl?thirdPartyId=github');
+    expect(authUrl.headers['content-type'] ?? '').toContain('application/json');
+
+    const refresh = await request(apps.dual).post('/auth/session/refresh');
+    expect(refresh.headers['content-type'] ?? '').toContain('application/json');
+  });
+
+  it('leaves our own passport routes reachable through the gate', async () => {
+    // The gate calls next() rather than responding, so /auth/* paths it does
+    // not own must still reach authRoutes.js.
+    const gh = await request(apps.dual).get('/auth/github');
+    expect(gh.status).toBe(302);
+
+    const logout = await request(apps.dual).post('/auth/logout');
+    expect(logout.status).toBe(200);
+  });
+});
+
 describe('logout revokes both stacks', () => {
   it('revokes the SuperTokens session, not just the legacy cookie', async () => {
     // Mutation-found gap: wrapping the revocation in `if (false)` passed

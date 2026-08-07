@@ -62,6 +62,55 @@ describe('rejectRawOAuthTokens (authentication bypass guard)', () => {
     expect(res.message).toMatch(/issued to this application/);
   });
 
+  it('refuses to boot against a core that answers unauthenticated callers', async () => {
+    // The env check alone is one-sided: it proves WE hold a key, not that the
+    // core demands one. Compose cannot diverge (both read the same variable),
+    // but Unraid is two hand-configured containers, and a key set here with
+    // API_KEYS blank on the core satisfies the env check while leaving the
+    // core open to everyone else on the network.
+    const { assertCoreRejectsAnonymous } = await import('../server/supertokens/init.js');
+    const openCore = async () => ({ status: 200 });
+
+    await expect(assertCoreRejectsAnonymous({
+      connectionURI: 'http://supertokens.example.com:3567', hasKey: true, fetchImpl: openCore,
+    })).rejects.toThrow(/without API_KEYS/);
+  });
+
+  it('accepts a core that rejects unauthenticated callers', async () => {
+    const { assertCoreRejectsAnonymous } = await import('../server/supertokens/init.js');
+    const closedCore = async () => ({ status: 401 });
+
+    await expect(assertCoreRejectsAnonymous({
+      connectionURI: 'http://supertokens.example.com:3567', hasKey: true, fetchImpl: closedCore,
+    })).resolves.toBe('closed');
+  });
+
+  it('warns rather than refuses when the core cannot be reached', async () => {
+    // A core that is simply not up yet is an ordering hiccup during a
+    // simultaneous container start; refusing there would turn it into an
+    // outage. Only a CONFIRMED-open core is fatal.
+    const { assertCoreRejectsAnonymous } = await import('../server/supertokens/init.js');
+    const unreachable = async () => { throw new Error('ECONNREFUSED'); };
+
+    await expect(assertCoreRejectsAnonymous({
+      connectionURI: 'http://supertokens.example.com:3567', hasKey: true, fetchImpl: unreachable,
+    })).resolves.toBe('unverified');
+  });
+
+  it('does not probe /hello, which answers unauthenticated by design', async () => {
+    // Probing the health endpoint would prove nothing - it is meant to answer
+    // without a key, so a 200 there is not evidence the core is open.
+    const { assertCoreRejectsAnonymous } = await import('../server/supertokens/init.js');
+    let probed;
+    await assertCoreRejectsAnonymous({
+      connectionURI: 'http://core:3567',
+      hasKey: true,
+      fetchImpl: async (url) => { probed = url; return { status: 401 }; },
+    });
+    expect(probed).not.toContain('/hello');
+    expect(probed).toContain('/recipe/');
+  });
+
   it('lets the legitimate redirect-URI flow through untouched', async () => {
     // The guard must not break real logins. In this flow the token is obtained
     // by exchanging an authorization code with our own client secret, so it is

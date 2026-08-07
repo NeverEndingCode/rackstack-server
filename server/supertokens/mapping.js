@@ -281,16 +281,32 @@ export function buildSignInUpOverride({ db = defaultDb, supertokens } = {}) {
       // users.id about to be created. Not reentrant, but nothing on this path
       // takes the same lock.
       const lockKey = `${input.thirdPartyId}:${input.thirdPartyUserId}`;
-      await withUserLock(lockKey, async () => {
-        const { externalUserId } = await resolveExternalUserId(input, db);
+      const { externalUserId } = await withUserLock(
+        lockKey,
+        () => resolveExternalUserId(input, db),
+      );
 
-        await linkExternalUserId({
-          supertokensUserId,
-          externalUserId,
-          thirdPartyId: input.thirdPartyId,
-          thirdPartyUserId: input.thirdPartyUserId,
-        }, { db, supertokens });
-      });
+      // Deliberately OUTSIDE the lock. The lock exists to make the
+      // check-then-insert above atomic, and that is all it needs to cover.
+      //
+      // Wrapping the core calls too - as the first version of this fix did -
+      // held the lock across two uncancellable network round trips
+      // (`supertokens-node`'s querier uses fetch with no AbortSignal), on the
+      // SAME key space that stateService and api.js use for save writes. A
+      // black-holed core would therefore have wedged that player's saves
+      // indefinitely and leaked the chains entry, converting a SuperTokens
+      // outage into silent data-loss-shaped behaviour for anyone mid-login.
+      // Caught by the fix-verification review.
+      //
+      // Safe to leave unserialized: linkExternalUserId is idempotent by
+      // construction (it reads getUserIdMapping first) and handles losing the
+      // create race explicitly via USER_ID_MAPPING_ALREADY_EXISTS_ERROR.
+      await linkExternalUserId({
+        supertokensUserId,
+        externalUserId,
+        thirdPartyId: input.thirdPartyId,
+        thirdPartyUserId: input.thirdPartyUserId,
+      }, { db, supertokens });
 
       return response;
     },

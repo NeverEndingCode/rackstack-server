@@ -142,6 +142,54 @@ describe('the offline audit (the gate itself)', () => {
     expect(report).toContain('github:ghost');
   });
 
+  it.runIf(provisioned.backend === 'pg')('runs the real Postgres reader against real rows, and user_exists is a number', async () => {
+    // Until the fix-verification review, AUDIT_SQL had never executed against
+    // an actual row on either backend and pgReader had never been constructed:
+    // every subprocess test forced DATABASE_URL='' and used SQLite fixtures
+    // with zero identities, and the classification tests used hand-written
+    // {user_exists: 0|1} objects.
+    //
+    // The specific hazard is a pg type quirk. `CASE ... THEN 0 ELSE 1 END` is
+    // int4, which node-pg parses to a JS number - but change it to COUNT() or
+    // cast it to bigint and pg returns the STRING '0', which is truthy, and
+    // orphan detection silently switches off while the gate still prints PASS.
+    // So the type is asserted, not just the outcome.
+    const { openReader } = await import('../server/supertokens/shadowCheck.js');
+
+    await upsertUser({
+      provider: 'github', providerId: 'pgshadow-ok', username: 'pgok', avatarUrl: null,
+    });
+    // An identity pointing at a user that does not exist. FKs are declared, so
+    // this is written with them deferred - the same shape a `pg_restore
+    // --disable-triggers` or a partial restore produces.
+    await driver.__raw.query('ALTER TABLE identities DROP CONSTRAINT IF EXISTS identities_user_id_fkey');
+    await driver.__raw.query(
+      'INSERT INTO identities (provider, provider_id, user_id, created_at) VALUES ($1, $2, $3, $4)',
+      ['github', 'pgshadow-orphan', 'github:does-not-exist', Date.now()],
+    );
+
+    const reader = await openReader({ DATABASE_URL: process.env.DATABASE_URL });
+    try {
+      const rows = await reader.readAllIdentities();
+      const orphanRow = rows.find((r) => r.provider_id === 'pgshadow-orphan');
+      const okRow = rows.find((r) => r.provider_id === 'pgshadow-ok');
+
+      expect(orphanRow).toBeDefined();
+      expect(okRow).toBeDefined();
+      // The type assertion that keeps orphan detection alive.
+      expect(typeof orphanRow.user_exists).toBe('number');
+      expect(orphanRow.user_exists).toBe(0);
+      expect(okRow.user_exists).toBe(1);
+
+      const summary = summarise(rows.map(classifyIdentityRow));
+      expect(summary.orphaned).toBeGreaterThanOrEqual(1);
+      expect(summary.passed).toBe(false);
+      expect(formatSummary(summary)).toContain('pgshadow-orphan');
+    } finally {
+      await reader.close();
+    }
+  });
+
   it('takes its rows from an injected reader, never from the db facade', async () => {
     // The structural half of the read-only guarantee: shadow.js has no import
     // that could reach a connection which runs applySchema. If this ever needs
@@ -297,9 +345,52 @@ describe('npm run shadow:check is genuinely read-only', () => {
     expect(parsed.tables).toEqual(['saves', 'users']);
     expect(parsed.users.find((u) => u.id === 'discord:2').username).toBe('NEC');
 
-    // journal_mode = WAL is itself a write to the file, and leaves sidecars.
+    // This fixture is journal_mode=delete, so no sidecars are expected here.
+    // A WAL database is a different matter - see the next test, which is the
+    // realistic case and which this assertion would have silently missed.
     expect(existsSync(`${file}-wal`)).toBe(false);
     expect(readdirSync(dir).sort()).toEqual(['legacy.db']);
+  });
+
+  it('leaves a WAL database\'s DATA untouched, though SQLite does create side files', async () => {
+    // Every real RackStack database is WAL (driver.sqlite.js sets it at boot),
+    // so this - not the delete-journal fixture above - is what an operator
+    // actually audits. SQLite must create `-shm`/`-wal` even to READ such a
+    // database, which is why the banner no longer claims "creates nothing".
+    //
+    // The guarantee that matters is that the DATA does not change, so that is
+    // what is asserted. The previous test used a non-WAL fixture and so
+    // asserted "no -wal appears" against a case where none ever would - true,
+    // and irrelevant to production.
+    const dir = mkdtempSync(path.join(tmpdir(), 'rackstack-shadow-'));
+    scratchDirs.push(dir);
+    const file = path.join(dir, 'wal.db');
+    const raw = new Database(file);
+    raw.pragma('journal_mode = WAL');
+    raw.exec(`
+      CREATE TABLE users (id TEXT PRIMARY KEY, username TEXT, created_at INTEGER NOT NULL);
+      CREATE TABLE identities (
+        provider TEXT NOT NULL, provider_id TEXT NOT NULL, user_id TEXT NOT NULL,
+        supertokens_user_id TEXT UNIQUE, created_at INTEGER NOT NULL, last_login_at INTEGER,
+        PRIMARY KEY (provider, provider_id));
+      INSERT INTO users VALUES ('github:1','nec',1);
+      INSERT INTO users VALUES ('discord:2','NEC',2);
+      INSERT INTO identities VALUES ('github','1','github:1',NULL,1,NULL);
+    `);
+    raw.close();
+
+    const before = snapshot(file);
+    await execFileAsync(
+      process.execPath,
+      [path.join(process.cwd(), 'server/supertokens/shadowCheck.js')],
+      { env: { ...process.env, DB_PATH: file, DATABASE_URL: '' }, cwd: process.cwd() },
+    ).catch((e) => e);
+
+    // Data identical - no rename, no rebuild, no new tables.
+    expect(snapshot(file)).toBe(before);
+    const parsed = JSON.parse(snapshot(file));
+    expect(parsed.users.find((u) => u.id === 'discord:2').username).toBe('NEC');
+    expect(parsed.tables.sort()).toEqual(['identities', 'users']);
   });
 
   it('says so plainly when handed a pre-v1.7 export, rather than a raw SQL error', async () => {

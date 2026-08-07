@@ -352,11 +352,18 @@ npm run shadow:check
 It reads whichever database your usual environment variables point at
 (`DATABASE_URL`, or `DB_PATH` for SQLite) and checks every identity row.
 
-**It is read-only.** It opens its own connection — SQLite read-only, Postgres
-in a `READ ONLY` transaction — issues one SELECT, and creates nothing. Safe to
-run against production with players online, and safe against a restored export
-on a laptop, which is the intended use since this has to clear *before* the
-SuperTokens stack is switched on.
+**It does not modify your data.** It opens its own connection — SQLite
+read-only, Postgres in a `READ ONLY` transaction — and issues one SELECT. No
+schema statement runs. Safe against production with players online, and against
+a restored export on a laptop, which is the intended use since this has to clear
+*before* the SuperTokens stack is switched on.
+
+One caveat, stated because the earlier wording ("creates nothing") was not
+quite true: a SQLite database in WAL mode — which every RackStack database is —
+needs `-shm`/`-wal` side files created even to be *read*, so **the directory
+must be writable**. Your rows are untouched; if the media is read-only the tool
+now says so and tells you to copy the database somewhere writable rather than
+failing with a raw SQLite error.
 
 > **This was not true before v1.8.0-rc.** The audit used to go through the
 > normal database module, and merely *loading* that runs the schema migration —
