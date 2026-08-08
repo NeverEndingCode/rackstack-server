@@ -58,7 +58,10 @@ function buy(s, action, config, now) {
     return err('cooldown_active');
   }
 
-  const thresholds = milestoneThresholds(s.meta, config);
+  // Only 'milestone' reads the thresholds, and deriving them costs a full
+  // computeEffects pass - not something every Buy 1 tap should pay for. The
+  // other modes are handed null, which resolveBuyCount never dereferences.
+  const thresholds = mode === 'milestone' ? milestoneThresholds(s.meta, config) : null;
   const n = resolveBuyCount(mode, def, laneState.owned, s.run.credits, thresholds);
   if (n < 0) return err('invalid_target');
   // A milestone request returning 0 means the lane is past its final
