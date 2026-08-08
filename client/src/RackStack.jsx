@@ -1216,6 +1216,7 @@ export default function RackStack({ user }) {
       {activeTab === 'social' && (
         <SocialPanel
           meta={state.meta}
+          ctx={ctx}
           serverTime={serverNow}
           userId={user && user.id}
           boards={leaderboards}

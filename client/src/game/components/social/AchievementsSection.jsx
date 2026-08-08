@@ -1,5 +1,6 @@
 import { cardBg, cardBorder, textMain, textDim } from '../../theme.js';
-import { ACHIEVEMENT_DEFS } from '@shared/achievements.js';
+import { ACHIEVEMENT_DEFS, achievementProgress } from '@shared/achievements.js';
+import { fmt } from '@shared/gameRules.js';
 import { achievementIcon, TIER_COLOR } from '../../data/achievementIcons.js';
 
 function unlockedDate(ms) {
@@ -10,7 +11,12 @@ function unlockedDate(ms) {
 // The badge case. Achievements are pure prestige (spec §6.3) - there is
 // deliberately no Claim button anywhere here, because they unlock
 // automatically in the reducer the moment their condition is met.
-export default function AchievementsSection({ achievements }) {
+//
+// `ctx` is the goalCtx-shaped object RackStack builds once per render and
+// already hands to GoalsPanel; it drives the progress bar on each still-locked
+// scalar badge. It is optional only so this component keeps rendering the case
+// itself if a caller has no ctx to give - the bars simply don't appear.
+export default function AchievementsSection({ achievements, ctx }) {
   const held = achievements && typeof achievements === 'object' ? achievements : {};
   const unlockedCount = ACHIEVEMENT_DEFS.filter(
     (d) => Object.prototype.hasOwnProperty.call(held, d.id),
@@ -43,6 +49,25 @@ export default function AchievementsSection({ achievements }) {
                 {def.name}
               </div>
               <div className="text-xs leading-snug" style={{ color: textDim }}>{def.desc}</div>
+              {!unlocked && ctx && (() => {
+                const p = achievementProgress(def, ctx);
+                if (!p || !(p.target > 0)) return null;  // boolean badge, no bar
+                // Clamped for the width only: achievementProgress deliberately
+                // does not clamp `current`, and an unclamped ratio would draw a
+                // bar wider than its track.
+                const pct = Math.max(0, Math.min(1, p.current / p.target)) * 100;
+                return (
+                  <div className="mt-1">
+                    <div className="h-1 rounded-full overflow-hidden" style={{ background: cardBorder }}>
+                      <div className="h-full" style={{ width: `${pct}%`, background: accent }} />
+                    </div>
+                    {/* fmt is mandatory, not cosmetic: flops_p's target is 1e15. */}
+                    <div className="text-xs font-mono mt-0.5" style={{ color: textDim }}>
+                      {fmt(p.current)} / {fmt(p.target)}
+                    </div>
+                  </div>
+                );
+              })()}
               {unlocked && unlockedDate(at) && (
                 <div className="text-xs font-mono mt-0.5" style={{ color: accent }}>{unlockedDate(at)}</div>
               )}

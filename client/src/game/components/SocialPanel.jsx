@@ -20,7 +20,7 @@ const SECTIONS = [
 // reconcile), so it's fetched lazily the first time the Board section is
 // opened - and refreshed on each subsequent open, throttled by RackStack.jsx.
 export default function SocialPanel({
-  meta, serverTime, userId, boards, leaderboardLoading, optOut,
+  meta, ctx, serverTime, userId, boards, leaderboardLoading, optOut,
   onClaimContract, onToggleOptOut, onRefreshLeaderboard,
 }) {
   const [section, setSection] = useState('contracts');
@@ -60,7 +60,7 @@ export default function SocialPanel({
           onToggleOptOut={onToggleOptOut}
         />
       )}
-      {section === 'badges' && <AchievementsSection achievements={meta.achievements} />}
+      {section === 'badges' && <AchievementsSection achievements={meta.achievements} ctx={ctx} />}
     </div>
   );
 }
