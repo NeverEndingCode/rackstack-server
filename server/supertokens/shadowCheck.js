@@ -137,6 +137,36 @@ async function sqliteReader(path) {
   };
 }
 
+/**
+ * A human-readable description of exactly which database is being audited.
+ *
+ * The gate's documented failure mode - `GATE: NOT RUN` - is "usually the wrong
+ * database", and until now the report never said which one it read. An
+ * operator comparing a PASS against the box they meant to check had nothing to
+ * compare it to.
+ *
+ * The password is stripped. This string is printed to stdout, which operators
+ * `| tee gate.log`, paste into screenshots, and attach to tickets; a
+ * connection string carrying `rackstack_user:hunter2` would leak the database
+ * password into all three. Redacting via the URL parser rather than a regex
+ * means an odd password (one containing `@`, say) cannot slip through
+ * half-masked.
+ */
+export function describeDatabase(env = process.env) {
+  if (env.DATABASE_URL) {
+    try {
+      const url = new URL(env.DATABASE_URL);
+      if (url.password) url.password = '';
+      return `postgres  ${url.toString()}`;
+    } catch {
+      // Unparseable. Say so rather than echoing it back - it may well be
+      // unparseable *because* it contains something unexpected.
+      return 'postgres  (DATABASE_URL is set but could not be parsed)';
+    }
+  }
+  return `sqlite    ${resolveSqlitePath(env)}`;
+}
+
 export async function openReader(env = process.env) {
   return env.DATABASE_URL
     ? pgReader(env.DATABASE_URL)
@@ -144,6 +174,15 @@ export async function openReader(env = process.env) {
 }
 
 async function main() {
+  const source = describeDatabase();
+  // Printed before the audit as well as inside the report, so that a run which
+  // dies partway - a missing identities table, unreadable media - has still
+  // said which database it was pointed at. That is exactly the run where the
+  // operator most needs to know.
+  // The padding in `source` exists to align the report's columns; collapse it
+  // for the single-line log, where it just reads as a typo.
+  console.log(`[shadow] auditing ${source.trim().replace(/\s+/g, ' ')}`);
+
   const reader = await openReader();
   let summary;
   try {
@@ -153,7 +192,7 @@ async function main() {
     });
     summary = summarise(results);
     console.log('');
-    console.log(formatSummary(summary));
+    console.log(formatSummary(summary, { source }));
   } finally {
     await reader.close();
   }

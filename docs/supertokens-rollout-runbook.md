@@ -48,10 +48,10 @@ own code ran. Fixed and tested.
 Stated plainly, because a runbook that reads as though it has been rehearsed is
 worse than one that admits it has not:
 
-- **Shadow mode has never run against production identities.** The owner's
-  current Unraid export has not been supplied. Part C is tested — including
-  against a database deliberately seeded with a bad row — but only ever
-  against test data.
+- ~~Shadow mode has never run against production identities.~~ **DONE,
+  2026-08-08.** Run on the Unraid container after updating to v1.8.0: 6
+  identities compared, 6 matched, 0 mismatched, 0 orphaned, 100%,
+  `GATE: PASS`. **Cutover to `AUTH_MODE=dual` is cleared.**
 - **No cutover has happened.** `AUTH_MODE` has never been anything but
   `passport` on any real deployment.
 - **v1.7 has not been cut over on the Unraid box either.** The design gates
@@ -379,6 +379,7 @@ A clean run:
 [shadow] MATCH discord:536626725380161537 -> discord:536626725380161537
 
 === SuperTokens shadow-mode report ===
+database:             sqlite    /app/data/rackstack.db
 identities compared:  2
 matched:              2
 mismatched:           0

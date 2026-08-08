@@ -74,7 +74,7 @@ Three consequences worth internalising:
 | SuperTokens init, provider config, mounting | ✅ built, tested |
 | Identity mapping (`signInUp` override) | ✅ built, tested, mutation-verified |
 | Auth chain (SuperTokens → JWT → 401) | ✅ built, tested in all three modes |
-| Shadow-mode gate (`npm run shadow:check`) | ✅ built, tested, now genuinely read-only — **never run against production** |
+| Shadow-mode gate (`npm run shadow:check`) | ✅ built, tested, read-only — **run against production 2026-08-08: `GATE: PASS`, 6/6** |
 | `oAuthTokens` bypass fix | ✅ built, tested, mutation-verified |
 | SuperTokens core hardening (API key, port) | ✅ enforced at boot |
 | Whole-branch security & code review | ✅ run; all findings fixed |
@@ -86,17 +86,21 @@ The server side of the rollout is complete and has been through a three-reviewer
 audit whose findings are fixed. The **client side has not been started**, and
 that is what bounds how far the rollout can go — see Phase 5.
 
-## Phase 0 — Prerequisites (not yet met)
+## Phase 0 — Prerequisites
 
-1. **v1.7 running in production on Postgres.** Still outstanding; the Unraid
-   box has not been cut over. See
+1. **v1.7 running in production on Postgres.** Status unconfirmed — the Unraid
+   box may still be on SQLite. From v1.8.1 the shadow report names the database
+   it read, so `npm run shadow:check` now tells you which. Note the SuperTokens
+   core needs its own **Postgres** database in Phase 2 regardless of what
+   RackStack itself uses, so a Postgres instance is required either way. See
    [`postgres-migration-runbook.md`](./postgres-migration-runbook.md).
-2. **A current production export supplied**, for the shadow gate. The copy in
-   `~/Downloads` is a stale July v1.1-era file (users + saves only, 4 rows
-   each) and is not usable for this.
+2. ~~A current production export supplied, for the shadow gate.~~ **Moot —
+   satisfied a better way.** The gate was run directly on the Unraid container
+   on 2026-08-08 (`GATE: PASS`, 6/6), which audits the live database rather
+   than a copy of it. No export is needed.
 3. **A backup**, taken the same way as for the Postgres migration.
 
-**Gate:** all three, or nothing below happens.
+**Gate:** 1 and 3. Phase 3 has already passed.
 
 ## Phase 1 — Widen the OAuth redirect URLs
 
@@ -168,7 +172,12 @@ answered by reading library source:
 - does `user_id` equal `provider:provider_id` for every row actually stored?
 - does each row's `user_id` point at a user that **exists**?
 
-**Gate: `GATE: PASS` (exit 0).**
+**Gate: `GATE: PASS` (exit 0).** The report names the database it audited, so a
+PASS can be checked against the box you meant to audit (the Postgres password
+is stripped).
+
+> **Status: passed on 2026-08-08** against the Unraid deployment — 6 identities
+> compared, 6 matched, 0 mismatched, 0 orphaned, 100%. Phase 4 is cleared.
 
 | Result | Meaning |
 |---|---|
