@@ -27,10 +27,12 @@ export default function App() {
       // code has to happen BEFORE /api/me, because it is what creates the
       // session /api/me would otherwise report as absent.
       let callbackFailure = null;
+      let completedLoginFor = null;
       if (callbackProviderFromPath(window.location.pathname)) {
         const result = await completeSuperTokensLogin();
         if (cancelled) return;
-        if (!result.ok) callbackFailure = result;
+        if (result.ok) completedLoginFor = result.provider;
+        else callbackFailure = result;
 
         // Replace rather than push, and always: leaving a spent ?code= in the
         // URL means a reload re-POSTs an authorisation code the provider has
@@ -60,6 +62,20 @@ export default function App() {
       }
 
       if (cancelled) return;
+
+      // A sign-in that the server called OK, followed by a session that does
+      // not exist. There is nothing wrong on the login screen to look at, so
+      // without this the player just bounces back to it and the only evidence
+      // is in devtools. That is how v1.9.0's missing `st-auth-mode: cookie`
+      // header survived a release: signinup answered OK, no cookie was set,
+      // and the app looked like it had simply forgotten the click.
+      if (completedLoginFor && !authed) {
+        window.history.replaceState(
+          {}, '',
+          `/?authError=${encodeURIComponent(completedLoginFor)}&authReason=no_session`,
+        );
+      }
+
       if (authed) { setUser(authed); setStatus('authed'); } else setStatus('anon');
     })();
 

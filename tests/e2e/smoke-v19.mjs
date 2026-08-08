@@ -275,6 +275,7 @@ if (!playwright) {
     try {
       let authUrlCalls = 0;
       let signinupBody = null;
+      let signinupHeaders = null;
 
       // The provider, stubbed: send the browser straight back to our own
       // callback with a code, so nothing external is contacted.
@@ -302,6 +303,7 @@ if (!playwright) {
       // the app genuinely transitions to its authenticated view.
       await page.route('**/auth/signinup', async (route) => {
         signinupBody = JSON.parse(route.request().postData() || '{}');
+        signinupHeaders = route.request().headers();
         await context.addCookies([{
           name: COOKIE_NAME, value: cookieFor(user), url: BASE_URL, httpOnly: true,
         }]);
@@ -341,6 +343,14 @@ if (!playwright) {
       // Never oAuthTokens - the server refuses those (rejectRawOAuthTokens).
       assert(!signinupBody.oAuthTokens, 'the client must not submit raw oAuthTokens');
 
+      // Without this header SuperTokens returns the session in response
+      // headers instead of cookies, signinup still says OK, and the next
+      // /api/me is a 401. That is what v1.9.0 shipped.
+      assert(
+        signinupHeaders['st-auth-mode'] === 'cookie',
+        `signinup must ask for cookie transport, got ${signinupHeaders['st-auth-mode']}`,
+      );
+
       // The spent code must be replaced out of the URL: a reload that re-POSTs
       // a burned authorisation code fails and bounces the player to login.
       const url = new URL(page.url());
@@ -364,6 +374,35 @@ if (!playwright) {
       // There is no code to exchange; POSTing anyway turns a clear "you
       // cancelled" into an opaque server error.
       assert(!signinupCalled, 'signinup must not be called when the provider refused');
+    } finally { await context.close(); }
+  });
+
+  await check('a signin the server calls OK but that sets no session says so', async () => {
+    // The v1.9.0 failure mode, reproduced: signinup answers status OK and no
+    // session cookie is set. The player must be told, not silently returned to
+    // a login screen with nothing wrong on it - that is what made the missing
+    // st-auth-mode header survive a release and a production deploy.
+    const { context, page } = await newPage();
+    try {
+      await page.route('**/auth/authorisationurl*', (route) => route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          status: 'OK',
+          urlWithQueryParams: `${BASE_URL}/auth/callback/github?code=fake-code`,
+        }),
+      }));
+
+      // OK, but deliberately no cookie - exactly what header transport does.
+      await page.route('**/auth/signinup', (route) => route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ status: 'OK', user: { id: 'github:1' } }),
+      }));
+
+      await page.goto(`${BASE_URL}/`);
+      await page.locator('button', { hasText: 'Continue with GitHub' }).click();
+      await page.locator('text=/did not set a session/i').waitFor({ timeout: 15000 });
     } finally { await context.close(); }
   });
 

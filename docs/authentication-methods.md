@@ -233,6 +233,16 @@ serialised so a burst of concurrent 401s produces exactly one refresh call.
 `GET /api/auth-info` tells the client which stack to drive, so one build serves
 `passport` and `supertokens` alike and the rollback stays real.
 
+> **If you touch those calls, keep the `st-auth-mode: cookie` header.**
+> SuperTokens chooses the session's token transfer method at creation from that
+> header, and **defaults to `header` when it is absent** — the session comes
+> back in `st-access-token` response headers and no cookie is set. Every status
+> code stays 200: `signinup` reports OK, the client believes it, and the next
+> authenticated request is a 401. v1.9.0 shipped that and it survived a
+> production deploy, because nothing in the chain reports an error. It is the
+> one job `supertokens-web-js` does for you that hand-rolling silently
+> inherits, and it applies to any future recipe you add, not just ThirdParty.
+
 **What v1.9 also fixed, and why nothing here was ever exercised before.**
 `server/supertokens/init.js` passed its OAuth providers to `ThirdParty.init`
 as `signInUpFeature`. The SDK reads `signInAndUpFeature`. The key is optional
