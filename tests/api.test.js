@@ -523,6 +523,56 @@ describe('minigames', () => {
     expect(finishRes.body.state.meta.stats.minigamesWon).toBe(0);
     expect(finishRes.body.state.server.gameCooldowns.match).toBe(0);
   });
+
+  it('reports newBest only when the run actually beat the previous best', async () => {
+    const user = await makeUser();
+
+    const first = await request(app).post('/api/minigame/start')
+      .set('Cookie', cookieFor(user)).send({ game: 'rush' });
+    const a = await request(app).post('/api/minigame/finish')
+      .set('Cookie', cookieFor(user))
+      .send({ sessionId: first.body.sessionId, metric: 50 });
+    expect(a.status).toBe(200);
+    expect(a.body.newBest).toBe(true); // nothing to beat, so 50 is a record
+
+    // The win above set the 30s cooldown on rush, which would block a second
+    // start for the same game. Clear it directly via putSave - the same
+    // technique other tests in this file use to mutate saved state directly
+    // (e.g. backdating meta.coldStorage.trackStartedAt above) - rather than
+    // inventing a new bypass mechanism.
+    const clearedState = a.body.state;
+    clearedState.server.gameCooldowns.rush = 0;
+    await putSave(user.id, clearedState, Date.now());
+
+    const second = await request(app).post('/api/minigame/start')
+      .set('Cookie', cookieFor(user)).send({ game: 'rush' });
+    expect(second.status).toBe(200);
+    const b = await request(app).post('/api/minigame/finish')
+      .set('Cookie', cookieFor(user))
+      .send({ sessionId: second.body.sessionId, metric: 20 });
+    expect(b.status).toBe(200);
+    expect(b.body.newBest).toBe(false); // 20 does not beat the prior best of 50
+  });
+});
+
+describe('GET /api/minigame/bests', () => {
+  it('returns the best per game', async () => {
+    const user = await makeUser();
+    const startRes = await request(app).post('/api/minigame/start')
+      .set('Cookie', cookieFor(user)).send({ game: 'rush' });
+    await request(app).post('/api/minigame/finish')
+      .set('Cookie', cookieFor(user))
+      .send({ sessionId: startRes.body.sessionId, metric: 99 });
+
+    const res = await request(app).get('/api/minigame/bests').set('Cookie', cookieFor(user));
+    expect(res.status).toBe(200);
+    // rush: durationSec=10, maxTapsPerSec=15 -> bound is 150; 99 is under it.
+    expect(res.body.bests.rush).toBe(99);
+  });
+
+  it('requires auth', async () => {
+    expect((await request(app).get('/api/minigame/bests')).status).toBe(401);
+  });
 });
 
 describe('GET /api/me', () => {

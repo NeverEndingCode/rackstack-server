@@ -8,7 +8,7 @@ import {
 import {
   getUserById, getAllUsersWithSaves, getRoles, setRoles, setUsername,
   createMinigameSession, getMinigameSession, getOpenMinigameSession,
-  finishMinigameSession, putSave,
+  finishMinigameSession, getMinigameBests, putSave,
   listEvents, getEvent, getActiveEvent, putEvent, setEventStatus, deleteEvent,
   listParticipation, listLeaderboard, setLeaderboardOptOut,
   getToursCompleted, setToursCompleted,
@@ -352,7 +352,9 @@ router.post('/api/minigame/finish', requireAuth, async (req, res, next) => {
     // Without the lock a concurrent GET /api/state would load the same state,
     // then overwrite it after this handler's putSave, erasing the wafer credit
     // and the cooldown stamp while this request still returned 200 with them.
-    const { state, wafers, onCooldown } = await withUserLock(req.user.sub, async () => {
+    const {
+      state, wafers, onCooldown, newBest,
+    } = await withUserLock(req.user.sub, async () => {
       const { state: loaded } = await loadEvaluateAndSchedule(req.user.sub, now);
 
       // Re-check the cooldown against the freshly-evaluated state, not just at
@@ -372,15 +374,35 @@ router.post('/api/minigame/finish', requireAuth, async (req, res, next) => {
       }
 
       await putSave(req.user.sub, loaded, now);
+
+      // Read before finishing: once finishMinigameSession has written this
+      // score, MAX() would include it and every run would look like a record.
+      const priorRows = await getMinigameBests(req.user.sub);
+      const prior = priorRows.find((r) => r.game === session.game);
+      const isNewBest = clamped > (prior ? prior.best : 0);
+
       await finishMinigameSession(sessionId, clamped);
 
-      return { state: loaded, wafers: earned, onCooldown: cooling };
+      return {
+        state: loaded, wafers: earned, onCooldown: cooling, newBest: isNewBest,
+      };
     });
 
     if (onCooldown) {
       return res.status(429).json({ error: 'cooldown_active' });
     }
-    res.json({ state, wafers });
+    res.json({ state, wafers, newBest });
+  } catch (e) { next(e); }
+});
+
+// GET /api/minigame/bests -> { bests: { <game>: number } }
+// Derived from minigame_sessions, so it reflects every score already played.
+router.get('/api/minigame/bests', requireAuth, async (req, res, next) => {
+  try {
+    const rows = await getMinigameBests(req.user.sub);
+    const bests = {};
+    for (const r of rows) bests[r.game] = r.best;
+    res.json({ bests });
   } catch (e) { next(e); }
 });
 
