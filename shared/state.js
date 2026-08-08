@@ -32,7 +32,7 @@ export function initialState() {
         migrates: 0, minigamesWon: 0, singularities: 0, totalWafersEarned: 0, lifetimeFlopsAllTime: 0,
         blocksClaimedLifetime: 0, jobsCompletedLifetime: 0, deepJobsCompletedLifetime: 0,
         tapesEarnedLifetime: 0,
-        contractsCompletedLifetime: 0, bestStreak: 0, eventTopRungs: 0,
+        contractsCompletedLifetime: 0, bestStreak: 0, eventTopRungs: 0, bestLegacyCores: 0,
       },
       // v1.5 Social: the day's three contract TYPE IDS are deliberately not
       // stored - they're re-derived from `dateKey` by shared/contracts.js's
@@ -182,6 +182,7 @@ export function migrateSave(raw) {
 export function evaluate(state, config, lastEvaluatedAt, now) {
   const s = structuredClone(state);
   const elapsedSec = Math.max(0, (now - lastEvaluatedAt) / 1000);
+  recordLegacyCorePeak(s.meta);
   if (elapsedSec < 1) return { state: s, gained: 0 };
 
   // The overheat flag is a one-shot signal for the client toast: truthy only
@@ -324,4 +325,23 @@ export function evaluate(state, config, lastEvaluatedAt, now) {
   }
 
   return { state: s, gained };
+}
+
+/**
+ * Raises meta.stats.bestLegacyCores to the current legacyCores if it is
+ * higher. Called from two places, and both are required:
+ *
+ *  - evaluate(), which makes the stat self-backfilling: an existing save with
+ *    no bestLegacyCores is seeded from its current cores on the first
+ *    reconcile, so there is no migration.
+ *  - singularity(), immediately before it zeroes legacyCores. POST
+ *    /api/actions applies a BATCH with no evaluation between actions, so a
+ *    Migrate that grants cores followed by a Singularity that spends them
+ *    would otherwise destroy the peak before anything observed it.
+ */
+export function recordLegacyCorePeak(meta) {
+  if (!meta || !meta.stats) return;
+  const current = typeof meta.legacyCores === 'number' ? meta.legacyCores : 0;
+  const best = typeof meta.stats.bestLegacyCores === 'number' ? meta.stats.bestLegacyCores : 0;
+  meta.stats.bestLegacyCores = Math.max(best, current);
 }

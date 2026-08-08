@@ -348,6 +348,20 @@ export async function createSqliteDriver({ path: dbPath }) {
     },
 
     /**
+     * Best finished score per game for one player. Derived from the session
+     * rows rather than stored on the save, so it is already populated with
+     * every score the player has ever set.
+     */
+    async getMinigameBests(userId) {
+      return db.prepare(`
+        SELECT game, MAX(score) AS best
+        FROM minigame_sessions
+        WHERE user_id = ? AND finished_at IS NOT NULL AND score IS NOT NULL
+        GROUP BY game
+      `).all(userId);
+    },
+
+    /**
      * Returns the singleton config row (id=1): { id, version, data, updated_at,
      * updated_by }, or undefined if no config has been seeded yet. `data` is
      * returned as the raw JSON text exactly as stored - mirroring getSave's

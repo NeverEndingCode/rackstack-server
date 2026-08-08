@@ -179,10 +179,19 @@ export function startMinigame(game) {
   return postJSON('/api/minigame/start', { game });
 }
 
-// POST /api/minigame/finish { sessionId, metric } -> { state, wafers }
+// POST /api/minigame/finish { sessionId, metric } -> { state, wafers, newBest }
+//   newBest: true iff this run's (clamped) score beat every prior finished
+//   score for this game, per GET /api/minigame/bests - false on ties.
 //   | 410 { error: 'gone' } | 404 { error: 'not_found' } | 429 { error: 'cooldown_active' }
 export function finishMinigame(sessionId, metric) {
   return postJSON('/api/minigame/finish', { sessionId, metric });
+}
+
+// GET /api/minigame/bests -> { bests: { <game>: number } }
+// Derived server-side from finished sessions, so it is populated with scores
+// the player set before this feature existed - no backfill was needed.
+export function fetchMinigameBests() {
+  return request('/api/minigame/bests');
 }
 
 // PUT /api/me/username { username } -> { ok, username }

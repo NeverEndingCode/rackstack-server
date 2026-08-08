@@ -16,7 +16,7 @@ export const {
   upsertUser, getUserById, getAllUsersWithSaves, getSave, putSave, deleteSave,
   getRoles, setRoles, getToursCompleted, setToursCompleted, setUsername,
   dedupeUsernames, createMinigameSession, getMinigameSession,
-  getOpenMinigameSession, finishMinigameSession, getConfigRow, putConfigRow,
+  getOpenMinigameSession, finishMinigameSession, getMinigameBests, getConfigRow, putConfigRow,
   getConfigHistory, listEvents, getEvent, getActiveEvent, putEvent,
   setEventStatus, deleteEvent, upsertParticipation, getParticipation,
   updateParticipationProgress, listParticipation, setLeaderboardOptOut,

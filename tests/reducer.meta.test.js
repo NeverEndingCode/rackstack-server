@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { DEFAULT_CONFIG } from '../shared/configSchema.js';
-import { initialState } from '../shared/state.js';
+import { initialState, evaluate, recordLegacyCorePeak } from '../shared/state.js';
 import { applyAction, scheduleAnomaly } from '../shared/reducer.js';
 
 const NOW = 1_000_000;
@@ -263,6 +263,61 @@ describe('reducer: hardReset', () => {
     expect(s2.meta.wafers).toBe(0);
     expect(s2.server.nextAnomalyAt).toBeGreaterThan(NOW);
     expect(s2.server.anomalyExpiresAt).toBeGreaterThan(s2.server.nextAnomalyAt);
+  });
+});
+
+describe('bestLegacyCores', () => {
+  it('rises with legacyCores and never falls', () => {
+    const s = initialState();
+    s.meta.legacyCores = 40;
+    recordLegacyCorePeak(s.meta);
+    expect(s.meta.stats.bestLegacyCores).toBe(40);
+
+    s.meta.legacyCores = 10;
+    recordLegacyCorePeak(s.meta);
+    expect(s.meta.stats.bestLegacyCores).toBe(40);
+  });
+
+  it('backfills a pre-v1.10 save that has no bestLegacyCores', () => {
+    const s = initialState();
+    delete s.meta.stats.bestLegacyCores;
+    s.meta.legacyCores = 77;
+    recordLegacyCorePeak(s.meta);
+    expect(s.meta.stats.bestLegacyCores).toBe(77);
+  });
+
+  it('is updated by evaluate(), including on a save that never had the stat', () => {
+    const s = initialState();
+    delete s.meta.stats.bestLegacyCores;
+    s.meta.legacyCores = 55;
+    const out = evaluate(s, DEFAULT_CONFIG, Date.now() - 5000, Date.now());
+    expect(out.state.meta.stats.bestLegacyCores).toBe(55);
+  });
+
+  it('survives a Singularity that zeroes legacyCores', () => {
+    const s = initialState();
+    s.meta.legacyCores = 100;
+    const out = applyAction(s, { type: 'singularity' }, DEFAULT_CONFIG, NOW);
+    expect(out.state.meta.legacyCores).toBe(0);
+    expect(out.state.meta.stats.bestLegacyCores).toBe(100);
+  });
+
+  it('survives Migrate then Singularity applied in ONE batch, with no evaluate between', () => {
+    // The test that fails if the singularity() call site is ever removed as
+    // "redundant with evaluate()". /api/actions applies batches.
+    //
+    // migrateGain = floor(sqrt(lifetimeRun / 1e6) * legacyGainMult), so 1e8
+    // grants 10 cores at the default multiplier - comfortably above the
+    // `shardsGained > 0` floor singularity() requires.
+    let s = initialState();
+    s.run.lifetimeRun = 1e8;
+    s = applyAction(s, { type: 'migrate' }, DEFAULT_CONFIG, NOW).state;
+    const granted = s.meta.legacyCores;
+    expect(granted).toBe(10);
+
+    s = applyAction(s, { type: 'singularity' }, DEFAULT_CONFIG, NOW).state;
+    expect(s.meta.legacyCores).toBe(0);
+    expect(s.meta.stats.bestLegacyCores).toBe(10);
   });
 });
 

@@ -3,9 +3,20 @@ import { DEFAULT_CONFIG } from '../shared/configSchema.js';
 import { initialState } from '../shared/state.js';
 import {
   ACHIEVEMENT_DEFS, achievementDef, checkAchievements, topBadges,
+  isAchievementMet, achievementProgress,
 } from '../shared/achievements.js';
+import { goalCtx } from '../shared/goals.js';
 
 const NOW = 1_000_000;
+
+// The same ctx object checkAchievements builds, with one lifetime stat set -
+// built through goalCtx rather than hand-rolled, so a progress function that
+// starts reading a field outside meta.stats keeps working here.
+function ctxWithStat(key, value) {
+  const s = initialState();
+  s.meta.stats[key] = value;
+  return goalCtx(s, DEFAULT_CONFIG, NOW);
+}
 
 describe('ACHIEVEMENT_DEFS', () => {
   it('has unique ids, a valid tier, and a complete shape', () => {
@@ -18,7 +29,9 @@ describe('ACHIEVEMENT_DEFS', () => {
       expect(typeof d.desc).toBe('string');
       expect(typeof d.icon).toBe('string'); // lucide icon NAME, not a component
       expect(['bronze', 'silver', 'gold']).toContain(d.tier);
-      expect(typeof d.condition).toBe('function');
+      // Exactly one of the two forms - see the scalar/boolean test below.
+      const scalar = typeof d.progress === 'function' && typeof d.target === 'number';
+      expect(scalar || typeof d.condition === 'function').toBe(true);
     }
   });
   it('carries no reward field of any kind - achievements are pure prestige', () => {
@@ -96,6 +109,45 @@ describe('checkAchievements', () => {
     delete s.meta.coldStorage; // would throw inside the jackpot/tape conditions
     expect(() => checkAchievements(s, DEFAULT_CONFIG, NOW)).not.toThrow();
     expect(s.meta.achievements.jackpot).toBeUndefined();
+  });
+});
+
+describe('achievement progress', () => {
+  it('every def is either scalar or explicitly boolean, never both and never neither', () => {
+    for (const def of ACHIEVEMENT_DEFS) {
+      const scalar = typeof def.progress === 'function' && typeof def.target === 'number';
+      const boolean = typeof def.condition === 'function';
+      expect(scalar !== boolean, `${def.id} must be exactly one of scalar or boolean`).toBe(true);
+    }
+  });
+
+  it('a scalar achievement unlocks exactly at its target, not before', () => {
+    // The migration safety net: proves the rewrite moved no thresholds.
+    const def = ACHIEVEMENT_DEFS.find((d) => d.id === 'ten_migrates');
+    const below = ctxWithStat('migrates', 9);
+    const at = ctxWithStat('migrates', 10);
+    expect(isAchievementMet(def, below)).toBe(false);
+    expect(isAchievementMet(def, at)).toBe(true);
+  });
+
+  it('reports progress for a scalar achievement and null for a boolean one', () => {
+    const scalar = ACHIEVEMENT_DEFS.find((d) => d.id === 'ten_migrates');
+    expect(achievementProgress(scalar, ctxWithStat('migrates', 3))).toEqual({ current: 3, target: 10 });
+
+    const boolean = ACHIEVEMENT_DEFS.find((d) => d.id === 'jackpot');
+    expect(achievementProgress(boolean, ctxWithStat('migrates', 3))).toBeNull();
+  });
+
+  it('every scalar def reports a finite current and a positive target on a fresh save', () => {
+    // Guards the bar's arithmetic: a NaN current or a zero target renders as a
+    // NaN% width, which React writes to the DOM without complaint.
+    const ctx = ctxWithStat('migrates', 0);
+    for (const def of ACHIEVEMENT_DEFS) {
+      const p = achievementProgress(def, ctx);
+      if (p === null) continue;
+      expect(Number.isFinite(p.current), `${def.id} current`).toBe(true);
+      expect(p.target, `${def.id} target`).toBeGreaterThan(0);
+    }
   });
 });
 

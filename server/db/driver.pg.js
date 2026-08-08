@@ -417,6 +417,22 @@ export async function createPgDriver({ url }) {
     },
 
     /**
+     * Best finished score per game for one player. Derived from the session
+     * rows rather than stored on the save, so it is already populated with
+     * every score the player has ever set.
+     */
+    async getMinigameBests(userId) {
+      // MAX() returns numeric; coerce so both drivers return JS numbers.
+      const rows = await all(`
+        SELECT game, MAX(score) AS best
+        FROM minigame_sessions
+        WHERE user_id = $1 AND finished_at IS NOT NULL AND score IS NOT NULL
+        GROUP BY game
+      `, [userId]);
+      return rows.map((r) => ({ game: r.game, best: Number(r.best) }));
+    },
+
+    /**
      * Returns the singleton config row (id=1): { id, version, data, updated_at,
      * updated_by }, or undefined if no config has been seeded yet. `data` is
      * returned as the raw JSON text exactly as stored - mirroring getSave's

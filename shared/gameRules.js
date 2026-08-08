@@ -69,9 +69,22 @@ export function computeEffects(meta, config) {
   };
 }
 
+/**
+ * The milestone thresholds with the `infiniteloop` discount applied.
+ *
+ * Extracted from computeMults so the reducer can reach the same numbers
+ * without computing a full multiplier bundle it does not need. There must be
+ * exactly one expression of this: a second copy and the buy target would drift
+ * from the multiplier the player actually earns.
+ */
+export function milestoneThresholds(meta, config) {
+  const eff = computeEffects(meta, config);
+  return MILESTONES.map((t) => Math.max(1, Math.round(t * eff.milestoneDiscount)));
+}
+
 export function computeMults(meta, config, boostMult = 1) {
   const eff = computeEffects(meta, config);
-  const thresholds = MILESTONES.map((t) => Math.max(1, Math.round(t * eff.milestoneDiscount)));
+  const thresholds = milestoneThresholds(meta, config);
   const base = (1 + (meta.legacyCores || 0) * 0.05) * eff.firmwareMult * eff.engineMult
     * eff.levelBonusMult * boostMult * config.production.globalMult;
   // coldFusionMult folded in here (not applied ad-hoc by each caller) so

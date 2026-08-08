@@ -26,14 +26,19 @@ afterAll(async () => {
 });
 
 let seq = 0;
-async function seedPlayer({
-  flops = 0, level = 0, cores = 0, singularities = 0, tapes = 0, achievements = {},
-} = {}) {
+async function makeUser() {
   seq += 1;
   const u = await upsertUser({
     provider: 'discord', providerId: `lb${seq}`, username: `lbuser${seq}`,
     avatarUrl: `https://x/${seq}.png`,
   });
+  return u;
+}
+
+async function seedPlayer({
+  flops = 0, level = 0, cores = 0, singularities = 0, tapes = 0, achievements = {},
+} = {}) {
+  const u = await makeUser();
   const s = initialState();
   s.meta.stats.lifetimeFlopsAllTime = flops;
   s.meta.level = level;
@@ -155,5 +160,28 @@ describe('GET /api/leaderboard', () => {
     const res = await request(app).get('/api/leaderboard').set('Cookie', cookieFor(u));
     expect(res.status).toBe(200);
     expect(res.body.boards.allTimeFlops.map((r) => r.username)).not.toContain('nosave');
+  });
+
+  it('keeps a player on the legacyCores board after a Singularity zeroes them', async () => {
+    const user = await makeUser();
+    const s = initialState();
+    s.meta.legacyCores = 0;              // spent in a Singularity
+    s.meta.stats.bestLegacyCores = 250;  // but they earned 250
+    await putSave(user.id, s, Date.now());
+    invalidateLeaderboards();
+
+    const res = await request(app).get('/api/leaderboard').set('Cookie', cookieFor(user));
+    const row = res.body.boards.legacyCores.find((r) => r.userId === user.id);
+    expect(row).toBeDefined();
+    expect(row.value).toBe(250);
+  });
+
+  it('still hides an account that has never earned a core', async () => {
+    const user = await makeUser();
+    await putSave(user.id, initialState(), Date.now());
+    invalidateLeaderboards();
+
+    const res = await request(app).get('/api/leaderboard').set('Cookie', cookieFor(user));
+    expect(res.body.boards.legacyCores.find((r) => r.userId === user.id)).toBeUndefined();
   });
 });

@@ -1,5 +1,59 @@
 # Changelog
 
+## v1.10.0
+
+- **Triggering a Singularity deleted you from the Legacy Cores leaderboard.**
+  The board read `meta.legacyCores` — the cores you are holding *right now* —
+  and then dropped every row whose value was zero. A Singularity spends every
+  core you have. So the moment a player performed the most demanding action in
+  the game, the board stopped listing them entirely, and the only way to appear
+  on it was to have never used what it was measuring.
+
+  The board now reads a new lifetime stat, `meta.stats.bestLegacyCores`, and is
+  labelled **Legacy Cores (best)**. The zero-filter is untouched and is now
+  simply correct rather than special-cased: a player who reset has a non-zero
+  best, an account that never played does not.
+
+  There is no migration and nothing to backfill. The stat is maintained by one
+  helper called from `evaluate()`, so an existing save seeds itself from its
+  current cores the first time the server reconciles it — and from
+  `singularity()` too, immediately before it zeroes the value, because
+  `POST /api/actions` applies a whole batch with no evaluation in between and a
+  Migrate-then-Singularity batch would otherwise destroy the peak before
+  anything observed it.
+
+- **A buy-to-next-milestone button on Racks, Grid and Overclock.** Every 25,
+  50, 100, 200, 500 and 1000 units doubles that lane's output, and reaching the
+  next one previously meant arithmetic and repeated Buy 10s. The new button
+  buys exactly the remainder — no more, no less.
+
+  The **server** computes the target, not the client. The `infiniteloop` shard
+  upgrade discounts those thresholds, so a client working from a stale config
+  would ask for the wrong number; the button sends `mode: 'milestone'` and the
+  reducer resolves it against the same discounted thresholds that decide the
+  multiplier you actually earn. The cost on the label is display only. A jump
+  you cannot afford is refused whole — there is no partial buy — and a lane
+  past its final threshold reports the new `no_milestone` rather than
+  pretending it could not afford one.
+
+- **Minigame personal bests.** Each card in the Games tab shows your best score
+  for that game, and finishing a run that beats it says so. Derived server-side
+  from the `minigame_sessions` rows that already existed, so every score you
+  set before this shipped is already there — again, no migration.
+
+- **Progress bars on locked badges.** A badge you have not earned now shows how
+  far along you are. The bar and the unlock read the same number: an
+  achievement now declares `progress` and `target` instead of a hand-written
+  boolean, and the unlock is derived from them, so the two cannot drift apart.
+  The two achievements that are genuinely yes/no (Jackpot, Showed Up) stay
+  boolean and show no bar. No threshold moved.
+
+- **The Upgrades and Singularity panels read live config maximums.** Both took
+  an upgrade's ceiling from the static definition, so an admin raising a max
+  level never reached them — a purchasable upgrade could read as maxed out.
+  They now read `config.upgrades.maxLevels`, as the Cold Storage panel already
+  did.
+
 ## v1.9.1
 
 - **The SuperTokens login button signed you in and then left you logged out.**

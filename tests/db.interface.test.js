@@ -16,7 +16,8 @@ const INTERFACE = [
   'upsertUser', 'getUserById', 'getAllUsersWithSaves', 'getSave', 'putSave',
   'deleteSave', 'getRoles', 'setRoles', 'getToursCompleted', 'setToursCompleted',
   'setUsername', 'dedupeUsernames', 'createMinigameSession', 'getMinigameSession',
-  'getOpenMinigameSession', 'finishMinigameSession', 'getConfigRow', 'putConfigRow',
+  'getOpenMinigameSession', 'finishMinigameSession', 'getMinigameBests',
+  'getConfigRow', 'putConfigRow',
   'getConfigHistory', 'listEvents', 'getEvent', 'getActiveEvent', 'putEvent',
   'setEventStatus', 'deleteEvent', 'upsertParticipation', 'getParticipation',
   'updateParticipationProgress', 'listParticipation', 'setLeaderboardOptOut',
@@ -37,5 +38,34 @@ describe('db facade', () => {
     const result = mod.getUserById('nobody');
     expect(typeof result.then).toBe('function');
     await result;
+  });
+});
+
+describe('getMinigameBests', () => {
+  it('returns the maximum finished score per game, ignoring unfinished sessions', async () => {
+    const {
+      upsertUser, createMinigameSession, finishMinigameSession, getMinigameBests,
+    } = await import('../server/db/index.js');
+
+    const user = await upsertUser({ provider: 'github', providerId: 'bests-1', username: 'bests', avatarUrl: null });
+    const s1 = await createMinigameSession(user.id, 'rush');
+    await finishMinigameSession(s1.id, 40);
+    const s2 = await createMinigameSession(user.id, 'rush');
+    await finishMinigameSession(s2.id, 120);
+    await createMinigameSession(user.id, 'rush'); // never finished
+    const s4 = await createMinigameSession(user.id, 'debug');
+    await finishMinigameSession(s4.id, 7);
+
+    const rows = await getMinigameBests(user.id);
+    const byGame = Object.fromEntries(rows.map((r) => [r.game, r.best]));
+    expect(byGame.rush).toBe(120);
+    expect(byGame.debug).toBe(7);
+  });
+
+  it('returns an empty list for a player who has never played', async () => {
+    const { upsertUser, getMinigameBests } = await import('../server/db/index.js');
+
+    const user = await upsertUser({ provider: 'github', providerId: 'bests-2', username: 'bests2', avatarUrl: null });
+    expect(await getMinigameBests(user.id)).toEqual([]);
   });
 });

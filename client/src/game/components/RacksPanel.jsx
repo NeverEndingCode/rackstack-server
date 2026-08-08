@@ -88,6 +88,24 @@ export default function RacksPanel({ run, unlockedUpTo, racksMult, thresholds, e
                 Max{maxN >= 1 ? ` +${maxN}` : ''}
               </button>
             </div>
+            {(() => {
+              const next = nextMilestone(ts.owned, thresholds);
+              if (next === null) return null;          // past the last milestone
+              const n = next - ts.owned;
+              const costN = costForN(def, ts.owned, n);
+              const affordable = run.credits >= costN;
+              return (
+                <button
+                  onClick={() => onBuy(i, 'milestone')}
+                  disabled={!affordable}
+                  title={`Reach ${next} for a 2x output multiplier on this lane`}
+                  className="rounded-lg py-2 text-xs font-mono w-full mt-2"
+                  style={buyBtnStyle(affordable)}
+                >
+                  {`→ ${next}: ${n} for ${fmt(costN)}`}
+                </button>
+              );
+            })()}
           </div>
         );
       })}
