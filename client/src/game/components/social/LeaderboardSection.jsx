@@ -9,7 +9,7 @@ import { achievementIcon, TIER_COLOR } from '../../data/achievementIcons.js';
 const BOARDS = [
   { key: 'allTimeFlops', label: 'FLOPS', format: (v) => `${fmt(v)} all-time` },
   { key: 'level', label: 'Level', format: (v) => `lv ${v}` },
-  { key: 'legacyCores', label: 'Cores', format: (v) => `${fmt(v)} cores` },
+  { key: 'legacyCores', label: 'Legacy Cores (best)', format: (v) => `${fmt(v)} cores` },
   { key: 'singularities', label: 'Singularities', format: (v) => `${fmt(v)}x` },
   { key: 'tapes', label: 'Tapes', format: (v) => `${fmt(v)} tapes` },
   { key: 'latestEventRung', label: 'Last event', format: (v) => `${v} rungs` },

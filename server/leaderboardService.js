@@ -23,7 +23,13 @@ export function invalidateLeaderboards() {
 const BOARDS = [
   ['allTimeFlops', (meta) => (meta.stats && meta.stats.lifetimeFlopsAllTime) || 0],
   ['level', (meta) => meta.level || 0],
-  ['legacyCores', (meta) => meta.legacyCores || 0],
+  // Peak rather than current: singularity() zeroes meta.legacyCores, and the
+  // `.value > 0` filter below would then drop the player from the board
+  // entirely - so the game's most demanding action read as being erased.
+  // Reading the peak makes that filter correct rather than special-cased: a
+  // player who reset has a non-zero best, an account that never played does
+  // not.
+  ['legacyCores', (meta) => (meta.stats && meta.stats.bestLegacyCores) || 0],
   ['singularities', (meta) => (meta.stats && meta.stats.singularities) || 0],
   ['tapes', (meta) => (meta.coldStorage && meta.coldStorage.tapes) || 0],
 ];
