@@ -202,6 +202,80 @@ describe('the offline audit (the gate itself)', () => {
   });
 });
 
+describe('the report names the database it audited', () => {
+  it('shows the SQLite path', async () => {
+    const { describeDatabase } = await import('../server/supertokens/shadowCheck.js');
+    const described = describeDatabase({ DB_PATH: '/app/data/rackstack.db' });
+    expect(described).toContain('sqlite');
+    expect(described).toContain('/app/data/rackstack.db');
+  });
+
+  it('shows the Postgres host and database, WITHOUT the password', async () => {
+    // This string is teed to files, screenshotted and pasted into tickets, so
+    // echoing the connection string verbatim would leak the database password
+    // into all three.
+    const { describeDatabase } = await import('../server/supertokens/shadowCheck.js');
+    const described = describeDatabase({
+      DATABASE_URL: 'postgresql://rackstack_user:hunter2@192.168.1.10:5432/rackstack',
+    });
+
+    expect(described).not.toContain('hunter2');
+    expect(described).toContain('rackstack_user');
+    expect(described).toContain('192.168.1.10:5432');
+    expect(described).toContain('/rackstack');
+  });
+
+  it('does not half-mask a password containing an @', async () => {
+    // Redaction goes through the URL parser rather than a regex precisely so
+    // an awkward password cannot survive in part.
+    const { describeDatabase } = await import('../server/supertokens/shadowCheck.js');
+    const described = describeDatabase({
+      DATABASE_URL: 'postgresql://u:p%40ss%40word@db.example.com:5432/rackstack',
+    });
+    expect(described).not.toContain('ss@word');
+    expect(described).not.toContain('p%40ss');
+    expect(described).toContain('db.example.com:5432');
+  });
+
+  it('says so rather than echoing an unparseable DATABASE_URL', async () => {
+    const { describeDatabase } = await import('../server/supertokens/shadowCheck.js');
+    const described = describeDatabase({ DATABASE_URL: 'not a url at all' });
+    expect(described).toContain('could not be parsed');
+    expect(described).not.toContain('not a url at all');
+  });
+
+  it('prefers DATABASE_URL over DB_PATH, matching openReader', async () => {
+    // The description must describe what was actually READ. If these two ever
+    // disagreed, the report would confidently name the wrong database - worse
+    // than naming none.
+    const { describeDatabase } = await import('../server/supertokens/shadowCheck.js');
+    const described = describeDatabase({
+      DATABASE_URL: 'postgresql://u@h:5432/rackstack',
+      DB_PATH: '/app/data/rackstack.db',
+    });
+    expect(described).toContain('postgres');
+    expect(described).not.toContain('/app/data/rackstack.db');
+  });
+
+  it('puts the database inside the report block, not only in the log above it', () => {
+    const report = formatSummary(
+      summarise([{ outcome: SHADOW_MATCH, thirdPartyId: 'github', thirdPartyUserId: '1', expectedUserId: 'github:1', actualUserId: 'github:1' }]),
+      { source: 'sqlite    /app/data/rackstack.db' },
+    );
+    expect(report).toContain('database:');
+    expect(report).toContain('/app/data/rackstack.db');
+    // A PASS with no database named is the thing this exists to prevent.
+    expect(report.indexOf('/app/data/rackstack.db')).toBeLessThan(report.indexOf('GATE:'));
+  });
+
+  it('omits the line entirely when no source is supplied', () => {
+    // formatSummary is also called from the live per-login path, which has no
+    // single database to name.
+    const report = formatSummary(summarise([]));
+    expect(report).not.toContain('database:');
+  });
+});
+
 describe('the gate arithmetic', () => {
   const match = { outcome: SHADOW_MATCH, thirdPartyId: 'github', thirdPartyUserId: '1', expectedUserId: 'github:1', actualUserId: 'github:1' };
   const mismatch = { outcome: SHADOW_MISMATCH, thirdPartyId: 'github', thirdPartyUserId: '2', expectedUserId: 'github:2', actualUserId: 'github:other' };

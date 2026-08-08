@@ -1,5 +1,24 @@
 # Changelog
 
+## v1.8.1
+
+- **`npm run shadow:check` now names the database it audited**, both as a log
+  line before the run and inside the report block itself. The gate's own
+  guidance says a `NOT RUN` result is usually the wrong database — but the
+  report never said which one it read, so a `PASS` could not be checked against
+  the box you meant to audit.
+
+  The Postgres password is stripped from the printed connection string. This
+  output gets `tee`'d to files, screenshotted and pasted into tickets, and
+  redaction goes through the URL parser rather than a regex so an awkward
+  password cannot survive half-masked.
+
+- **The shadow gate has now been run against production** (2026-08-08, on the
+  Unraid deployment): 6 identities compared, 6 matched, 0 mismatched, 0
+  orphaned, 100%, `GATE: PASS`. That settles the one assumption v1.8 could not
+  verify from source — cutover to `AUTH_MODE=dual` is cleared. The v1.8.0 notes
+  below, which say it had not been run, were accurate at that release.
+
 ## v1.8.0
 
 SuperTokens as an alternative login stack, behind a switch that is off by

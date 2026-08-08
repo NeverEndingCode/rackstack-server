@@ -182,9 +182,15 @@ function pickPair(r) {
  * inferred from a percentage is a gate people talk themselves past at the end
  * of a long maintenance window.
  */
-export function formatSummary(summary) {
+export function formatSummary(summary, { source } = {}) {
   const lines = [
     '=== SuperTokens shadow-mode report ===',
+    // Inside the report block on purpose, not just logged above it: this is
+    // the part operators tee to a file, screenshot and paste into tickets, and
+    // a PASS is only meaningful if you can see which database produced it.
+    // The gate's own NOT-RUN guidance says the usual cause is the wrong
+    // database - so the report has to name it.
+    ...(source ? [`database:             ${source}`] : []),
     `identities compared:  ${summary.comparable}`,
     `matched:              ${summary.matched}`,
     `mismatched:           ${summary.mismatched}`,
