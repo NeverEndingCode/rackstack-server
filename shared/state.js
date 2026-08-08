@@ -182,6 +182,7 @@ export function migrateSave(raw) {
 export function evaluate(state, config, lastEvaluatedAt, now) {
   const s = structuredClone(state);
   const elapsedSec = Math.max(0, (now - lastEvaluatedAt) / 1000);
+  recordLegacyCorePeak(s.meta);
   if (elapsedSec < 1) return { state: s, gained: 0 };
 
   // The overheat flag is a one-shot signal for the client toast: truthy only
@@ -322,8 +323,6 @@ export function evaluate(state, config, lastEvaluatedAt, now) {
   if (s.server.boost && now >= s.server.boost.until) {
     s.server.boost = null;
   }
-
-  recordLegacyCorePeak(s.meta);
 
   return { state: s, gained };
 }
