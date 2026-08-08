@@ -37,6 +37,7 @@
 import { isSuperTokensEnabled } from '../authMode.js';
 import { buildProviders, resolvePublicOrigin } from './providers.js';
 import { buildSignInUpOverride } from './mapping.js';
+import { probeAuthedEndpoint, isRefused } from './coreProbe.js';
 
 // SuperTokens' own default API base path. It is also why the runbook widens
 // the GitHub OAuth registration to /auth: SuperTokens serves its callbacks at
@@ -135,26 +136,25 @@ export function isLoopback(uri) {
 /**
  * Confirms the core actually refuses unauthenticated callers.
  *
- * Probes an endpoint that requires an API key when one is configured. A 401
- * means the core is closed and all is well; a 200 means it answered a caller
- * holding no key at all, which is the state where anyone who can reach it can
- * mint a session for any user id.
+ * Throws ONLY on a confirmed-open core - an endpoint we know exists answering
+ * an unkeyed request with 200. Every other outcome warns and lets the boot
+ * proceed, because this guard sits on the startup path and a wrong answer here
+ * does not print a scary line, it stops the container.
  *
- * `/hello` is deliberately NOT used - it answers unauthenticated by design as
- * a health check, so probing it would prove nothing.
+ * That distinction was missing in v1.8.2: this probed a single hardcoded path
+ * that core 12 does not implement, and treated the resulting 404 as proof the
+ * core was open - so setting AUTH_MODE=dual against a perfectly well-secured
+ * core would have refused to start, blaming the operator for a URL this code
+ * got wrong. The probe now lives in ./coreProbe.js and is shared with the
+ * preflight, so the two cannot drift again.
  */
 export async function assertCoreRejectsAnonymous({ connectionURI, hasKey, fetchImpl = fetch }) {
-  const url = `${connectionURI.replace(/\/$/, '')}/recipe/users/count`;
-  let response;
+  let probe;
   try {
-    response = await fetchImpl(url, {
-      method: 'GET',
-      headers: { 'api-version': '3.0' },
-      signal: AbortSignal.timeout(5000),
-    });
+    probe = await probeAuthedEndpoint({ connectionURI, fetchImpl });
   } catch (e) {
     // Unreachable, DNS failure, timeout. Cannot establish anything; the core
-    // may simply still be starting. Warn rather than refuse - see the caller.
+    // may simply still be starting. Warn rather than refuse.
     console.warn(
       `[auth] could not verify that the SuperTokens core at ${connectionURI} requires `
       + `authentication (${e.message}). If it is running without API_KEYS, anyone who can `
@@ -163,16 +163,28 @@ export async function assertCoreRejectsAnonymous({ connectionURI, hasKey, fetchI
     return 'unverified';
   }
 
-  if (response.status === 401) return 'closed';
+  if (isRefused(probe.status)) return 'closed';
 
-  throw new Error(
-    `The SuperTokens core at ${connectionURI} answered an unauthenticated request with `
-    + `HTTP ${response.status}, which means it is running without API_KEYS. Anyone who can `
-    + 'reach it can mint a session for any user id, including every value in SUPER_ADMIN_IDS, '
-    + 'without any request reaching RackStack. Set API_KEYS on the core to the same value as '
-    + `SUPERTOKENS_API_KEY here${hasKey ? '' : ' (which is also unset)'}, and do not publish `
-    + 'its port.',
+  if (probe.status === 200) {
+    throw new Error(
+      `The SuperTokens core at ${connectionURI} answered an unauthenticated request to `
+      + `${probe.path} with HTTP 200, which means it is running without API_KEYS. Anyone who `
+      + 'can reach it can mint a session for any user id, including every value in '
+      + 'SUPER_ADMIN_IDS, without any request reaching RackStack. Set API_KEYS on the core to '
+      + `the same value as SUPERTOKENS_API_KEY here${hasKey ? '' : ' (which is also unset)'}, `
+      + 'and do not publish its port.',
+    );
+  }
+
+  // A 404 from every candidate, or any other unexpected status, says our URL
+  // is wrong for this core version - not that the core is open. Refusing to
+  // boot on that would be punishing the operator for our own mistake.
+  console.warn(
+    `[auth] could not verify that the SuperTokens core at ${connectionURI} requires `
+    + `authentication (${probe.status === null ? 'no known endpoint answered' : `unexpected HTTP ${probe.status}`}). `
+    + 'This is NOT evidence that it is open, but do check it by hand.',
   );
+  return 'unverified';
 }
 
 /**

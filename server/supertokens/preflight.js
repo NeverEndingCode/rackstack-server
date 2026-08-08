@@ -16,6 +16,7 @@
 
 import { buildProviders, resolvePublicOrigin, PROVIDER_IDS } from './providers.js';
 import { isLoopback } from './init.js';
+import { AUTHED_ENDPOINTS, probeAuthedEndpoint, isRefused } from './coreProbe.js';
 
 const PASS = 'PASS';
 const FAIL = 'FAIL';
@@ -26,46 +27,10 @@ function result(status, name, detail) {
   return { status, name, detail };
 }
 
-/**
- * Endpoints that require an API key when one is configured, newest path first.
- *
- * NOT `/hello` - that answers unauthenticated by design as a health check, so a
- * 200 there proves nothing about whether the core is locked down.
- *
- * More than one, because the path is tenant-scoped on modern cores
- * (`/<tenantId>/users/count`, per supertokens-node's own querier) and was not
- * on older ones. The first version of this shipped a single guessed path,
- * `/recipe/users/count`, which does not exist on core 12 - so every probe came
- * back 404 and the check reported a correctly-locked-down core as running wide
- * open. See the 404 handling below: that false alarm is the reason this is a
- * list and not a constant.
- */
-const AUTHED_ENDPOINTS = Object.freeze([
-  '/public/users/count', // core with multitenancy (the default tenant)
-  '/recipe/users/count', // older cores
-]);
-
 async function probe(url, { apiKey, fetchImpl, timeoutMs = 5000 }) {
   const headers = { 'api-version': '3.0' };
   if (apiKey) headers['api-key'] = apiKey;
   return fetchImpl(url, { method: 'GET', headers, signal: AbortSignal.timeout(timeoutMs) });
-}
-
-/**
- * Probes the first endpoint this core actually implements.
- *
- * Returns `{ status, path }`, or `{ status: null }` when every candidate 404s -
- * which means "this core does not expose any path we know how to ask", NOT
- * "the core answered". The distinction is the whole point: a 404 is evidence
- * about our URL, not about the core's authentication.
- */
-async function probeAuthedEndpoint({ connectionURI, apiKey, fetchImpl }) {
-  for (const path of AUTHED_ENDPOINTS) {
-    // eslint-disable-next-line no-await-in-loop
-    const res = await probe(`${connectionURI}${path}`, { apiKey, fetchImpl });
-    if (res.status !== 404) return { status: res.status, path };
-  }
-  return { status: null, path: null };
 }
 
 /**
@@ -158,7 +123,7 @@ export async function runPreflight({
   // is exactly why it is checked here rather than left to be noticed.
   try {
     const anon = await probeAuthedEndpoint({ connectionURI, fetchImpl });
-    if (anon.status === 401 || anon.status === 403) {
+    if (isRefused(anon.status)) {
       checks.push(result(PASS, 'core requires authentication', `anonymous request rejected (${anon.status})`));
     } else if (anon.status === 200) {
       checks.push(result(
@@ -239,7 +204,7 @@ export async function runPreflight({
       const authed = await probeAuthedEndpoint({ connectionURI, apiKey, fetchImpl });
       if (authed.status === 200) {
         checks.push(result(PASS, 'SUPERTOKENS_API_KEY', 'accepted by the core'));
-      } else if (authed.status === 401 || authed.status === 403) {
+      } else if (isRefused(authed.status)) {
         checks.push(result(
           FAIL, 'SUPERTOKENS_API_KEY',
           `The core rejected it (HTTP ${authed.status}). It must be byte-identical to a value in `
