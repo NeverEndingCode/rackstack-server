@@ -78,6 +78,24 @@ export default function OverclockPanel({ run, overclockMult, thresholds, onBuy, 
                 Max{maxN >= 1 ? ` +${maxN}` : ''}
               </button>
             </div>
+            {(() => {
+              const next = nextMilestone(o.owned, thresholds);
+              if (next === null) return null;          // past the last milestone
+              const n = next - o.owned;
+              const costN = costForN(def, o.owned, n);
+              const affordable = run.credits >= costN && !onCooldown;
+              return (
+                <button
+                  onClick={() => onBuy(i, 'milestone')}
+                  disabled={!affordable}
+                  title={`Reach ${next} for a 2x output multiplier on this lane`}
+                  className="rounded-lg py-2 text-xs font-mono w-full mt-2"
+                  style={buyBtnStyle(affordable)}
+                >
+                  {`→ ${next}: ${n} for ${fmt(costN)}`}
+                </button>
+              );
+            })()}
           </div>
         );
       })}

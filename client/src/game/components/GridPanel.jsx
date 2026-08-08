@@ -54,6 +54,24 @@ export default function GridPanel({ run, gridMult, thresholds, onBuy }) {
                 Max{maxN >= 1 ? ` +${maxN}` : ''}
               </button>
             </div>
+            {(() => {
+              const next = nextMilestone(g.owned, thresholds);
+              if (next === null) return null;          // past the last milestone
+              const n = next - g.owned;
+              const costN = costForN(def, g.owned, n);
+              const affordable = run.credits >= costN;
+              return (
+                <button
+                  onClick={() => onBuy(i, 'milestone')}
+                  disabled={!affordable}
+                  title={`Reach ${next} for a 2x output multiplier on this lane`}
+                  className="rounded-lg py-2 text-xs font-mono w-full mt-2"
+                  style={buyBtnStyle(affordable)}
+                >
+                  {`→ ${next}: ${n} for ${fmt(costN)}`}
+                </button>
+              );
+            })()}
           </div>
         );
       })}
