@@ -22,8 +22,21 @@ const BASE_ENV = {
 };
 
 /** A fake core. `open: true` models one running with no API_KEYS. */
+/**
+ * A fake core.
+ *
+ * `countPath` is which tenant-scoped path this core version implements;
+ * anything else 404s, exactly as a real core does. That detail matters: the
+ * first release of this preflight probed a single guessed path that core 12
+ * does not have, so every probe 404'd and a correctly-locked-down core was
+ * reported as running wide open.
+ */
 function fakeCore({
-  open = false, keyAccepted = true, reachable = true, cdi = ['5.3', '5.4', '5.5'],
+  open = false,
+  keyAccepted = true,
+  reachable = true,
+  cdi = ['5.3', '5.4', '5.5'],
+  countPath = '/public/users/count',
 } = {}) {
   return async (url, { headers } = {}) => {
     if (!reachable) throw new Error('ECONNREFUSED');
@@ -31,6 +44,7 @@ function fakeCore({
     if (url.endsWith('/apiversion')) {
       return { status: 200, json: async () => ({ versions: cdi }) };
     }
+    if (countPath === null || !url.endsWith(countPath)) return { status: 404 };
     const hasKey = Boolean(headers && headers['api-key']);
     if (!hasKey) return { status: open ? 200 : 401 };
     return { status: keyAccepted ? 200 : 401 };
@@ -76,7 +90,11 @@ describe('the preflight catches an open core', () => {
     });
     const anonProbes = probed.filter((p) => !p.keyed && !p.url.endsWith('/hello'));
     expect(anonProbes.length).toBeGreaterThan(0);
-    expect(anonProbes.every((p) => p.url.includes('/recipe/'))).toBe(true);
+    // An endpoint that is actually gated by the API key - the specific path
+    // varies by core version, which is why this asserts the property rather
+    // than a literal (the literal is what broke in v1.8.2).
+    expect(anonProbes.every((p) => p.url.includes('users/count'))).toBe(true);
+    expect(anonProbes.every((p) => !p.url.endsWith('/hello'))).toBe(true);
   });
 });
 
@@ -120,6 +138,83 @@ describe('the preflight catches a core too old for the SDK', () => {
       pgConnect: noStrayTables,
     });
     expect(byName(checks, 'core protocol version').status).toBe('PASS');
+  });
+});
+
+describe('a 404 is never reported as an open core', () => {
+  // The regression that shipped in v1.8.2. The probe used a single guessed
+  // path, `/recipe/users/count`, which core 12 does not implement. Every probe
+  // came back 404, "not 401" was read as "open", and a properly locked-down
+  // core was reported as: "The core is running without API_KEYS: anyone who
+  // can reach it can mint a login session for any user id."
+  //
+  // A security check that cries wolf is worse than no check, because the next
+  // real warning gets ignored too.
+
+  it('uses the tenant-scoped path a modern core actually implements', async () => {
+    const checks = await runPreflight({
+      env: BASE_ENV,
+      fetchImpl: fakeCore({ countPath: '/public/users/count' }),
+      pgConnect: noStrayTables,
+    });
+    expect(byName(checks, 'core requires authentication').status).toBe('PASS');
+    expect(byName(checks, 'SUPERTOKENS_API_KEY').status).toBe('PASS');
+    expect(preflightPassed(checks)).toBe(true);
+  });
+
+  it('still works against an older core using the legacy path', async () => {
+    const checks = await runPreflight({
+      env: BASE_ENV,
+      fetchImpl: fakeCore({ countPath: '/recipe/users/count' }),
+      pgConnect: noStrayTables,
+    });
+    expect(byName(checks, 'core requires authentication').status).toBe('PASS');
+    expect(byName(checks, 'SUPERTOKENS_API_KEY').status).toBe('PASS');
+  });
+
+  it('WARNs, and does NOT claim the core is open, when every path 404s', async () => {
+    const checks = await runPreflight({
+      env: BASE_ENV,
+      fetchImpl: fakeCore({ countPath: null }),
+      pgConnect: noStrayTables,
+    });
+
+    const auth = byName(checks, 'core requires authentication');
+    expect(auth.status).toBe('WARN');
+    expect(auth.detail).toMatch(/NOT evidence the core is open/i);
+    expect(auth.detail).not.toMatch(/running without API_KEYS/);
+
+    // And the key check must not blame a key that was never the problem.
+    const key = byName(checks, 'SUPERTOKENS_API_KEY');
+    expect(key.status).toBe('WARN');
+    expect(key.detail).not.toMatch(/rejected/);
+  });
+
+  it('a WARN does not block the cutover, but a genuine open core still does', async () => {
+    const unknown = await runPreflight({
+      env: BASE_ENV, fetchImpl: fakeCore({ countPath: null }), pgConnect: noStrayTables,
+    });
+    expect(preflightPassed(unknown)).toBe(true);
+
+    const reallyOpen = await runPreflight({
+      env: BASE_ENV, fetchImpl: fakeCore({ open: true }), pgConnect: noStrayTables,
+    });
+    expect(preflightPassed(reallyOpen)).toBe(false);
+    expect(byName(reallyOpen, 'core requires authentication').detail).toMatch(/without API_KEYS/);
+  });
+
+  it('treats 403 like 401 - refused is refused', async () => {
+    const checks = await runPreflight({
+      env: BASE_ENV,
+      fetchImpl: async (url, o) => {
+        if (url.endsWith('/hello')) return { status: 200 };
+        if (url.endsWith('/apiversion')) return { status: 200, json: async () => ({ versions: ['5.4'] }) };
+        if (!url.endsWith('/public/users/count')) return { status: 404 };
+        return { status: o?.headers?.['api-key'] ? 200 : 403 };
+      },
+      pgConnect: noStrayTables,
+    });
+    expect(byName(checks, 'core requires authentication').status).toBe('PASS');
   });
 });
 

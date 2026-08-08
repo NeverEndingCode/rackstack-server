@@ -27,17 +27,45 @@ function result(status, name, detail) {
 }
 
 /**
- * An endpoint that requires an API key when one is configured.
+ * Endpoints that require an API key when one is configured, newest path first.
  *
- * NOT `/hello` - that answers unauthenticated by design as a health check, so
- * a 200 there proves nothing about whether the core is locked down.
+ * NOT `/hello` - that answers unauthenticated by design as a health check, so a
+ * 200 there proves nothing about whether the core is locked down.
+ *
+ * More than one, because the path is tenant-scoped on modern cores
+ * (`/<tenantId>/users/count`, per supertokens-node's own querier) and was not
+ * on older ones. The first version of this shipped a single guessed path,
+ * `/recipe/users/count`, which does not exist on core 12 - so every probe came
+ * back 404 and the check reported a correctly-locked-down core as running wide
+ * open. See the 404 handling below: that false alarm is the reason this is a
+ * list and not a constant.
  */
-const AUTHED_ENDPOINT = '/recipe/users/count';
+const AUTHED_ENDPOINTS = Object.freeze([
+  '/public/users/count', // core with multitenancy (the default tenant)
+  '/recipe/users/count', // older cores
+]);
 
 async function probe(url, { apiKey, fetchImpl, timeoutMs = 5000 }) {
   const headers = { 'api-version': '3.0' };
   if (apiKey) headers['api-key'] = apiKey;
   return fetchImpl(url, { method: 'GET', headers, signal: AbortSignal.timeout(timeoutMs) });
+}
+
+/**
+ * Probes the first endpoint this core actually implements.
+ *
+ * Returns `{ status, path }`, or `{ status: null }` when every candidate 404s -
+ * which means "this core does not expose any path we know how to ask", NOT
+ * "the core answered". The distinction is the whole point: a 404 is evidence
+ * about our URL, not about the core's authentication.
+ */
+async function probeAuthedEndpoint({ connectionURI, apiKey, fetchImpl }) {
+  for (const path of AUTHED_ENDPOINTS) {
+    // eslint-disable-next-line no-await-in-loop
+    const res = await probe(`${connectionURI}${path}`, { apiKey, fetchImpl });
+    if (res.status !== 404) return { status: res.status, path };
+  }
+  return { status: null, path: null };
 }
 
 /**
@@ -129,16 +157,34 @@ export async function runPreflight({
   // single request touching RackStack. Nothing about this fails visibly, which
   // is exactly why it is checked here rather than left to be noticed.
   try {
-    const anon = await probe(`${connectionURI}${AUTHED_ENDPOINT}`, { fetchImpl });
-    if (anon.status === 401) {
-      checks.push(result(PASS, 'core requires authentication', 'anonymous request rejected (401)'));
-    } else {
+    const anon = await probeAuthedEndpoint({ connectionURI, fetchImpl });
+    if (anon.status === 401 || anon.status === 403) {
+      checks.push(result(PASS, 'core requires authentication', `anonymous request rejected (${anon.status})`));
+    } else if (anon.status === 200) {
       checks.push(result(
         FAIL, 'core requires authentication',
-        `An anonymous request got HTTP ${anon.status}. The core is running without API_KEYS: `
+        `An anonymous request to ${anon.path} succeeded. The core is running without API_KEYS: `
         + 'anyone who can reach it can mint a login session for any user id, including every '
         + 'value in SUPER_ADMIN_IDS. Set API_KEYS on the core (openssl rand -hex 32), set the '
         + "same value as SUPERTOKENS_API_KEY here, and do not publish the core's port.",
+      ));
+    } else if (anon.status === null) {
+      // Every candidate path 404'd. That says our URL is wrong for this core
+      // version, and nothing whatsoever about its authentication - so it must
+      // NOT be reported as an open core. Saying "wide open" on the strength of
+      // a 404 is precisely the false alarm this check shipped with, and a
+      // security check that cries wolf is worse than one that admits it does
+      // not know.
+      checks.push(result(
+        WARN, 'core requires authentication',
+        'Could not determine: this core exposes none of the endpoints used to test it '
+        + `(${AUTHED_ENDPOINTS.join(', ')} all returned 404). This is NOT evidence the core is `
+        + "open - verify by hand that an unkeyed request is refused, and check the core's log.",
+      ));
+    } else {
+      checks.push(result(
+        WARN, 'core requires authentication',
+        `Could not determine: an anonymous request returned an unexpected HTTP ${anon.status}.`,
       ));
     }
   } catch (e) {
@@ -190,14 +236,28 @@ export async function runPreflight({
     ));
   } else {
     try {
-      const authed = await probe(`${connectionURI}${AUTHED_ENDPOINT}`, { apiKey, fetchImpl });
-      checks.push(authed.status === 200
-        ? result(PASS, 'SUPERTOKENS_API_KEY', 'accepted by the core')
-        : result(
+      const authed = await probeAuthedEndpoint({ connectionURI, apiKey, fetchImpl });
+      if (authed.status === 200) {
+        checks.push(result(PASS, 'SUPERTOKENS_API_KEY', 'accepted by the core'));
+      } else if (authed.status === 401 || authed.status === 403) {
+        checks.push(result(
           FAIL, 'SUPERTOKENS_API_KEY',
           `The core rejected it (HTTP ${authed.status}). It must be byte-identical to a value in `
           + "the core's API_KEYS. A mismatch here fails every login once AUTH_MODE is set.",
         ));
+      } else {
+        // Same reasoning as above: a 404, or anything else unexpected, is
+        // evidence about the URL rather than about the key. Reporting "the
+        // core rejected it" would send an operator to re-check a key that was
+        // never the problem.
+        checks.push(result(
+          WARN, 'SUPERTOKENS_API_KEY',
+          authed.status === null
+            ? 'Could not determine: this core exposes none of the endpoints used to test it. '
+              + 'The key may well be correct.'
+            : `Could not determine: unexpected HTTP ${authed.status}.`,
+        ));
+      }
     } catch (e) {
       checks.push(result(WARN, 'SUPERTOKENS_API_KEY', `could not verify (${e.message})`));
     }

@@ -1,5 +1,32 @@
 # Changelog
 
+## v1.8.3
+
+- **`supertokens:check` no longer reports a correctly-secured core as wide
+  open.** The API-key probe used a single guessed path,
+  `/recipe/users/count`, which SuperTokens core 12 does not implement — the
+  path is tenant-scoped (`/public/users/count`). Every probe returned 404, and
+  the check read "not 401" as "not secured", producing:
+
+  > The core is running without API_KEYS: anyone who can reach it can mint a
+  > login session for any user id
+
+  …against a core that was refusing anonymous callers correctly. It also
+  blamed `SUPERTOKENS_API_KEY` for the same 404.
+
+  The probe now tries the tenant-scoped path first and falls back to the legacy
+  one, and — more importantly — **a 404 is reported as "could not determine",
+  never as an open core**. A security check that cries wolf is worse than no
+  check, because the next real warning gets ignored too.
+
+- The core's telemetry is disabled by default in `docker-compose.yml`. It phones
+  home to `api.supertokens.io`, whose certificate chains to the new
+  `ISRG Root YR` root that the core image's JVM truststore does not carry,
+  logging `SSLHandshakeException: PKIX path building failed` on every boot. The
+  error is non-fatal, but it is noise in the log of the component that signs
+  every session.
+
+
 ## v1.8.2
 
 - **`npm run supertokens:check`** — a deployment preflight for the SuperTokens
