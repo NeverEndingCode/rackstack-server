@@ -1,6 +1,6 @@
 import { TIER_DEFS, GRID_DEFS, OVERCLOCK_DEFS, UPGRADE_DEFS, SINGULARITY_DEFS } from './gameData.js';
 import { costForN, maxAffordable, computeEffects, migrateGain, xpForLevel } from './gameRules.js';
-import { initialState } from './state.js';
+import { initialState, recordLegacyCorePeak } from './state.js';
 import { goalCtx, GOAL_DEFS, REPEATABLE_DEFS } from './goals.js';
 import { TOTAL_BLOCKS, JOB_TYPES, TAPE_UPGRADE_DEFS } from './coldStorageData.js';
 import { computeColdStorageEffects, blockReward, jobDurationSec, jobReward } from './coldStorage.js';
@@ -143,6 +143,7 @@ function singularity(s) {
   const shardsGained = Math.floor(Math.sqrt(s.meta.legacyCores || 0));
   if (shardsGained <= 0) return err('invalid_target');
 
+  recordLegacyCorePeak(s.meta);
   s.run = initialState().run;
   s.meta.legacyCores = 0;
   s.meta.singularityShards += shardsGained;
