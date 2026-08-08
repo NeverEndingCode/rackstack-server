@@ -54,8 +54,9 @@ worse than one that admits it has not:
   `GATE: PASS`. **Cutover to `AUTH_MODE=dual` is cleared.**
 - **No cutover has happened.** `AUTH_MODE` has never been anything but
   `passport` on any real deployment.
-- **v1.7 has not been cut over on the Unraid box either.** The design gates
-  v1.8's rollout on v1.7 running in production, and that is still outstanding.
+- ~~v1.7 has not been cut over on the Unraid box either.~~ **DONE** —
+  confirmed 2026-08-08 by the v1.8.1 shadow report naming the database it
+  read (`postgres postgresql://rackstack_user@…:5432/rackstack`).
 - **No SuperTokens core has been run against this code outside tests.** Part B
   is written from the documented configuration, not from a stood-up instance.
 - **`supertokens`-only mode cannot be used yet** — and the reason is bigger
@@ -268,14 +269,37 @@ docker compose --profile supertokens up -d
 ```
 
 **Unraid** — add a container from
-`registry.supertokens.io/supertokens/supertokens-postgresql:9.3` (pin the tag;
-this container signs every session, and a silent major upgrade is not a risk
-worth taking). Set **two** variables, and **do not publish port 3567**:
+`supertokens/supertokens-postgresql:12`. Set **two** variables, and **do not
+publish port 3567**:
 
 ```
 POSTGRESQL_CONNECTION_URI=postgresql://rackstack_user:PASSWORD@192.168.x.x:5432/supertokens
 API_KEYS=<openssl rand -hex 32>
 ```
+
+> **Two things about that image reference.**
+>
+> **Pin the major, let the minor float — `:12`, not `:latest` and not
+> `:12.0.10`.** `:latest` would cross a major boundary unannounced, and that
+> is the only place protocol support realistically changes; freezing a patch
+> means sitting on a stale core forever. Within a major it is safe — core 12
+> still serves CDI 2.7 through 5.5. RackStack now verifies the negotiated
+> version at boot, so if a core ever does drift out of range the container
+> refuses to start and says so, rather than failing logins quietly.
+>
+> **Core 12 is a floor, not a preference.** `supertokens-node@24` speaks
+> core-driver-interface 5.4 only. Cores 9.x and 10.x top out at CDI 5.2 and
+> 11.x at 5.3 — each of which starts fine, answers its health check, accepts
+> its API key, and then fails *every* request on a version mismatch. This
+> runbook said `9.3` until that was caught; `npm run supertokens:check` (B3a)
+> now verifies the negotiated version.
+>
+> **Docker Hub, not `registry.supertokens.io`.** Same image, but the
+> SuperTokens registry's certificate chains to `ISRG Root YR`, a new Let's
+> Encrypt root that older CA bundles — Unraid's included — do not carry yet.
+> Pulling from it fails with `x509: certificate signed by unknown authority`.
+> That is a trust-store gap on the puller, not an outage. See the quick
+> reference if you want to fix the CA bundle instead.
 
 > **The API key is not optional, and neither is keeping the port private.**
 > A SuperTokens core with no `API_KEYS` serves its entire API unauthenticated,
@@ -312,7 +336,30 @@ docker compose exec supertokens bash -c 'curl -s http://127.0.0.1:3567/hello'
 ```
 
 Expect `Hello`. (Run from inside the container, since the port is deliberately
-not published to the host.) If it does not respond, check the core's log for a connection
+not published to the host.)
+
+### B3a. Run the preflight — this is the gate for Part B
+
+```bash
+npm run supertokens:check
+```
+
+Read-only, and it does not read `AUTH_MODE` — the point is to verify the
+deployment *before* you flip anything. It checks the five things that otherwise
+only surface after cutover, one of which never surfaces at all:
+
+| Check | Why it is here |
+|---|---|
+| Core reachable | The `localhost`-from-inside-a-container mistake |
+| **Core requires authentication** | **A core with no `API_KEYS` mints a session for any user id, `SUPER_ADMIN_IDS` included, without a request ever reaching RackStack. Nothing about this fails visibly.** |
+| `SUPERTOKENS_API_KEY` accepted | A mismatch fails every login the moment `AUTH_MODE` is set |
+| Core has its own database | Detects SuperTokens tables sitting inside the `rackstack` database |
+| Providers + public origin | The two boot failures in D3 |
+
+It also prints the exact redirect URLs to register with each provider.
+
+**Gate: `PREFLIGHT: PASS` (exit 0).** A `FAIL` names what to change. This gates
+the *deployment*; `shadow:check` (Part C) gates the *data*. Both must pass. If it does not respond, check the core's log for a connection
 error against the database from B1 — that is the overwhelmingly common cause.
 
 ### B4. Point RackStack at it — but do not switch yet
@@ -545,3 +592,5 @@ gone wrong and will send you chasing the wrong problem.
 | Container won't start, wants `SUPERTOKENS_API_KEY` | Correct and deliberate. An unauthenticated core can mint a session for any user id, `SUPER_ADMIN_IDS` included. Set `API_KEYS` on the core and the same value here. |
 | `shadow:check` says the database predates the v1.7 split | You restored a pre-v1.7 export. Migrate it to v1.7 first, or point at the right database. |
 | `shadow:check` reports `ORPHAN` rows | An identity points at a user that does not exist; that player cannot log in. Investigate before cutting over — do not ignore it. |
+| Pulling the core fails with `x509: certificate signed by unknown authority` | Not an outage. The SuperTokens registry chains to `ISRG Root YR`, a new Let's Encrypt root your CA bundle lacks. Pull `supertokens/supertokens-postgresql:12` from Docker Hub instead, or update the host's `ca-certificates`. Confirm which by running `openssl s_client -connect registry.supertokens.io:443 -servername registry.supertokens.io </dev/null` on the host — if the issuer is Let's Encrypt, it is your trust store; if it is something else, something is intercepting TLS. |
+| `supertokens:check` says the core protocol version is too old | The core image predates CDI 5.4. Use `supertokens/supertokens-postgresql:12` or later. |

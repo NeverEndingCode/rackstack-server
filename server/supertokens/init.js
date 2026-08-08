@@ -198,6 +198,61 @@ export async function assertCoreRejectsAnonymous({ connectionURI, hasKey, fetchI
  * loud - and a logout that fails loudly is strictly better than one that half
  * works.
  */
+/**
+ * Confirms the core speaks a protocol version this SDK understands.
+ *
+ * `supertokens-node` pins an exact set of core-driver-interface versions - at
+ * the time of writing, exactly one - and the core must offer it. The
+ * compatible window is therefore narrow, and a core upgrade can leave it.
+ *
+ * The SDK does detect this, but only from inside a request: `getAPIVersion` is
+ * called by the request helpers, so a mismatch surfaces on the first LOGIN
+ * ATTEMPT, not at startup. The container looks healthy, the health check
+ * passes, and the first you hear of it is a player saying they cannot log in.
+ * Checking at boot converts that into a container that refuses to start and
+ * says why - which is the difference between a five-minute fix and an
+ * afternoon.
+ *
+ * Unreachable is a warning, not a failure, for the same reason as the API-key
+ * probe: the core may legitimately still be starting.
+ */
+export async function assertCoreSpeaksOurProtocol({ connectionURI, apiKey, fetchImpl = fetch }) {
+  const { cdiSupported } = await import('supertokens-node/lib/build/version.js');
+  const headers = { 'api-version': '3.0' };
+  if (apiKey) headers['api-key'] = apiKey;
+
+  let offered;
+  try {
+    const res = await fetchImpl(`${connectionURI.replace(/\/$/, '')}/apiversion`, {
+      method: 'GET', headers, signal: AbortSignal.timeout(5000),
+    });
+    const body = typeof res.json === 'function' ? await res.json() : {};
+    offered = body?.versions;
+  } catch (e) {
+    console.warn(
+      `[auth] could not verify the SuperTokens core's protocol version (${e.message}). `
+      + `This SDK requires core-driver-interface ${cdiSupported.join(' or ')}.`,
+    );
+    return 'unverified';
+  }
+
+  if (!Array.isArray(offered) || offered.length === 0) {
+    console.warn('[auth] the SuperTokens core did not report its core-driver-interface versions.');
+    return 'unverified';
+  }
+
+  const shared = cdiSupported.filter((v) => offered.includes(v));
+  if (shared.length > 0) return shared;
+
+  throw new Error(
+    `The SuperTokens core at ${connectionURI} speaks core-driver-interface `
+    + `${offered[offered.length - 1]} at newest, but this SDK requires `
+    + `${cdiSupported.join(' or ')}. The core would start and answer health checks while `
+    + 'failing every login. Use a core image new enough for that interface - '
+    + 'supertokens/supertokens-postgresql:12 or later at the time of writing.',
+  );
+}
+
 export function disableStockSignOut(originalImplementation) {
   return { ...originalImplementation, signOutPOST: undefined };
 }
@@ -319,6 +374,12 @@ export async function initSuperTokens({ env = process.env, mode } = {}) {
   // simultaneous container start, and refusing there would turn an ordering
   // hiccup into an outage.
   await assertCoreRejectsAnonymous({ connectionURI, hasKey: Boolean(env.SUPERTOKENS_API_KEY) });
+
+  // Fail fast on a core too old (or too new) for this SDK. Without this the
+  // mismatch only surfaces on the first login attempt, because the SDK checks
+  // the version from inside a request - so the container would look healthy
+  // right up until a player reported they could not sign in.
+  await assertCoreSpeaksOurProtocol({ connectionURI, apiKey: env.SUPERTOKENS_API_KEY });
 
   initialised = true;
   // An operator who has just flipped AUTH_MODE needs to see that it took

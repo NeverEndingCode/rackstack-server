@@ -1,5 +1,30 @@
 # Changelog
 
+## v1.8.2
+
+- **`npm run supertokens:check`** — a deployment preflight for the SuperTokens
+  rollout, to be run *before* `AUTH_MODE` is set. Verifies the core is
+  reachable, **requires authentication**, accepts your API key, and has its own
+  database rather than sharing RackStack's; also checks the public origin and
+  providers, and prints the exact redirect URLs to register.
+
+  The authentication check is the one that earns its keep: a core running
+  without `API_KEYS` will mint a login session for any user id — including
+  every value in `SUPER_ADMIN_IDS` — without a request ever reaching RackStack,
+  so nothing about it fails visibly. `shadow:check` gates the data half of the
+  cutover; this gates the deployment half.
+
+- **The SuperTokens core version is now verified at boot.** `supertokens-node`
+  speaks one core-driver-interface version, and a core outside that window
+  starts cleanly, passes its health check, and then fails every login — the SDK
+  only notices from inside a request. RackStack now checks at startup and
+  refuses to boot with a message naming both versions.
+
+  The bundled compose file pins the core's **major** (`:12`) rather than
+  `:latest` or a frozen patch: `:latest` would cross a major boundary
+  unannounced, which is the only place protocol support realistically changes,
+  while a frozen patch means a stale core signing every session.
+
 ## v1.8.1
 
 - **`npm run shadow:check` now names the database it audited**, both as a log
