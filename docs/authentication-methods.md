@@ -219,6 +219,13 @@ evidence that the SuperTokens path works end to end.
 
 ## Phase 5 — `supertokens` mode — blocked on client work
 
+> **Implementation plan written 2026-08-08:**
+> [`superpowers/plans/2026-08-08-v1.9-supertokens-client.md`](./superpowers/plans/2026-08-08-v1.9-supertokens-client.md).
+> Not started. Task 1 of that plan drives the SuperTokens login by hand against
+> production `dual` — no code — which is the cheapest way to find out whether
+> the identity mapping actually works end to end. Do that before writing any
+> client code.
+
 **This is the honest state: `supertokens`-only mode cannot be used yet, and the
 blocker is larger than "not recommended".**
 
