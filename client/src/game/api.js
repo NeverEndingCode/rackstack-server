@@ -77,6 +77,14 @@ function refreshSession() {
       const res = await fetch('/auth/session/refresh', {
         method: 'POST',
         credentials: 'include',
+        // Same reason as the signinup call in game/auth.js: this is what tells
+        // SuperTokens to put the rotated tokens back in cookies. Refresh
+        // tolerates its absence better than session creation does (it infers
+        // the method from the tokens it was given), but a refresh that
+        // silently switched the session to header transport would log the
+        // player out on the next request, which is the same invisible failure
+        // one step later.
+        headers: { 'st-auth-mode': 'cookie' },
       });
       return res.ok;
     } catch {

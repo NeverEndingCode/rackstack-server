@@ -181,7 +181,25 @@ export async function completeSuperTokensLogin({
   // wholesale).
   const res = await requestJSON('/auth/signinup', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      // NOT optional, and its absence fails silently. SuperTokens resolves the
+      // token transfer method at session creation from this header, and when
+      // it is missing it defaults to "header" - see
+      // session/sessionRequestFunctions.js: "We default to header if we can't
+      // 'parse' it or if it's undefined". The session then comes back in
+      // st-access-token / st-refresh-token RESPONSE headers and no cookie is
+      // ever set, so signinup answers status "OK", this function reports
+      // success, and the very next GET /api/me is a 401. The player lands back
+      // on the login screen with nothing wrong on it. v1.9.0 shipped exactly
+      // that.
+      //
+      // supertokens-web-js sends this header for you; hand-rolling the calls
+      // means inheriting the responsibility. Cookies are the right choice here
+      // because the whole app already relies on them - `credentials:
+      // 'include'` everywhere, and the legacy JWT cookie works the same way.
+      'st-auth-mode': 'cookie',
+    },
     body: JSON.stringify({
       thirdPartyId: provider,
       redirectURIInfo: {
@@ -227,6 +245,8 @@ export function loginErrorMessage(provider, reason) {
       return `This account is not allowed to sign in with ${name}.`;
     case 'no_email':
       return `${name} did not share an email address, which this server requires.`;
+    case 'no_session':
+      return `${name} signed you in, but the server did not set a session. Check that cookies are allowed for this site.`;
     default:
       return `Login with ${name} failed. Try again.`;
   }

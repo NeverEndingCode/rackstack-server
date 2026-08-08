@@ -151,6 +151,29 @@ describe('completeSuperTokensLogin', () => {
     expect(body.oAuthTokens).toBeUndefined();
   });
 
+  it('asks for the session in COOKIES, which is what actually logs the player in', async () => {
+    // The v1.9.0 regression, and the reason it shipped. SuperTokens picks the
+    // token transfer method at session creation from this header, and with it
+    // absent defaults to "header" - the session comes back in st-access-token
+    // response headers, no cookie is set, signinup still answers status OK,
+    // and the next /api/me is a 401. Nothing in the flow reports an error.
+    //
+    // supertokens-web-js sends this for you. Hand-rolling means owning it.
+    const calls = [];
+    globalThis.fetch = vi.fn(async (url, opts) => {
+      calls.push({ url, opts });
+      return jsonResponse({ status: 'OK', user: { id: 'github:37058311' } });
+    });
+
+    await completeSuperTokensLogin({
+      pathname: '/auth/callback/github',
+      search: '?code=abc123',
+      origin: ORIGIN,
+    });
+
+    expect(calls[0].opts.headers['st-auth-mode']).toBe('cookie');
+  });
+
   it('does not POST when the player cancelled at the provider', async () => {
     globalThis.fetch = vi.fn(async () => jsonResponse({ status: 'OK' }));
 
@@ -239,6 +262,30 @@ describe('refresh on 401', () => {
 
     expect(res).toEqual({ run: { level: 3 } });
     expect(seen).toEqual(['/api/state', '/auth/session/refresh', '/api/state']);
+  });
+
+  it('asks for the refreshed session in cookies too', async () => {
+    configureAuthRefresh({ loginFlow: 'supertokens' });
+
+    const calls = [];
+    let refreshed = false;
+    globalThis.fetch = vi.fn(async (url, opts) => {
+      calls.push({ url, opts });
+      if (url === '/auth/session/refresh') {
+        refreshed = true;
+        return { ok: true, status: 200, text: async () => '' };
+      }
+      if (!refreshed) return jsonResponse({ error: 'unauthorized' }, { ok: false, status: 401 });
+      return jsonResponse({ ok: true });
+    });
+
+    await fetchState();
+
+    // A refresh that silently moved the session to header transport would log
+    // the player out on the next request - the same invisible failure as the
+    // signinup one, just deferred.
+    const refresh = calls.find((c) => c.url === '/auth/session/refresh');
+    expect(refresh.opts.headers['st-auth-mode']).toBe('cookie');
   });
 
   it('gives up after a second 401 rather than looping', async () => {

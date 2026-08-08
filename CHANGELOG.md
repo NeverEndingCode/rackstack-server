@@ -1,5 +1,37 @@
 # Changelog
 
+## v1.9.1
+
+- **The SuperTokens login button signed you in and then left you logged out.**
+  `POST /auth/signinup` answered `status: "OK"`, the client reported success,
+  the URL went back to `/` — and the very next `GET /api/me` was a 401, so the
+  login screen came back with nothing wrong on it.
+
+  SuperTokens picks the session's *token transfer method* at creation time from
+  the `st-auth-mode` request header, and when it is absent it defaults to
+  **header**, not cookies (`session/sessionRequestFunctions.js`: *"We default
+  to header if we can't 'parse' it or if it's undefined"*). The session came
+  back in `st-access-token` / `st-refresh-token` response headers; no cookie
+  was ever set. `supertokens-web-js` sends that header for you, and v1.9.0
+  hand-rolled the calls without it — the one responsibility of the frontend SDK
+  that hand-rolling quietly inherited.
+
+  Confirmed against a real core, same endpoint, both ways — note that **both
+  return 200**, which is why nothing anywhere reported an error:
+
+  | request | `Set-Cookie` | response headers |
+  |---|---|---|
+  | without `st-auth-mode` | *(none)* | `st-access-token`, `st-refresh-token` |
+  | with `st-auth-mode: cookie` | `sAccessToken`, `sRefreshToken` | *(none)* |
+
+  Both `/auth/signinup` and `/auth/session/refresh` now send it.
+
+- **A login that sets no session now says so.** If sign-in succeeds but the
+  session that follows does not exist, the login screen says the server did not
+  set a session and suggests checking cookies, instead of silently returning to
+  a blank login form. The absence of that message is the only reason v1.9.0's
+  bug reached a production deploy — every layer reported success.
+
 ## v1.9.0
 
 - **Every SuperTokens login was impossible, and had been since v1.8.**
