@@ -44,7 +44,7 @@ LABEL org.opencontainers.image.licenses="MIT"
 # only on a pushed vX.Y.Z tag, and docker/metadata-action derives the
 # published image's version label from that tag - so this literal only
 # affects locally-built images, not what GHCR publishes.
-LABEL org.opencontainers.image.version="1.8.1"
+LABEL org.opencontainers.image.version="1.8.2"
 
 VOLUME ["/app/data"]
 EXPOSE 3000

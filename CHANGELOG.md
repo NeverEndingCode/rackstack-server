@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.8.2
 
 - **`npm run supertokens:check`** — a deployment preflight for the SuperTokens
   rollout, to be run *before* `AUTH_MODE` is set. Verifies the core is
