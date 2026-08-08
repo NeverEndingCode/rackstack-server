@@ -313,7 +313,30 @@ docker compose exec supertokens bash -c 'curl -s http://127.0.0.1:3567/hello'
 ```
 
 Expect `Hello`. (Run from inside the container, since the port is deliberately
-not published to the host.) If it does not respond, check the core's log for a connection
+not published to the host.)
+
+### B3a. Run the preflight — this is the gate for Part B
+
+```bash
+npm run supertokens:check
+```
+
+Read-only, and it does not read `AUTH_MODE` — the point is to verify the
+deployment *before* you flip anything. It checks the five things that otherwise
+only surface after cutover, one of which never surfaces at all:
+
+| Check | Why it is here |
+|---|---|
+| Core reachable | The `localhost`-from-inside-a-container mistake |
+| **Core requires authentication** | **A core with no `API_KEYS` mints a session for any user id, `SUPER_ADMIN_IDS` included, without a request ever reaching RackStack. Nothing about this fails visibly.** |
+| `SUPERTOKENS_API_KEY` accepted | A mismatch fails every login the moment `AUTH_MODE` is set |
+| Core has its own database | Detects SuperTokens tables sitting inside the `rackstack` database |
+| Providers + public origin | The two boot failures in D3 |
+
+It also prints the exact redirect URLs to register with each provider.
+
+**Gate: `PREFLIGHT: PASS` (exit 0).** A `FAIL` names what to change. This gates
+the *deployment*; `shadow:check` (Part C) gates the *data*. Both must pass. If it does not respond, check the core's log for a connection
 error against the database from B1 — that is the overwhelmingly common cause.
 
 ### B4. Point RackStack at it — but do not switch yet

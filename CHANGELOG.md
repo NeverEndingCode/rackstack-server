@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- **`npm run supertokens:check`** — a deployment preflight for the SuperTokens
+  rollout, to be run *before* `AUTH_MODE` is set. Verifies the core is
+  reachable, **requires authentication**, accepts your API key, and has its own
+  database rather than sharing RackStack's; also checks the public origin and
+  providers, and prints the exact redirect URLs to register.
+
+  The authentication check is the one that earns its keep: a core running
+  without `API_KEYS` will mint a login session for any user id — including
+  every value in `SUPER_ADMIN_IDS` — without a request ever reaching RackStack,
+  so nothing about it fails visibly. `shadow:check` gates the data half of the
+  cutover; this gates the deployment half.
+
 ## v1.8.1
 
 - **`npm run shadow:check` now names the database it audited**, both as a log
