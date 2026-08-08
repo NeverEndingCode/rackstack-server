@@ -54,8 +54,9 @@ worse than one that admits it has not:
   `GATE: PASS`. **Cutover to `AUTH_MODE=dual` is cleared.**
 - **No cutover has happened.** `AUTH_MODE` has never been anything but
   `passport` on any real deployment.
-- **v1.7 has not been cut over on the Unraid box either.** The design gates
-  v1.8's rollout on v1.7 running in production, and that is still outstanding.
+- ~~v1.7 has not been cut over on the Unraid box either.~~ **DONE** —
+  confirmed 2026-08-08 by the v1.8.1 shadow report naming the database it
+  read (`postgres postgresql://rackstack_user@…:5432/rackstack`).
 - **No SuperTokens core has been run against this code outside tests.** Part B
   is written from the documented configuration, not from a stood-up instance.
 - **`supertokens`-only mode cannot be used yet** — and the reason is bigger

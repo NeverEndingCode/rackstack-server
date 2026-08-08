@@ -88,19 +88,19 @@ that is what bounds how far the rollout can go — see Phase 5.
 
 ## Phase 0 — Prerequisites
 
-1. **v1.7 running in production on Postgres.** Status unconfirmed — the Unraid
-   box may still be on SQLite. From v1.8.1 the shadow report names the database
-   it read, so `npm run shadow:check` now tells you which. Note the SuperTokens
-   core needs its own **Postgres** database in Phase 2 regardless of what
-   RackStack itself uses, so a Postgres instance is required either way. See
-   [`postgres-migration-runbook.md`](./postgres-migration-runbook.md).
+1. ~~v1.7 running in production on Postgres.~~ **DONE.** Confirmed 2026-08-08
+   by the v1.8.1 shadow report, which names the database it read:
+   `postgres postgresql://rackstack_user@…:5432/rackstack`. The SuperTokens
+   core in Phase 2 needs its **own** database on that same instance — never the
+   `rackstack` one.
 2. ~~A current production export supplied, for the shadow gate.~~ **Moot —
    satisfied a better way.** The gate was run directly on the Unraid container
    on 2026-08-08 (`GATE: PASS`, 6/6), which audits the live database rather
    than a copy of it. No export is needed.
 3. **A backup**, taken the same way as for the Postgres migration.
 
-**Gate:** 1 and 3. Phase 3 has already passed.
+**Gate:** 3 (a backup). 1 is done and Phase 3 has already passed, so the only
+work left before `dual` is Phases 1 and 2.
 
 ## Phase 1 — Widen the OAuth redirect URLs
 
