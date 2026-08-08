@@ -145,6 +145,40 @@ export async function runPreflight({
     checks.push(result(WARN, 'core requires authentication', `could not verify (${e.message})`));
   }
 
+  // ---- 5a. Does the core speak a protocol version the SDK understands? ----
+  //
+  // supertokens-node pins an exact set of core-driver-interface versions, and
+  // the core must offer one of them. Get this wrong and the core is reachable,
+  // authenticated, healthy - and every single request fails on a version
+  // mismatch. Nothing about "the container is running" tells you.
+  //
+  // This check exists because the runbook originally pinned core 9.3, which
+  // tops out at CDI 5.2 while supertokens-node@24 requires 5.4. That would
+  // have been a working-looking deployment that could not log anyone in.
+  try {
+    const { cdiSupported } = await import('supertokens-node/lib/build/version.js');
+    const res = await probe(`${connectionURI}/apiversion`, { apiKey, fetchImpl });
+    const body = typeof res.json === 'function' ? await res.json() : {};
+    const offered = body?.versions ?? [];
+    const shared = cdiSupported.filter((v) => offered.includes(v));
+
+    if (shared.length > 0) {
+      checks.push(result(PASS, 'core protocol version', `core and SDK share CDI ${shared.join(', ')}`));
+    } else if (offered.length === 0) {
+      checks.push(result(WARN, 'core protocol version', 'the core did not report its CDI versions'));
+    } else {
+      checks.push(result(
+        FAIL, 'core protocol version',
+        `The SDK speaks CDI ${cdiSupported.join(', ')} but this core offers up to `
+        + `${offered[offered.length - 1]}. The container will run and answer health checks, `
+        + 'but every request fails on a version mismatch. Use a newer core image '
+        + `(supertokens/supertokens-postgresql:12.0 or later supports ${cdiSupported.join(', ')}).`,
+      ));
+    }
+  } catch (e) {
+    checks.push(result(WARN, 'core protocol version', `could not verify (${e.message})`));
+  }
+
   // ---- 6. Does OUR key actually work? -------------------------------------
   if (!apiKey) {
     checks.push(result(

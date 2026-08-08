@@ -22,10 +22,15 @@ const BASE_ENV = {
 };
 
 /** A fake core. `open: true` models one running with no API_KEYS. */
-function fakeCore({ open = false, keyAccepted = true, reachable = true } = {}) {
+function fakeCore({
+  open = false, keyAccepted = true, reachable = true, cdi = ['5.3', '5.4', '5.5'],
+} = {}) {
   return async (url, { headers } = {}) => {
     if (!reachable) throw new Error('ECONNREFUSED');
     if (url.endsWith('/hello')) return { status: 200 };
+    if (url.endsWith('/apiversion')) {
+      return { status: 200, json: async () => ({ versions: cdi }) };
+    }
     const hasKey = Boolean(headers && headers['api-key']);
     if (!hasKey) return { status: open ? 200 : 401 };
     return { status: keyAccepted ? 200 : 401 };
@@ -72,6 +77,49 @@ describe('the preflight catches an open core', () => {
     const anonProbes = probed.filter((p) => !p.keyed && !p.url.endsWith('/hello'));
     expect(anonProbes.length).toBeGreaterThan(0);
     expect(anonProbes.every((p) => p.url.includes('/recipe/'))).toBe(true);
+  });
+});
+
+describe('the preflight catches a core too old for the SDK', () => {
+  it('FAILS on a core that tops out below the SDK\'s CDI', async () => {
+    // The real case: the runbook originally pinned core 9.3, which offers up
+    // to CDI 5.2 while supertokens-node@24 requires 5.4. That core runs,
+    // answers /hello, accepts its API key - and fails every single request.
+    // Nothing else in this preflight would have caught it.
+    const checks = await runPreflight({
+      env: BASE_ENV,
+      fetchImpl: fakeCore({ cdi: ['5.0', '5.1', '5.2'] }),
+      pgConnect: noStrayTables,
+    });
+    const cdi = byName(checks, 'core protocol version');
+    expect(cdi.status).toBe('FAIL');
+    expect(cdi.detail).toMatch(/5\.2/);
+    expect(cdi.detail).toMatch(/every request fails/);
+    expect(preflightPassed(checks)).toBe(false);
+  });
+
+  it('PASSES when the core offers a CDI version the SDK speaks', async () => {
+    const checks = await runPreflight({
+      env: BASE_ENV, fetchImpl: fakeCore(), pgConnect: noStrayTables,
+    });
+    const cdi = byName(checks, 'core protocol version');
+    expect(cdi.status).toBe('PASS');
+    expect(cdi.detail).toMatch(/5\.4/);
+  });
+
+  it('checks against the SDK\'s real declared versions, not a hardcoded list', async () => {
+    // If supertokens-node is upgraded and its CDI requirement moves, this
+    // check must move with it rather than silently keep asserting 5.4.
+    const { cdiSupported } = await import('supertokens-node/lib/build/version.js');
+    expect(Array.isArray(cdiSupported)).toBe(true);
+    expect(cdiSupported.length).toBeGreaterThan(0);
+
+    const checks = await runPreflight({
+      env: BASE_ENV,
+      fetchImpl: fakeCore({ cdi: cdiSupported }),
+      pgConnect: noStrayTables,
+    });
+    expect(byName(checks, 'core protocol version').status).toBe('PASS');
   });
 });
 

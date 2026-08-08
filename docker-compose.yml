@@ -36,7 +36,19 @@ services:
     # Pinned, not :latest. This container signs and validates every session in
     # supertokens/dual mode; silently pulling a new major on the next `up -d`
     # is not a risk worth taking for the component that IS the trust root.
-    image: registry.supertokens.io/supertokens/supertokens-postgresql:9.3
+    #
+    # Core 12 is the FLOOR, not a preference. supertokens-node@24 speaks
+    # core-driver-interface 5.4 only, and cores 9.x/10.x top out at CDI 5.2,
+    # 11.x at 5.3 - all of which run, answer health checks, accept their API
+    # key, and then fail every single request on a version mismatch. This file
+    # pinned 9.3 until that was caught; `npm run supertokens:check` now
+    # verifies the negotiated version so it cannot happen silently again.
+    #
+    # Docker Hub rather than registry.supertokens.io: the latter's certificate
+    # chains to ISRG Root YR, a new Let's Encrypt root that older CA bundles
+    # (Unraid's included) do not carry yet, giving
+    # `x509: certificate signed by unknown authority` on pull. Same image.
+    image: supertokens/supertokens-postgresql:12.0
     container_name: rackstack-supertokens
     profiles: ["supertokens"]
     restart: unless-stopped
