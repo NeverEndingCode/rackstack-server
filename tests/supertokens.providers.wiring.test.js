@@ -62,7 +62,10 @@ const CREDS = {
   DISCORD_CLIENT_ID: 'dc-id',
   DISCORD_CLIENT_SECRET: 'dc-secret',
   PUBLIC_ORIGIN: 'https://rackstack.example.com',
-  SUPERTOKENS_CONNECTION_URI: 'http://supertokens:3567',
+  // `.invalid` is reserved (RFC 2606) and fails DNS resolution immediately.
+  // A plausible-looking hostname makes init's core probes sit on a connect
+  // timeout instead, which cost this file 8 seconds per init.
+  SUPERTOKENS_CONNECTION_URI: 'http://supertokens.invalid:3567',
   SUPERTOKENS_API_KEY: 'test-core-api-key',
 };
 

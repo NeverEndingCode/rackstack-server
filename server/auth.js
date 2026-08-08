@@ -59,6 +59,29 @@ export function requireRole(role) {
   };
 }
 
+/**
+ * Which OAuth providers this deployment actually has credentials for.
+ *
+ * The login screen needs this BEFORE anyone is authenticated: rendering a
+ * button for a provider with no credentials produces a dead end in either
+ * stack (passport has no strategy registered, SuperTokens has no provider in
+ * the recipe), and the player has no way to tell that from a broken login.
+ *
+ * The credential conditions here are deliberately the same ones
+ * configurePassport() below and buildProviders() in supertokens/providers.js
+ * apply. That duplication is guarded by a test asserting all three agree -
+ * v1.8 lost a week to two copies of a probe drifting the moment one was
+ * fixed, so a third copy does not get to drift silently.
+ */
+export function configuredProviders(env = process.env) {
+  const providers = [];
+  // Ordered to match PROVIDER_IDS in supertokens/providers.js, so the two
+  // lists compare equal as arrays and not merely as sets.
+  if (env.GITHUB_CLIENT_ID && env.GITHUB_CLIENT_SECRET) providers.push('github');
+  if (env.DISCORD_CLIENT_ID && env.DISCORD_CLIENT_SECRET) providers.push('discord');
+  return providers;
+}
+
 export function configurePassport() {
   let configured = 0;
 
