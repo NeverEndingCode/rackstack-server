@@ -111,6 +111,45 @@ describe('rejectRawOAuthTokens (authentication bypass guard)', () => {
     expect(probed).toContain('/recipe/');
   });
 
+  it('refuses to boot against a core too old for this SDK', async () => {
+    // The SDK does catch this, but only from inside a request - so without a
+    // boot check the container starts healthy, passes its health check, and
+    // fails every login. This is the difference between "the container will
+    // not start, and here is why" and a player reporting they cannot sign in.
+    const { assertCoreSpeaksOurProtocol } = await import('../server/supertokens/init.js');
+    const oldCore = async () => ({ status: 200, json: async () => ({ versions: ['5.0', '5.1', '5.2'] }) });
+
+    await expect(assertCoreSpeaksOurProtocol({
+      connectionURI: 'http://core:3567', fetchImpl: oldCore,
+    })).rejects.toThrow(/core-driver-interface/);
+    await expect(assertCoreSpeaksOurProtocol({
+      connectionURI: 'http://core:3567', fetchImpl: oldCore,
+    })).rejects.toThrow(/failing every login/);
+  });
+
+  it('accepts a core that offers a version the SDK speaks', async () => {
+    const { assertCoreSpeaksOurProtocol } = await import('../server/supertokens/init.js');
+    const { cdiSupported } = await import('supertokens-node/lib/build/version.js');
+    // Built from the SDK's own declared support, so upgrading the SDK moves
+    // this test with it instead of leaving a stale literal behind.
+    const goodCore = async () => ({ status: 200, json: async () => ({ versions: ['2.7', ...cdiSupported] }) });
+
+    await expect(assertCoreSpeaksOurProtocol({
+      connectionURI: 'http://core:3567', fetchImpl: goodCore,
+    })).resolves.toEqual(cdiSupported);
+  });
+
+  it('warns rather than refuses when the core cannot be reached', async () => {
+    // Same reasoning as the API-key probe: a core that is still starting must
+    // not turn a boot-ordering hiccup into an outage.
+    const { assertCoreSpeaksOurProtocol } = await import('../server/supertokens/init.js');
+    const unreachable = async () => { throw new Error('ECONNREFUSED'); };
+
+    await expect(assertCoreSpeaksOurProtocol({
+      connectionURI: 'http://core:3567', fetchImpl: unreachable,
+    })).resolves.toBe('unverified');
+  });
+
   it('lets the legitimate redirect-URI flow through untouched', async () => {
     // The guard must not break real logins. In this flow the token is obtained
     // by exchanging an authorization code with our own client secret, so it is

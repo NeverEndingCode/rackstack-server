@@ -37,18 +37,32 @@ services:
     # supertokens/dual mode; silently pulling a new major on the next `up -d`
     # is not a risk worth taking for the component that IS the trust root.
     #
-    # Core 12 is the FLOOR, not a preference. supertokens-node@24 speaks
-    # core-driver-interface 5.4 only, and cores 9.x/10.x top out at CDI 5.2,
-    # 11.x at 5.3 - all of which run, answer health checks, accept their API
-    # key, and then fail every single request on a version mismatch. This file
-    # pinned 9.3 until that was caught; `npm run supertokens:check` now
-    # verifies the negotiated version so it cannot happen silently again.
+    # The MAJOR is pinned; the minor and patch float. That is the deliberate
+    # middle ground between `:latest` and a fully-frozen tag:
+    #
+    #   - `:latest` would pick up a new MAJOR unannounced, and the major
+    #     boundary is the only place core-driver-interface support realistically
+    #     changes. supertokens-node@24 speaks CDI 5.4 *only* - a single version,
+    #     not a range - so the compatible window is narrow, and leaving it
+    #     breaks every login rather than degrading.
+    #   - Freezing at a patch would mean sitting on a stale core forever,
+    #     missing security fixes on the component that signs every session.
+    #
+    # Within a major it is very safe: core 12 still serves CDI 2.7 through 5.5,
+    # so minor upgrades do not drop protocol support.
+    #
+    # Core 12 is also the FLOOR: cores 9.x/10.x top out at CDI 5.2 and 11.x at
+    # 5.3 - each of which runs, answers health checks, accepts its API key, and
+    # then fails every request. This file pinned 9.3 until that was caught.
+    # initSuperTokens now verifies the negotiated version at BOOT (the SDK only
+    # notices from inside a request, i.e. on the first login), and
+    # `npm run supertokens:check` verifies it before cutover.
     #
     # Docker Hub rather than registry.supertokens.io: the latter's certificate
     # chains to ISRG Root YR, a new Let's Encrypt root that older CA bundles
     # (Unraid's included) do not carry yet, giving
     # `x509: certificate signed by unknown authority` on pull. Same image.
-    image: supertokens/supertokens-postgresql:12.0
+    image: supertokens/supertokens-postgresql:12
     container_name: rackstack-supertokens
     profiles: ["supertokens"]
     restart: unless-stopped

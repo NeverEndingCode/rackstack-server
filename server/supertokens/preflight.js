@@ -172,7 +172,7 @@ export async function runPreflight({
         `The SDK speaks CDI ${cdiSupported.join(', ')} but this core offers up to `
         + `${offered[offered.length - 1]}. The container will run and answer health checks, `
         + 'but every request fails on a version mismatch. Use a newer core image '
-        + `(supertokens/supertokens-postgresql:12.0 or later supports ${cdiSupported.join(', ')}).`,
+        + `(supertokens/supertokens-postgresql:12 or later supports ${cdiSupported.join(', ')}).`,
       ));
     }
   } catch (e) {

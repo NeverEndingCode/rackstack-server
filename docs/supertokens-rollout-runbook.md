@@ -269,7 +269,7 @@ docker compose --profile supertokens up -d
 ```
 
 **Unraid** — add a container from
-`supertokens/supertokens-postgresql:12.0`. Set **two** variables, and **do not
+`supertokens/supertokens-postgresql:12`. Set **two** variables, and **do not
 publish port 3567**:
 
 ```
@@ -278,6 +278,14 @@ API_KEYS=<openssl rand -hex 32>
 ```
 
 > **Two things about that image reference.**
+>
+> **Pin the major, let the minor float — `:12`, not `:latest` and not
+> `:12.0.10`.** `:latest` would cross a major boundary unannounced, and that
+> is the only place protocol support realistically changes; freezing a patch
+> means sitting on a stale core forever. Within a major it is safe — core 12
+> still serves CDI 2.7 through 5.5. RackStack now verifies the negotiated
+> version at boot, so if a core ever does drift out of range the container
+> refuses to start and says so, rather than failing logins quietly.
 >
 > **Core 12 is a floor, not a preference.** `supertokens-node@24` speaks
 > core-driver-interface 5.4 only. Cores 9.x and 10.x top out at CDI 5.2 and
@@ -584,5 +592,5 @@ gone wrong and will send you chasing the wrong problem.
 | Container won't start, wants `SUPERTOKENS_API_KEY` | Correct and deliberate. An unauthenticated core can mint a session for any user id, `SUPER_ADMIN_IDS` included. Set `API_KEYS` on the core and the same value here. |
 | `shadow:check` says the database predates the v1.7 split | You restored a pre-v1.7 export. Migrate it to v1.7 first, or point at the right database. |
 | `shadow:check` reports `ORPHAN` rows | An identity points at a user that does not exist; that player cannot log in. Investigate before cutting over — do not ignore it. |
-| Pulling the core fails with `x509: certificate signed by unknown authority` | Not an outage. The SuperTokens registry chains to `ISRG Root YR`, a new Let's Encrypt root your CA bundle lacks. Pull `supertokens/supertokens-postgresql:12.0` from Docker Hub instead, or update the host's `ca-certificates`. Confirm which by running `openssl s_client -connect registry.supertokens.io:443 -servername registry.supertokens.io </dev/null` on the host — if the issuer is Let's Encrypt, it is your trust store; if it is something else, something is intercepting TLS. |
-| `supertokens:check` says the core protocol version is too old | The core image predates CDI 5.4. Use `supertokens/supertokens-postgresql:12.0` or later. |
+| Pulling the core fails with `x509: certificate signed by unknown authority` | Not an outage. The SuperTokens registry chains to `ISRG Root YR`, a new Let's Encrypt root your CA bundle lacks. Pull `supertokens/supertokens-postgresql:12` from Docker Hub instead, or update the host's `ca-certificates`. Confirm which by running `openssl s_client -connect registry.supertokens.io:443 -servername registry.supertokens.io </dev/null` on the host — if the issuer is Let's Encrypt, it is your trust store; if it is something else, something is intercepting TLS. |
+| `supertokens:check` says the core protocol version is too old | The core image predates CDI 5.4. Use `supertokens/supertokens-postgresql:12` or later. |
