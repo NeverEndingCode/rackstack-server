@@ -275,7 +275,17 @@ publish port 3567**:
 ```
 POSTGRESQL_CONNECTION_URI=postgresql://rackstack_user:PASSWORD@192.168.x.x:5432/supertokens
 API_KEYS=<openssl rand -hex 32>
+DISABLE_TELEMETRY=true
 ```
+
+> `DISABLE_TELEMETRY` is not required, but set it. A self-hosted game server has
+> no reason to report usage anywhere, and leaving it on produces
+> `javax.net.ssl.SSLHandshakeException: PKIX path building failed` in the core's
+> log on every boot — `api.supertokens.io` chains to `ISRG Root YR`, the same
+> new Let's Encrypt root the image-pull problem comes from, and the JVM
+> truststore inside the core image does not carry it. **The error is non-fatal**
+> — the core starts and serves normally — but it is alarming noise in the log
+> of the component that signs your sessions.
 
 > **Two things about that image reference.**
 >
@@ -593,4 +603,6 @@ gone wrong and will send you chasing the wrong problem.
 | `shadow:check` says the database predates the v1.7 split | You restored a pre-v1.7 export. Migrate it to v1.7 first, or point at the right database. |
 | `shadow:check` reports `ORPHAN` rows | An identity points at a user that does not exist; that player cannot log in. Investigate before cutting over — do not ignore it. |
 | Pulling the core fails with `x509: certificate signed by unknown authority` | Not an outage. The SuperTokens registry chains to `ISRG Root YR`, a new Let's Encrypt root your CA bundle lacks. Pull `supertokens/supertokens-postgresql:12` from Docker Hub instead, or update the host's `ca-certificates`. Confirm which by running `openssl s_client -connect registry.supertokens.io:443 -servername registry.supertokens.io </dev/null` on the host — if the issuer is Let's Encrypt, it is your trust store; if it is something else, something is intercepting TLS. |
+| Core log shows `SSLHandshakeException: PKIX path building failed` | Telemetry phoning home to `api.supertokens.io`, whose certificate chains to the same new `ISRG Root YR` root. **Non-fatal** — check `/hello` still answers. Set `DISABLE_TELEMETRY=true` on the core to remove the call entirely. |
+| Both the image pull *and* the core's TLS fail | Two independent trust stores rejecting the same root is usually just a stale-CA coincidence, but rule out HTTPS interception: on the host run `openssl s_client -connect api.supertokens.io:443 -servername api.supertokens.io </dev/null \| openssl x509 -noout -issuer`. Let's Encrypt means a trust-store gap; anything else means a middlebox is re-signing your traffic. |
 | `supertokens:check` says the core protocol version is too old | The core image predates CDI 5.4. Use `supertokens/supertokens-postgresql:12` or later. |

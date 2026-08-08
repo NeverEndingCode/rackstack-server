@@ -104,6 +104,20 @@ services:
       # instead (see initSuperTokens), where it can fire only for operators who
       # have actually opted in.
       API_KEYS: ${SUPERTOKENS_API_KEY:-}
+      # The core phones home to api.supertokens.io on startup unless this is
+      # set. Off by default here for two reasons:
+      #
+      #   1. A self-hosted game server has no reason to report usage anywhere.
+      #   2. It is the fix for
+      #      `javax.net.ssl.SSLHandshakeException: PKIX path building failed`
+      #      in the core's log. api.supertokens.io's certificate chains to
+      #      ISRG Root YR, a new Let's Encrypt root that the JVM truststore
+      #      baked into the core image does not carry yet - so the call fails
+      #      on every boot. It is non-fatal (the core starts and serves
+      #      normally), but it is alarming noise in the log of the component
+      #      that signs your sessions, and there is no reason to make the call
+      #      at all.
+      DISABLE_TELEMETRY: ${SUPERTOKENS_DISABLE_TELEMETRY:-true}
     healthcheck:
       test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/3567' || exit 1"]
       interval: 10s
