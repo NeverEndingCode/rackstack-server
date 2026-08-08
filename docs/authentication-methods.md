@@ -217,41 +217,68 @@ can be exercised deliberately — it does not migrate live traffic. That is a
 feature for a first cutover, but do not mistake a quiet `dual` deployment for
 evidence that the SuperTokens path works end to end.
 
-## Phase 5 — `supertokens` mode — blocked on client work
+## Phase 5 — `supertokens` mode — implemented in v1.9, not yet proven
 
-> **Implementation plan written 2026-08-08:**
+> **Plan:**
 > [`superpowers/plans/2026-08-08-v1.9-supertokens-client.md`](./superpowers/plans/2026-08-08-v1.9-supertokens-client.md).
-> Not started. Task 1 of that plan drives the SuperTokens login by hand against
-> production `dual` — no code — which is the cheapest way to find out whether
-> the identity mapping actually works end to end. Do that before writing any
-> client code.
+> Tasks 2 and 3 (the client) are done. **Task 1 is not** — it is the
+> end-to-end proof, and it needs a deployed build. Run it first, before
+> Phase 5 proper.
 
-**This is the honest state: `supertokens`-only mode cannot be used yet, and the
-blocker is larger than "not recommended".**
+**The client can now do it.** As of v1.9 `client/src/game/auth.js` drives the
+three-call flow — `GET /auth/authorisationurl`, the provider redirect back to
+`/auth/callback/<provider>`, then `POST /auth/signinup` with `redirectURIInfo`
+— and `client/src/game/api.js` refreshes an expired access token on a 401,
+serialised so a burst of concurrent 401s produces exactly one refresh call.
+`GET /api/auth-info` tells the client which stack to drive, so one build serves
+`passport` and `supertokens` alike and the rollback stays real.
 
-The server side is complete — SuperTokens' middleware serves
-`GET /auth/authorisationurl` and `POST /auth/signinup`, the mapping override
-runs, and sessions resolve to the right `users.id`. The client has never been
-taught to call any of it:
+**What v1.9 also fixed, and why nothing here was ever exercised before.**
+`server/supertokens/init.js` passed its OAuth providers to `ThirdParty.init`
+as `signInUpFeature`. The SDK reads `signInAndUpFeature`. The key is optional
+in its type definition and JavaScript does not check for excess properties at
+runtime, so the list was dropped in silence — no throw, no warning, and a boot
+log that still printed `providers=github,discord`, because it logs what was
+*built* rather than what the recipe *received*. The consequence was total:
+every `GET /auth/authorisationurl` answered
 
-1. **No login flow.** `client/src/Login.jsx` hardcodes
-   `<a href="/auth/discord">` and `<a href="/auth/github">` — the *passport*
-   routes. In `supertokens` mode those routes are not registered, so the
-   request falls through to the SPA and the button silently does nothing.
-   Existing sessions keep working via the JWT fallback, but **no one can log
-   in**. Building this means: fetch the authorisation URL for the chosen
-   provider, redirect the browser to it, then hand the returned code to
-   `POST /auth/signinup` with `redirectURIInfo` (note: the raw-`oAuthTokens`
-   form is deliberately rejected — see below).
-2. **No session refresh.** There is no SuperTokens frontend SDK and so no
-   interceptor to refresh an expired access token. In `dual` this is invisible
-   because the legacy cookie still authenticates; in `supertokens`-only mode,
-   once a player's legacy cookie has also expired, they are silently logged out
-   when the access token expires.
+```
+400 {"message":"the provider github could not be found in the configuration"}
+```
 
-Both are frontend work of a size worth planning separately. Until they exist,
-Phase 5 is not reachable, and the runbook should not be read as implying
-otherwise.
+for both providers, so no SuperTokens login was ever possible on any v1.8
+build. It went unnoticed because the client logged in through passport, so
+nothing ever called the endpoint — which is the same reason `dual` running
+cleanly in production proved less than it appeared to.
+
+**So this is the honest state.** The provider-registration fix *is* verified
+against a real SuperTokens core: booted in `dual` against core 12, the same
+request that production answers with the 400 above returns
+`200 {"status":"OK","urlWithQueryParams":"https://github.com/login/oauth/authorize?..."}`,
+and restoring the typo reproduces production's error byte for byte.
+
+What has **not** run against a real core is `POST /auth/signinup` and the
+identity mapping behind it — that needs a real OAuth provider round trip, so
+every automated test stubs it. Since the mapping is the part that decides
+whether a returning player lands on their own save or an empty one, do not skip
+to `AUTH_MODE=supertokens`.
+
+**Run this first, on a deployment carrying v1.9 in `dual`:**
+
+1. Log in through the normal button. It now goes through SuperTokens.
+2. Confirm `POST /auth/signinup` answers `status: "OK"` with
+   **`user.id` equal to your existing `users.id`** (e.g. `github:37058311`),
+   not a SuperTokens UUID. A UUID means the mapping did not run — stop.
+3. Check `SELECT provider, provider_id, supertokens_user_id FROM identities;`.
+   `supertokens_user_id` should hold a real SuperTokens id, **not** your own
+   `users.id` — writing our own id back there was a v1.8 bug.
+4. Re-run `npm run shadow:check`. It must still be 6/6 with **no new
+   identities**: a new row means the login created a second account instead of
+   matching the existing one, which is the exact failure this migration exists
+   to prevent.
+
+Only once all four hold is `AUTH_MODE=supertokens` worth trying — and the
+rollback below stays free either way.
 
 ## Phase 6 — Rollback (available at every phase)
 

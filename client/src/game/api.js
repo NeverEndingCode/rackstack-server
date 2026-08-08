@@ -28,10 +28,92 @@
 
 import { ACTION_FLUSH_MS, ACTION_RETRY_MAX_MS } from './constants.js';
 
+// ---------------------------------------------------------------------------
+// Session refresh (v1.9)
+// ---------------------------------------------------------------------------
+//
+// A SuperTokens access token expires long before the session does; renewing it
+// is POST /auth/session/refresh, using the refresh cookie the browser already
+// holds. Without this the player is silently logged out mid-session the first
+// time the access token lapses.
+//
+// Off unless the server says the client is driving SuperTokens. In `passport`
+// mode a 401 means "not logged in" and there is nothing to renew - the refresh
+// endpoint is not even mounted - so attempting it would add a doomed round
+// trip to every unauthenticated request.
+
+let refreshEnabled = false;
+
+/** Called once at boot with the payload of GET /api/auth-info. */
+export function configureAuthRefresh(authInfo) {
+  refreshEnabled = authInfo?.loginFlow === 'supertokens';
+}
+
+// Exported for tests only - module-level state otherwise leaks between cases.
+export function __resetAuthRefreshForTests() {
+  refreshEnabled = false;
+  inFlightRefresh = null;
+}
+
+// The single shared in-flight refresh.
+//
+// This is the part most likely to be got wrong, and the failure is not merely
+// wasteful. The app fires several requests at once, so an access token that
+// has just expired produces a burst of simultaneous 401s. Refreshing per-401
+// would send N concurrent refreshes with the SAME refresh token; SuperTokens
+// rotates that token on use, so the first call invalidates the token the other
+// N-1 are still presenting. Those look exactly like token theft to the core,
+// which responds by revoking the session - turning a routine renewal into a
+// forced logout, and only ever under concurrency.
+//
+// One promise, shared by every caller, same shape as server/userLock.js.
+let inFlightRefresh = null;
+
+function refreshSession() {
+  if (inFlightRefresh) return inFlightRefresh;
+
+  inFlightRefresh = (async () => {
+    try {
+      const res = await fetch('/auth/session/refresh', {
+        method: 'POST',
+        credentials: 'include',
+      });
+      return res.ok;
+    } catch {
+      return false;
+    } finally {
+      // Cleared before this promise settles, so the NEXT 401 starts a fresh
+      // attempt rather than re-awaiting a completed one.
+      inFlightRefresh = null;
+    }
+  })();
+
+  return inFlightRefresh;
+}
+
+/**
+ * fetch + one refresh-and-retry on 401.
+ *
+ * `allowRefresh` is what bounds it to a single attempt: the retry passes
+ * false, so a second 401 is returned to the caller rather than starting a
+ * refresh loop. A 401 after a successful refresh means the session is
+ * genuinely gone, not stale.
+ *
+ * Throws on network failure, like fetch - callers translate that.
+ */
+async function fetchWithRefresh(path, opts, allowRefresh = true) {
+  const res = await fetch(path, { credentials: 'include', ...opts });
+  if (res.status !== 401 || !allowRefresh || !refreshEnabled) return res;
+
+  const refreshed = await refreshSession();
+  if (!refreshed) return res;
+  return fetchWithRefresh(path, opts, false);
+}
+
 async function request(path, opts) {
   let res;
   try {
-    res = await fetch(path, { credentials: 'include', ...opts });
+    res = await fetchWithRefresh(path, opts);
   } catch (e) {
     return { status: 0, error: 'network_error' };
   }
@@ -251,7 +333,10 @@ export function fetchEventParticipation(id) {
 export async function fetchChangelog() {
   let res;
   try {
-    res = await fetch('/api/changelog', { credentials: 'include' });
+    // Refresh-aware like every other call: this sits behind requireAuth too,
+    // so an expired access token would otherwise render an empty changelog
+    // rather than renewing and succeeding.
+    res = await fetchWithRefresh('/api/changelog', {});
   } catch (e) {
     return { status: 0, error: 'network_error' };
   }

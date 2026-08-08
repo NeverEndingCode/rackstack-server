@@ -13,8 +13,8 @@
 
 import express from 'express';
 import passport from 'passport';
-import { issueToken, COOKIE_NAME } from '../auth.js';
-import { isPassportEnabled } from '../authMode.js';
+import { issueToken, COOKIE_NAME, configuredProviders } from '../auth.js';
+import { isPassportEnabled, isSuperTokensEnabled } from '../authMode.js';
 import { isSuperTokensReady, loadSessionRecipe } from '../supertokens/init.js';
 
 const COOKIE_OPTS = {
@@ -41,6 +41,30 @@ function finishLogin(req, res) {
  */
 export function createAuthRouter({ mode }) {
   const router = express.Router();
+
+  // The one route here that is NOT a login route, and the one place in the
+  // codebase serving /api/* from outside routes/api.js.
+  //
+  // It lives here because it answers a question only this file knows: which
+  // stack the client must drive. It cannot live on GET /api/config, which the
+  // v1.9 plan originally proposed, because that route sits behind requireAuth
+  // and the caller is by definition not logged in yet.
+  //
+  // Deliberately public. It reveals which login buttons to draw and nothing
+  // else - no credentials, no ids, no per-user state - and every fact in it is
+  // already observable by looking at the login screen or watching a redirect.
+  //
+  // `loginFlow` is a server DECISION, not raw configuration, so the policy
+  // lives in one place. In `dual` both stacks accept a session, and the client
+  // is told to use SuperTokens: exercising that path is the entire point of
+  // dual, and the passport routes stay registered underneath as the rollback.
+  router.get('/api/auth-info', (req, res) => {
+    res.json({
+      authMode: mode,
+      loginFlow: isSuperTokensEnabled(mode) ? 'supertokens' : 'passport',
+      providers: configuredProviders(),
+    });
+  });
 
   if (isPassportEnabled(mode)) {
     router.get('/auth/discord', passport.authenticate('discord', { session: false }));

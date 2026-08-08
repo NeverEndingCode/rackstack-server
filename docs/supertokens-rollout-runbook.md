@@ -59,15 +59,14 @@ worse than one that admits it has not:
   read (`postgres postgresql://rackstack_user@…:5432/rackstack`).
 - **No SuperTokens core has been run against this code outside tests.** Part B
   is written from the documented configuration, not from a stood-up instance.
-- **`supertokens`-only mode cannot be used yet** — and the reason is bigger
-  than "not recommended". The client has never been taught to talk to
-  SuperTokens: `client/src/Login.jsx` points its buttons at the *passport*
-  routes, which `supertokens` mode does not register, so the login buttons
-  silently do nothing. Existing sessions keep working through the JWT
-  fallback, but nobody can log in. There is also no token refresh. Both are
-  frontend work that has not been started. See D6 and
-  [`authentication-methods.md`](./authentication-methods.md) Phase 5.
-  **`dual` is the intended resting state for this release.**
+- **No SuperTokens login has ever *completed* against a real core.** v1.9 built
+  the client flow and fixed the bug that made one impossible (v1.8 registered
+  its providers under `signInUpFeature`; the SDK reads `signInAndUpFeature`, so
+  every `/auth/authorisationurl` returned *"the provider github could not be
+  found in the configuration"*). That fix is confirmed against a real core 12 —
+  but `POST /auth/signinup` and the identity mapping behind it need a real
+  OAuth round trip, so they are still stubbed everywhere. The first real run is
+  the gate in D6. **`dual` is still the intended resting state.**
 
 None of that blocks *deploying* v1.8. All of it blocks *rolling it out*, and
 Part C exists to close the first item.
@@ -538,37 +537,50 @@ There is no schedule to keep. `dual` is a stable state, not a transition —
 both stacks work, rollback stays free, and nothing degrades by leaving it
 there for weeks.
 
-### D6. `supertokens` mode — do not use it yet
+### D6. `supertokens` mode — gate it on a real login first
 
-> **Two client-side gaps block this, and the first is not subtle.**
->
-> **1. Nobody can log in.** `client/src/Login.jsx` hardcodes its buttons to
-> `/auth/discord` and `/auth/github` — the *passport* routes. `supertokens`
-> mode does not register those, so the request falls through to the SPA and
-> the button silently does nothing. Existing sessions keep working via the JWT
-> fallback, so the app looks fine right up until someone tries to sign in.
->
-> The server side is complete: SuperTokens' middleware serves
-> `GET /auth/authorisationurl` and `POST /auth/signinup`, and the mapping
-> resolves correctly. The client has simply never been taught to call them.
->
-> **2. No session refresh.** There is no SuperTokens frontend SDK and so no
-> interceptor to refresh an expired access token. In `dual` this is invisible
-> because the legacy cookie still authenticates. In `supertokens` mode, once a
-> player's legacy cookie has also expired, they are silently logged out when
-> the access token expires.
->
-> Both are frontend work that has **not been started**. `dual` is the intended
-> resting state for this release. See
-> [`authentication-methods.md`](./authentication-methods.md) Phase 5 for what
-> building them involves.
+As of **v1.9** the client drives SuperTokens itself: `client/src/game/auth.js`
+fetches the authorisation URL, handles the `/auth/callback/<provider>`
+redirect and posts `redirectURIInfo` to `/auth/signinup`, and
+`client/src/game/api.js` refreshes an expired access token on a 401 (one
+shared in-flight refresh, so concurrent 401s cannot trigger a rotation race
+the core would read as token theft). `GET /api/auth-info` decides which stack
+the client drives, so `passport` and its rollback keep working from the same
+build.
 
-> **A nuance about what `dual` actually proves.** Because the client still
-> drives every login through the passport routes, turning on `dual` does not
-> by itself route anyone through SuperTokens — it makes SuperTokens sessions
-> *acceptable* and stands the stack up so it can be exercised deliberately. Do
-> not read a quiet `dual` deployment as evidence that the SuperTokens login
-> path works end to end.
+> **What v1.9 fixed, and why `dual` looked healthier than it was.** v1.8
+> handed its OAuth providers to `ThirdParty.init` as `signInUpFeature`; the
+> SDK reads `signInAndUpFeature`. That key is optional and JavaScript does not
+> reject unknown properties, so the provider list was discarded silently —
+> while the boot log still printed `providers=github,discord`, because it logs
+> what was built rather than what the recipe received. Every
+> `GET /auth/authorisationurl` returned
+> `400 {"message":"the provider github could not be found in the
+> configuration"}`. No SuperTokens login was possible on any v1.8 build, and
+> nothing surfaced it because the client only ever used passport.
+
+**The gate. Run all four on a v1.9 deployment still in `dual`:**
+
+1. Log in with the normal button — it now goes through SuperTokens.
+2. `POST /auth/signinup` must answer `status: "OK"` with **`user.id` equal to
+   your existing `users.id`** (e.g. `github:37058311`), not a UUID. A UUID
+   means the mapping did not run.
+3. `SELECT provider, provider_id, supertokens_user_id FROM identities;` —
+   `supertokens_user_id` must hold a real SuperTokens id, **not** your own
+   `users.id`.
+4. `npm run shadow:check` must still be 6/6 with **no new identities**. A new
+   row means the login created a second account rather than matching the
+   existing one — the precise failure this migration exists to prevent.
+
+Only then is `AUTH_MODE=supertokens` worth setting. Rollback stays free
+throughout.
+
+> **A nuance about what a pre-v1.9 `dual` deployment proved.** Because the
+> client drove every login through the passport routes, turning on `dual`
+> never routed anyone through SuperTokens — it made SuperTokens sessions
+> *acceptable* and stood the stack up. A quiet `dual` deployment was never
+> evidence that the SuperTokens login path worked, and in fact it could not
+> have.
 
 ## Part E — Rollback
 

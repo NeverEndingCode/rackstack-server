@@ -355,7 +355,18 @@ export async function initSuperTokens({ env = process.env, mode } = {}) {
     },
     recipeList: [
       ThirdParty.init({
-        signInUpFeature: { providers },
+        // `signInAndUpFeature`, NOT `signInUpFeature`. The key is optional in
+        // the SDK's TypeInput and there is no excess-property check at
+        // runtime, so the wrong spelling is dropped in silence:
+        // validateAndNormaliseSignInAndUpConfig reads only this key and falls
+        // back to `providers: []`. The result is a SuperTokens stack that
+        // initialises cleanly, passes every containment and config test, and
+        // then answers every /auth/authorisationurl with
+        // "the provider <id> could not be found in the configuration" - which
+        // is what production did until v1.9. Note that buildProviders' own
+        // "no OAuth provider is configured" guard above cannot catch it: the
+        // list is non-empty, it just never reaches the recipe.
+        signInAndUpFeature: { providers },
         override: {
           // The IDENTITY MAPPING override is on `functions` (the recipe
           // function), NOT `apis`. SuperTokens creates the session in the API
