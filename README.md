@@ -235,7 +235,7 @@ and the SuperTokens SDK is not even loaded.
 |---|---|
 | *(blank)* or `passport` | Default. Exactly as before; SuperTokens is not initialised. |
 | `dual` | Both login paths live, sessions from either accepted. Where the rollout happens. |
-| `supertokens` | ⚠️ **Not usable yet** — SuperTokens only; the legacy OAuth routes are not registered, and the client has no SuperTokens login flow, so **nobody can log in**. See below. |
+| `supertokens` | SuperTokens only; the legacy OAuth routes are not registered. Implemented as of v1.9, but **not yet verified against a real core** — cut over via `dual` first. See below. |
 
 Two properties worth knowing before you touch it:
 
@@ -247,13 +247,16 @@ Two properties worth knowing before you touch it:
   looking like a finished rollout — the kind of thing you'd discover weeks
   later, from the wrong symptom.
 
-- **`dual` is the intended resting state.** `supertokens`-only mode is *not*
-  usable yet: `client/src/Login.jsx` points its buttons at the passport routes,
-  which that mode does not register, so they silently do nothing and no one can
-  sign in. Existing sessions keep working via the JWT fallback, which is what
-  makes it easy to miss. There is no token refresh in the client either. Both
-  are frontend work that has not been started — see
-  [`docs/authentication-methods.md`](./docs/authentication-methods.md) Phase 5.
+- **Go through `dual` first.** As of v1.9 the client can log in through
+  SuperTokens and refreshes its own access token, so `supertokens`-only mode is
+  implemented rather than merely inadvisable. What it has *not* had is a real
+  login against a real core: v1.8 registered its OAuth providers under a key
+  the SDK ignores (`signInUpFeature` instead of `signInAndUpFeature`), so every
+  `/auth/authorisationurl` answered *"the provider github could not be found in
+  the configuration"* and no SuperTokens login was ever possible. v1.9 fixes
+  that, but the end-to-end proof still has to be run on your own deployment —
+  see [`docs/authentication-methods.md`](./docs/authentication-methods.md)
+  Phase 5.
 
 `SUPERTOKENS_CONNECTION_URI` points at the SuperTokens core container and is
 read only in `dual`/`supertokens`. That core needs its **own** database on

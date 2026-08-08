@@ -1,5 +1,58 @@
 # Changelog
 
+## v1.9.0
+
+- **Every SuperTokens login was impossible, and had been since v1.8.**
+  `server/supertokens/init.js` handed its OAuth providers to `ThirdParty.init`
+  as `signInUpFeature`. The SDK reads `signInAndUpFeature`. That key is
+  optional in its type definition and JavaScript does not reject unknown
+  properties, so the provider list was discarded without a throw, a warning or
+  a log line — while the boot log still printed `providers=github,discord`,
+  because it logs what was *built* rather than what the recipe *received*.
+
+  Every `GET /auth/authorisationurl` answered
+  `400 {"message":"the provider github could not be found in the
+  configuration"}`, for both providers. Nothing surfaced it: the client logged
+  in through passport, so the endpoint was never called — which is also why a
+  `dual` deployment running quietly in production proved less than it looked
+  like it did.
+
+  Fixed, with a test that runs the config `init.js` actually passes through the
+  SDK's own normaliser, so it fails on a wrong key *and* on a future SDK
+  rename rather than merely restating the fix. Confirmed against a real
+  SuperTokens core 12: the same request returns `200` with a valid GitHub
+  authorize URL, and restoring the typo reproduces production's 400 byte for
+  byte — while `GET /api/auth-info` reports `providers:["github","discord"]` in
+  both runs, which is exactly why nothing surfaced it for a release.
+
+- **The client can log in through SuperTokens.** `client/src/game/auth.js`
+  drives the three-call flow — fetch the authorisation URL, handle the
+  `/auth/callback/<provider>` redirect, post `redirectURIInfo` to
+  `/auth/signinup` — hand-rolled rather than via `supertokens-web-js`, whose
+  `signOut()` targets the `/auth/signout` v1.8 deliberately removed for
+  clearing only half of a dual-stack session. Cancelled logins, unconfigured
+  providers and refused sign-ins each land back on the login screen with a
+  readable message.
+
+- **Sessions refresh themselves.** A 401 triggers one
+  `POST /auth/session/refresh` and a retry. The refresh is serialised through a
+  single shared promise: SuperTokens rotates the refresh token on use, so
+  concurrent refreshes present an already-spent token and the core reads that
+  as token theft and revokes the session — turning a routine renewal into a
+  forced logout, and only ever under concurrency.
+
+- **New public `GET /api/auth-info`** reports the auth mode, which login flow
+  the client should drive, and which providers actually have credentials. The
+  login screen needs all three *before* anyone is authenticated, so it could
+  not live on `/api/config`. One build therefore serves `passport` and
+  `supertokens` alike, and the documented rollback keeps working.
+
+- `supertokens` mode is no longer described as unusable in the README,
+  `.env.example`, the Unraid template, the rollout runbook and the migration
+  guide. It is not yet described as proven either: every test stubs the core,
+  so the first real login is a gate to run on your own deployment — the four
+  checks are in `docs/authentication-methods.md` Phase 5 and runbook D6.
+
 ## v1.8.4
 
 - **`AUTH_MODE=dual` would have refused to start against a correctly-secured
