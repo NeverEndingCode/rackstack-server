@@ -1,11 +1,9 @@
 import express from 'express';
-import passport from 'passport';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import {
-  requireAuth, requireRole, issueToken, COOKIE_NAME,
-  isOwner, getEffectiveRoles,
+  requireAuth, requireRole, isOwner, getEffectiveRoles,
 } from '../auth.js';
 import {
   getUserById, getAllUsersWithSaves, getRoles, setRoles, setUsername,
@@ -34,13 +32,6 @@ import { TOUR_IDS, ONBOARDING_TOUR_ID, isValidTourId } from '../../shared/tours.
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const router = express.Router();
 
-const COOKIE_OPTS = {
-  httpOnly: true,
-  sameSite: 'lax',
-  secure: process.env.NODE_ENV === 'production',
-  maxAge: 90 * 24 * 3600 * 1000,
-};
-
 const MINIGAMES = ['rush', 'debug', 'match', 'balance'];
 
 // Event ids are coordinator-authored slugs (matches the seeded seasonal
@@ -51,30 +42,11 @@ function isValidEventSlug(id) {
   return typeof id === 'string' && id.length >= 3 && id.length <= 60 && EVENT_SLUG_RE.test(id);
 }
 
-function finishLogin(req, res) {
-  const token = issueToken(req.user);
-  res.cookie(COOKIE_NAME, token, COOKIE_OPTS);
-  res.redirect('/');
-}
-
-router.get('/auth/discord', passport.authenticate('discord', { session: false }));
-router.get(
-  '/auth/discord/callback',
-  passport.authenticate('discord', { session: false, failureRedirect: '/?authError=discord' }),
-  finishLogin,
-);
-
-router.get('/auth/github', passport.authenticate('github', { session: false }));
-router.get(
-  '/auth/github/callback',
-  passport.authenticate('github', { session: false, failureRedirect: '/?authError=github' }),
-  finishLogin,
-);
-
-router.post('/auth/logout', (req, res) => {
-  res.clearCookie(COOKIE_NAME);
-  res.json({ ok: true });
-});
+// The login routes used to live here. They moved to ./authRoutes.js in v1.8,
+// because they are the only routes whose registration depends on AUTH_MODE -
+// in `supertokens` mode the passport ones must not exist at all. Everything
+// below is mode-agnostic: it sits behind requireAuth, which resolves req.user
+// from whichever stack authenticated the request.
 
 router.get('/api/me', requireAuth, async (req, res, next) => {
   try {

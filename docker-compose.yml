@@ -9,8 +9,77 @@ services:
       POSTGRES_DB: rackstack
     volumes:
       - ./pgdata:/var/lib/postgresql/data
+      # Creates the SEPARATE database the SuperTokens core needs (v1.8).
+      # Scripts here run only when the data directory is first initialised,
+      # so on an existing deployment this file does nothing and the database
+      # must be created by hand - see docs/supertokens-rollout-runbook.md.
+      # Creating it unconditionally is harmless: an unused empty database
+      # costs nothing, and having it ready removes a step from the rollout.
+      - ./docker/init-supertokens-db.sql:/docker-entrypoint-initdb.d/10-supertokens.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U rackstack"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # The SuperTokens core (v1.8). Opt-in: it belongs to a compose profile, so
+  # `docker compose up` does NOT start it and the default passport auth stack
+  # is unaffected. Start it only when you are rolling SuperTokens out:
+  #
+  #   docker compose --profile supertokens up -d
+  #
+  # It is deliberately not a `depends_on` of rackstack. In the default
+  # AUTH_MODE the server never contacts it, and making every deployment wait
+  # on a container it will not use is a good way to turn an unrelated
+  # SuperTokens problem into a RackStack outage.
+  supertokens:
+    # Pinned, not :latest. This container signs and validates every session in
+    # supertokens/dual mode; silently pulling a new major on the next `up -d`
+    # is not a risk worth taking for the component that IS the trust root.
+    image: registry.supertokens.io/supertokens/supertokens-postgresql:9.3
+    container_name: rackstack-supertokens
+    profiles: ["supertokens"]
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # NOTE: the port is deliberately NOT published to the host.
+    #
+    # A SuperTokens core with no API key serves its entire API unauthenticated,
+    # and that API is the trust root of the whole stack: POST /recipe/session
+    # mints a session for ANY userId, and because the user-id mapping makes
+    # session.getUserId() return `github:37058311` verbatim, anyone who can
+    # reach this port can mint a valid RackStack session for any value in
+    # SUPER_ADMIN_IDS - which are deterministic and effectively public. That
+    # bypasses every guard in the Express app without touching it.
+    #
+    # rackstack reaches the core over the compose network as `supertokens:3567`
+    # and does not need a published port. To poke it by hand, use
+    #   docker compose exec supertokens bash -c ':> /dev/tcp/127.0.0.1/3567'
+    # rather than re-adding a `ports:` mapping.
+    environment:
+      # Its OWN database, never the rackstack one - SuperTokens manages its
+      # own schema and must not share a database with application tables.
+      #
+      # The scheme must be postgresql://. The SuperTokens core rejects
+      # postgres:// at startup. (This is specific to the core: RackStack's
+      # own DATABASE_URL above accepts either - v1.7 verified that directly,
+      # against an earlier claim to the contrary.)
+      POSTGRESQL_CONNECTION_URI: postgresql://rackstack:rackstack@postgres:5432/supertokens
+      # Defence in depth behind the unpublished port: even on the compose
+      # network, the core should not answer to anything that merely reaches it.
+      # Must match SUPERTOKENS_API_KEY on the rackstack service. Generate with
+      # `openssl rand -hex 32` and put it in .env.
+      #
+      # Deliberately NOT the ${VAR:?error} form. Compose interpolates the whole
+      # file before it filters by profile, so a required-variable error here
+      # would break plain `docker compose up` for every deployment that never
+      # touches SuperTokens. The requirement is enforced in server code
+      # instead (see initSuperTokens), where it can fire only for operators who
+      # have actually opted in.
+      API_KEYS: ${SUPERTOKENS_API_KEY:-}
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/3567' || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -42,5 +111,11 @@ services:
       # tell you to do - would silently keep pointing at Postgres. Without the
       # colon, only a genuinely unset variable takes the default.
       DATABASE_URL: ${DATABASE_URL-postgresql://rackstack:rackstack@postgres:5432/rackstack}
+      # v1.8 auth stack selector. Defaults to the legacy passport + JWT stack,
+      # so `docker compose up` behaves exactly as it did before v1.8. Same
+      # non-colon ${VAR-default} form and the same reason: `AUTH_MODE=` in
+      # .env must mean "the default", not "unset, so substitute the default"
+      # - which is what the colon form would do, defeating the rollback.
+      AUTH_MODE: ${AUTH_MODE-passport}
     env_file:
       - .env

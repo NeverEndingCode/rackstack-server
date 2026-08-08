@@ -21,6 +21,7 @@ const INTERFACE = [
   'setEventStatus', 'deleteEvent', 'upsertParticipation', 'getParticipation',
   'updateParticipationProgress', 'listParticipation', 'setLeaderboardOptOut',
   'listLeaderboard', 'getLatestEventId', 'seedSeasonalEvents', 'listIdentities',
+  'getIdentity', 'setSupertokensUserId',
 ];
 
 describe('db facade', () => {

@@ -17,7 +17,7 @@ const { COOKIE_NAME } = await import('../server/auth.js');
 const { TOUR_IDS, ONBOARDING_TOUR_ID } = await import('../shared/tours.js');
 
 await ensureConfig();
-const app = buildApp();
+const app = await buildApp();
 
 afterAll(async () => {
   if (driver.__backend === 'pg') await driver.__raw.end();

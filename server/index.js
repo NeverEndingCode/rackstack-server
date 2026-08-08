@@ -78,7 +78,7 @@ await runScheduler(Date.now());
 // setInterval is an unhandled rejection that crashes Node 20 by default.
 setInterval(() => { runScheduler(Date.now()).catch((e) => console.error('[scheduler]', e)); }, 3600_000).unref();
 
-const app = buildApp();
+const app = await buildApp();
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {

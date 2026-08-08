@@ -50,7 +50,8 @@ getOpenMinigameSession, finishMinigameSession, getConfigRow, putConfigRow,
 getConfigHistory, listEvents, getEvent, getActiveEvent, putEvent,
 setEventStatus, deleteEvent, upsertParticipation, getParticipation,
 updateParticipationProgress, listParticipation, setLeaderboardOptOut,
-listLeaderboard, getLatestEventId, seedSeasonalEvents, listIdentities
+listLeaderboard, getLatestEventId, seedSeasonalEvents, listIdentities,
+getIdentity, setSupertokensUserId
 ```
 
 `tests/db.interface.test.js` asserts this exact list is exported as
@@ -80,6 +81,38 @@ these breaks every consumer.
   resolves through it. `getAllUsersWithSaves()` still exposes a `provider`
   field — the user's *primary* identity (earliest `created_at`, ties broken
   by provider name), not necessarily their only one.
+
+### The two v1.8 identity functions
+
+- `getIdentity(provider, providerId)` → the `identities` row, or `undefined`
+  when that pair has never logged in (the same missing-row contract as every
+  other read — `undefined`, never `null`). Unlike the lookup inside
+  `upsertUser`, this one has no side effect: SuperTokens' `signInUp` override
+  needs to ask "does this player already exist?" *before* deciding whether to
+  create anything.
+- `setSupertokensUserId(provider, providerId, supertokensUserId)` → void.
+  Records which SuperTokens-internal user id has been mapped onto this
+  identity. Purely our-side bookkeeping; the mapping that governs what
+  `session.getUserId()` returns lives in the SuperTokens core.
+
+  **Idempotent on re-login.** `identities.supertokens_user_id` is `UNIQUE`,
+  but a row re-writing its own existing value does not conflict with itself,
+  so calling this on every login needs no guard and no upsert. A conflict
+  that *does* fire means two different identities were handed the same
+  SuperTokens id — genuine corruption — and is deliberately allowed to throw.
+
+  A missing identity row is a silent no-op, matching `setRoles` /
+  `setToursCompleted`. The caller resolves or creates the identity immediately
+  beforehand, so a miss cannot happen without a caller-side bug — and failing
+  a login over an unrecorded bookkeeping column would be a poor trade.
+
+  > An earlier version of this note justified the no-op by claiming a throw
+  > would strand the core-side mapping and cause a permanent lockout on retry.
+  > That was wrong, and the v1.8 final review caught it: `linkExternalUserId`
+  > reads `getUserIdMapping` *first* and takes the already-mapped branch on a
+  > retry, and separately handles `USER_ID_MAPPING_ALREADY_EXISTS_ERROR`. There
+  > is no lockout. The no-op is still right; the stated mechanism was fiction,
+  > and would have sent the next maintainer looking for a broken retry path.
 
 ## Schema versioning
 

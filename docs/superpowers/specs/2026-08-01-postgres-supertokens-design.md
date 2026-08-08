@@ -247,6 +247,42 @@ python3/make/g++ build stage stays. `DB_PATH` keeps its default so a
 
 Starts only after v1.7 is confirmed running in production.
 
+> **Status (2026-08-06).** v1.7 is merged, tagged `v1.7.0`, and published to
+> GHCR — but **has not been cut over on the owner's Unraid box**, and the
+> production export §5.5 depends on has not been supplied. Implementation of
+> v1.8 is under way regardless, because `AUTH_MODE` defaults to `passport` and
+> every part of the release is inert until an operator changes it. The two
+> things genuinely gated on production are unchanged: running shadow mode
+> against real identities, and cutting over to `dual`. Neither has happened.
+>
+> Implementation plan: `docs/superpowers/plans/2026-08-06-v1.8-supertokens.md`.
+> Operator runbook: `docs/supertokens-rollout-runbook.md`.
+> Progress: **all 7 tasks built, and the whole-branch final review run and its
+> findings fixed.** 614 tests green on SQLite, 637 on Postgres, 39 e2e smoke
+> assertions, and a real boot verified in each of the three `AUTH_MODE`
+> values. Version bumped to 1.8.0; not yet tagged.
+>
+> **The client side of this design was never in scope and is not built.** Two
+> gaps, both frontend, neither affecting `dual`:
+>
+> 1. **No SuperTokens login flow.** `client/src/Login.jsx` drives its buttons
+>    at the passport routes, which `supertokens` mode does not register — so in
+>    that mode the buttons silently do nothing and nobody can log in. The
+>    server side is complete (the middleware serves `/auth/authorisationurl`
+>    and `/auth/signinup`); the client has never been taught to call it.
+> 2. **No session refresh.** No frontend SDK, so no interceptor to refresh an
+>    expired access token. Invisible in `dual` because the legacy cookie still
+>    authenticates.
+>
+> **`dual` is the intended resting state for v1.8**, and it is worth being
+> precise about what `dual` proves: since the client still logs in through
+> passport, enabling `dual` makes SuperTokens sessions *acceptable* without
+> routing live traffic through them. See
+> `docs/authentication-methods.md` Phase 5.
+>
+> Still true, and unchanged by any of the above: shadow mode has not been run
+> against production identities, and no cutover has happened anywhere.
+
 ### 5.1 Containers
 
 - `registry.supertokens.io/supertokens/supertokens-postgresql`, port 3567.
@@ -255,6 +291,12 @@ Starts only after v1.7 is confirmed running in production.
 - Two documented footguns: the scheme must be `postgresql://` (`postgres://`
   fails at startup), and the host may not be `localhost`/`127.0.0.1` from inside
   a container.
+
+> **Scoping correction (2026-08-06).** The `postgres://` warning applies to the
+> **SuperTokens core only**. v1.7 established that RackStack's own
+> `DATABASE_URL` accepts either scheme — `pg-connection-string` parses them
+> identically, verified directly — and three documents that had repeated the
+> broader claim were corrected in v1.7. Do not let this line reintroduce it.
 
 ### 5.2 Strangler rollout via `AUTH_MODE`
 
@@ -274,11 +316,47 @@ seam means zero route handler changes.
 
 SuperTokens' ThirdParty recipe supplies `thirdPartyId` (`'github'`/`'discord'`)
 and `thirdPartyUserId` — the same pair passport supplies as `provider` and
-`profile.id`. In the `signInUp` override:
+`profile.id`.
+
+> **Verified during v1.8 implementation (2026-08-06).** This equality was
+> written as an assumption; it has since been checked against the pinned
+> library sources:
+>
+> - **GitHub** — `supertokens-node`'s built-in provider sets
+>   ``thirdPartyUserId = `${user.id}` `` (the numeric id, stringified);
+>   `passport-github2` sets `profile.id = String(json.id)`. Same source field,
+>   same stringification.
+> - **Discord** — `supertokens-node` maps
+>   `userInfoMap.fromUserInfoAPI.userId` to `id` (the snowflake, already a
+>   string); `passport-discord` passes Discord's raw user JSON straight
+>   through, so `profile.id` is that same `id`.
+>
+> This raises confidence but does **not** retire the §5.5 shadow gate: what
+> ultimately matters is the values already stored in the owner's `identities`
+> rows, some of which may have been written by older versions of either
+> library.
+
+In the `signInUp` override:
 
 1. Look up `identities` by `(provider, provider_id)`.
 2. Resolve the existing `users.id` (or create user + identity for a new player).
-3. Call `createUserIdMapping({ supertokensUserId, externalUserId: users.id })`.
+3. Call `createUserIdMapping({ superTokensUserId, externalUserId: users.id })`.
+
+> **Spelling correction (2026-08-06, Task 3).** Note the capital T in
+> `superTokensUserId`. This document and the implementation plan both
+> originally wrote `supertokensUserId`, which `supertokens-node@24` accepts
+> silently as `undefined` — no throw, no log, and no mapping created. Since
+> the whole failure mode below is invisible, a typo here would be
+> indistinguishable from never having written the step at all.
+
+Because the core translates user ids in every response once a mapping exists,
+a *returning* login receives the external id back from `signInUp`. The
+override therefore checks `getUserIdMapping` first and only creates a mapping
+when there genuinely is none — treating `UNKNOWN_SUPERTOKENS_USER_ID_ERROR` as
+a failure would break every login after the first. A mapping that exists but
+points at a *different* `users.id` than `identities` resolves fails the login
+loudly, since guessing between two disagreeing sources of truth is how a
+player ends up on someone else's save.
 
 Afterwards `session.getUserId()` returns e.g. `github:37058311`, so saves,
 roles, event participation and `SUPER_ADMIN_IDS` all continue to resolve.
@@ -333,6 +411,7 @@ full 90-day expiry, so in-flight sessions survive the round trip.
 | SQLite driver rots untested | Full suite runs on both backends in CI |
 | SuperTokens id shape differs from stored `provider_id` | Shadow mode against production export; cutover gated on 100% match |
 | SuperTokens session carries the wrong user id | Mapping created before session issuance; asserted by test |
+| **Stock `signInUpPOST` accepts a submitted OAuth token as proof of identity** | **Found by security review 2026-08-06.** The SDK's GitHub `validateAccessToken` audience check is dead code (the provider replaces `getUserInfo`, and only the generic one calls it), so any GitHub token able to read `/user` would authenticate as its owner — account takeover, and full admin for a `SUPER_ADMIN_IDS` holder. Fixed by an `apis` override rejecting the `oAuthTokens` flow; RackStack is browser-only so it has no legitimate caller. Regression-tested. |
 | GitHub redirect_uri mismatch | Registered callback widened to `/auth` before enabling `dual` |
 | Async refactor swallows route errors | Every handler audited for try/catch during the refactor |
 

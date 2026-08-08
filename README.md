@@ -66,6 +66,30 @@ You only need to configure the provider(s) you actually want to use - leave
 the other's ID/SECRET blank in `.env` and its login button will just fail if
 clicked (harmless, but you may want to hide it later).
 
+### If you plan to enable SuperTokens later
+
+SuperTokens serves its OAuth callbacks at `/auth/callback/<provider>`, while
+the paths above are `/auth/<provider>/callback`. GitHub requires a redirect
+URL's path to be a **subdirectory** of the registered callback URL, and
+`/auth/callback/github` is *not* a subdirectory of `/auth/github/callback` - so
+left alone, every SuperTokens GitHub login would fail with a `redirect_uri`
+mismatch while passport logins carried on working.
+
+The fix is one-time, **additive and reversible**: widen the GitHub OAuth app's
+registered callback to the parent path `https://<your-domain>/auth`. Both paths
+are then subdirectories of it and both work simultaneously - nothing is
+removed, so passport keeps working before, during and after. Discord permits
+multiple redirect URIs, so simply add
+`https://<your-domain>/auth/callback/discord` alongside the existing one.
+
+Leave `GITHUB_CALLBACK_URL` / `DISCORD_CALLBACK_URL` pointing at the existing
+`/auth/<provider>/callback` paths - those tell passport where to send people,
+and passport's paths have not changed.
+
+**Do this before setting `AUTH_MODE`, not at the same time.** It is safe to do
+days early. Full sequence in
+[`docs/supertokens-rollout-runbook.md`](docs/supertokens-rollout-runbook.md).
+
 ## 2. Configure
 
 ```bash
@@ -197,8 +221,55 @@ variable actually lives for your deployment:
 | Deployment | Where to blank `DATABASE_URL` |
 |---|---|
 | Unraid / plain `docker run` | The container's Variable in the Unraid UI (or the `-e` flag) |
-| Docker Compose | `.env` — `docker-compose.yml` reads it via `${DATABASE_URL:-...}` |
+| Docker Compose | `.env` — `docker-compose.yml` reads it via `${DATABASE_URL-...}` (no colon, so `DATABASE_URL=` means "blank", not "unset" — that is what makes the documented rollback work) |
 | Local `npm start` | `.env` |
+
+### Authentication stack (`AUTH_MODE`)
+
+RackStack is gaining SuperTokens as an alternative login stack, rolled out
+behind a switch rather than swapped in one step. **If you do nothing, nothing
+changes** — the default is the passport + JWT stack that has always shipped,
+and the SuperTokens SDK is not even loaded.
+
+| `AUTH_MODE` | Behaviour |
+|---|---|
+| *(blank)* or `passport` | Default. Exactly as before; SuperTokens is not initialised. |
+| `dual` | Both login paths live, sessions from either accepted. Where the rollout happens. |
+| `supertokens` | ⚠️ **Not usable yet** — SuperTokens only; the legacy OAuth routes are not registered, and the client has no SuperTokens login flow, so **nobody can log in**. See below. |
+
+Two properties worth knowing before you touch it:
+
+- **Changing this never logs anyone out.** Existing login cookies stay valid
+  for their full 90 days through every transition, in both directions, so
+  rollback is just setting it back to `passport` and restarting.
+- **A typo stops the container** instead of quietly falling back to the
+  default. `AUTH_MODE=supertoken` would otherwise serve the legacy stack while
+  looking like a finished rollout — the kind of thing you'd discover weeks
+  later, from the wrong symptom.
+
+- **`dual` is the intended resting state.** `supertokens`-only mode is *not*
+  usable yet: `client/src/Login.jsx` points its buttons at the passport routes,
+  which that mode does not register, so they silently do nothing and no one can
+  sign in. Existing sessions keep working via the JWT fallback, which is what
+  makes it easy to miss. There is no token refresh in the client either. Both
+  are frontend work that has not been started — see
+  [`docs/authentication-methods.md`](./docs/authentication-methods.md) Phase 5.
+
+`SUPERTOKENS_CONNECTION_URI` points at the SuperTokens core container and is
+read only in `dual`/`supertokens`. That core needs its **own** database on
+your Postgres server, separate from the rackstack one.
+
+**Set `SUPERTOKENS_API_KEY`, and do not publish the core's port.** A
+SuperTokens core with no API key serves its entire API unauthenticated, and
+that API can mint a session for *any* user id — including every value in
+`SUPER_ADMIN_IDS`, without any request reaching RackStack. The server refuses
+to start in `dual`/`supertokens` if the core is not on loopback and no key is
+set. Generate one with `openssl rand -hex 32` and set it as `API_KEYS` on the
+core and `SUPERTOKENS_API_KEY` here.
+
+Full walkthrough — including the OAuth redirect-URL change that has to happen
+*before* `dual`, and the verification gate before cutover — is in
+[`docs/supertokens-rollout-runbook.md`](./docs/supertokens-rollout-runbook.md).
 
 **Cutting a release:** bump `version` in `package.json` (the single release-
 version authority - `client/vite.config.js` reads it for `__APP_VERSION__`,

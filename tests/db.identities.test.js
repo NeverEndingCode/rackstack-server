@@ -15,6 +15,7 @@ const provisioned = await provisionDatabase();
 const dbMod = await import('../server/db.js');
 const {
   driver, upsertUser, getUserById, getSave, putSave, getAllUsersWithSaves, listIdentities,
+  getIdentity, setSupertokensUserId,
 } = dbMod;
 
 afterAll(async () => {
@@ -186,6 +187,132 @@ describe('identities split', () => {
     });
     expect(user.id).toBe('github:atomic-1');
     expect(await listIdentities('github:atomic-1')).toHaveLength(1);
+  });
+
+  it('getIdentity returns the row for a known pair and undefined for an unknown one', async () => {
+    await upsertUser({
+      provider: 'github', providerId: 'gi-1', username: 'gi1', avatarUrl: null,
+    });
+
+    const found = await getIdentity('github', 'gi-1');
+    expect(found).toMatchObject({
+      provider: 'github', provider_id: 'gi-1', user_id: 'github:gi-1',
+    });
+
+    // undefined, not null - interface.md's missing-row contract, and the
+    // signInUp override branches on it to decide whether to create a user.
+    expect(await getIdentity('github', 'never-logged-in')).toBeUndefined();
+    // The pair is a composite key: a matching provider_id under the WRONG
+    // provider must miss. If either driver ever dropped one half of the
+    // WHERE clause, a discord user could resolve to a github player's save.
+    expect(await getIdentity('discord', 'gi-1')).toBeUndefined();
+  });
+
+  it('getIdentity has no side effect - it never creates the user it fails to find', async () => {
+    // The whole reason this exists separately from upsertUser's internal
+    // lookup. Shadow mode (Task 5) runs it against production identities and
+    // must be safe there.
+    expect(await getIdentity('github', 'phantom')).toBeUndefined();
+    expect(await getUserById('github:phantom')).toBeUndefined();
+    expect(await listIdentities('github:phantom')).toHaveLength(0);
+  });
+
+  it('setSupertokensUserId records the mapping and tolerates the re-login path', async () => {
+    await upsertUser({
+      provider: 'discord', providerId: 'st-1', username: 'stuser', avatarUrl: null,
+    });
+    expect((await getIdentity('discord', 'st-1')).supertokens_user_id).toBeNull();
+
+    await setSupertokensUserId('discord', 'st-1', 'st-uuid-aaa');
+    expect((await getIdentity('discord', 'st-1')).supertokens_user_id).toBe('st-uuid-aaa');
+
+    // Re-login: the same value written again to the same row. The column is
+    // UNIQUE, so this is the call that would blow up on a naive INSERT-based
+    // implementation - and it happens on EVERY subsequent login, i.e. it
+    // would break logins for everyone the day after they migrate.
+    await expect(
+      setSupertokensUserId('discord', 'st-1', 'st-uuid-aaa'),
+    ).resolves.not.toThrow();
+    expect((await getIdentity('discord', 'st-1')).supertokens_user_id).toBe('st-uuid-aaa');
+    expect(await listIdentities('discord:st-1')).toHaveLength(1);
+  });
+
+  it('setSupertokensUserId is a no-op for an unknown identity rather than throwing', async () => {
+    // Matches setRoles/setToursCompleted. Documented in interface.md: the
+    // caller runs this straight after createUserIdMapping, so a throw here
+    // would fail the login while leaving the core-side mapping behind, and
+    // the retry would then trip over that mapping instead.
+    await expect(
+      setSupertokensUserId('github', 'no-such-identity', 'st-uuid-zzz'),
+    ).resolves.not.toThrow();
+    expect(await getIdentity('github', 'no-such-identity')).toBeUndefined();
+  });
+
+  it('refuses to hand the same supertokens id to two different identities', async () => {
+    // Not leniency-by-omission: the UNIQUE constraint is what would catch a
+    // core that recycled an internal id across two players, and swallowing
+    // it here would mean two identities silently sharing one session subject.
+    await upsertUser({
+      provider: 'github', providerId: 'dup-a', username: 'dupa', avatarUrl: null,
+    });
+    await upsertUser({
+      provider: 'github', providerId: 'dup-b', username: 'dupb', avatarUrl: null,
+    });
+
+    await setSupertokensUserId('github', 'dup-a', 'st-uuid-shared');
+    await expect(
+      setSupertokensUserId('github', 'dup-b', 'st-uuid-shared'),
+    ).rejects.toThrow();
+    expect((await getIdentity('github', 'dup-b')).supertokens_user_id).toBeNull();
+  });
+
+  it.runIf(driver.__backend === 'pg')('survives two simultaneous first logins for the same player', async () => {
+    // Postgres-only by nature. There are awaited round trips between
+    // upsertUser's identity read and its insert, so two racers both see "no
+    // identity" and both insert; the loser violates users_pkey. That used to
+    // be misread as a USERNAME collision, renamed, and retried into the same
+    // primary key - failing the login outright. SQLite is safe by accident:
+    // nothing awaits between its read and insert, so the second caller sees
+    // the first's row. Exactly the dialect drift the two-backend rule exists
+    // to surface, and it shipped untested until the fix-verification review.
+    const results = await Promise.allSettled([
+      upsertUser({
+        provider: 'github', providerId: 'pgrace-1', username: 'pgracer', avatarUrl: null,
+      }),
+      upsertUser({
+        provider: 'github', providerId: 'pgrace-1', username: 'pgracer', avatarUrl: null,
+      }),
+    ]);
+
+    const rejected = results.filter((r) => r.status === 'rejected');
+    expect(rejected.map((r) => r.reason?.message ?? r.reason)).toEqual([]);
+    expect(results.map((r) => r.value.id)).toEqual(['github:pgrace-1', 'github:pgrace-1']);
+    expect(await listIdentities('github:pgrace-1')).toHaveLength(1);
+  });
+
+  it.runIf(driver.__backend === 'pg')('repairs a users row that has no identity, rather than adopting it silently', async () => {
+    // The users_pkey adopt branch is only correct because the race winner
+    // wrote BOTH rows in one transaction. A users row WITHOUT its identity can
+    // exist from outside that path (a partial restore, a manual insert), and
+    // there the pre-fix code raised 23505 on every login - loud and
+    // diagnosable. Returning the user without repairing the identity would
+    // make the login "succeed" forever while getIdentity stayed null,
+    // setSupertokensUserId no-opped forever, and the shadow gate never saw the
+    // login method at all.
+    await driver.__raw.query(
+      'INSERT INTO users (id, username, avatar_url, created_at) VALUES ($1, $2, $3, $4)',
+      ['github:no-identity-1', 'lonely', null, Date.now()],
+    );
+    expect(await listIdentities('github:no-identity-1')).toHaveLength(0);
+
+    const user = await upsertUser({
+      provider: 'github', providerId: 'no-identity-1', username: 'lonely', avatarUrl: null,
+    });
+
+    expect(user.id).toBe('github:no-identity-1');
+    const identities = await listIdentities('github:no-identity-1');
+    expect(identities, 'the missing identity row was not repaired').toHaveLength(1);
+    expect(identities[0]).toMatchObject({ provider: 'github', provider_id: 'no-identity-1' });
   });
 
   it('migrates a pre-split SQLite database without losing saves', async () => {

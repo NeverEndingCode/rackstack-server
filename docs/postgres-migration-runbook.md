@@ -107,9 +107,17 @@ Add an official `postgres:16` container in Unraid with its **own** appdata path
 (not rackstack's). Create a database and a user for it:
 
 ```sql
-CREATE USER rackstack WITH PASSWORD 'choose-something-long';
-CREATE DATABASE rackstack OWNER rackstack;
+CREATE USER rackstack_user WITH PASSWORD 'choose-something-long';
+CREATE DATABASE rackstack OWNER rackstack_user;
 ```
+
+> **The role name is yours to choose, but pick it once and stay consistent.**
+> This runbook and the owner's deployment use `rackstack_user`;
+> `docker-compose.yml` uses plain `rackstack`, because it stands up its own
+> throwaway Postgres container. Whichever you use, the same name has to appear
+> in `DATABASE_URL`, in every `psql -U` / `pg_dump -U` below, and in the
+> SuperTokens core's own connection string if you later follow
+> [`supertokens-rollout-runbook.md`](./supertokens-rollout-runbook.md).
 
 ### B2. Take a fresh backup
 
@@ -121,7 +129,7 @@ from if something goes wrong tonight.
 Set on the rackstack container:
 
 ```
-DATABASE_URL=postgresql://rackstack:PASSWORD@192.168.x.x:5432/rackstack
+DATABASE_URL=postgresql://rackstack_user:PASSWORD@192.168.x.x:5432/rackstack
 ```
 
 Two ways this line commonly goes wrong:
@@ -185,7 +193,7 @@ If you must roll back late, take a Postgres dump first so the interim progress
 is at least recoverable:
 
 ```bash
-pg_dump -U rackstack -h 192.168.x.x rackstack > rackstack-postgres-$(date +%F).sql
+pg_dump -U rackstack_user -h 192.168.x.x rackstack > rackstack-postgres-$(date +%F).sql
 ```
 
 ### C1. Migration failed, container won't start

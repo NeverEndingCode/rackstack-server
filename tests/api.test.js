@@ -25,7 +25,7 @@ const { COOKIE_NAME } = await import('../server/auth.js');
 const v11Fixture = JSON.parse(readFileSync(new URL('./fixtures/v11-save.json', import.meta.url)));
 
 await ensureConfig();
-const app = buildApp();
+const app = await buildApp();
 
 afterAll(async () => {
   if (driver.__backend === 'pg') await driver.__raw.end();

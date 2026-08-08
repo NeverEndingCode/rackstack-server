@@ -25,7 +25,7 @@ const { COOKIE_NAME } = await import('../server/auth.js');
 const { activateEvent, endEvent } = await import('../server/eventService.js');
 
 await ensureConfig();
-const app = buildApp();
+const app = await buildApp();
 
 afterAll(async () => {
   if (driver.__backend === 'pg') await driver.__raw.end();

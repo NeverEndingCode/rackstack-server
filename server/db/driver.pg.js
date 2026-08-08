@@ -153,6 +153,48 @@ export async function createPgDriver({ url }) {
         // block that account from ever logging in. Pick a free variant using
         // the same suffixing convention as dedupeUsernames and retry once.
         if (e.code !== '23505') throw e; // unique_violation
+
+        // Not every 23505 here is a username collision, and treating them all
+        // as one is how a race turned into a failed login. Two simultaneous
+        // FIRST logins for the same player both see no identity and both
+        // insert; the loser violates `users_pkey`, not the username index.
+        // Renaming and retrying then re-inserts the SAME primary key, fails
+        // again, and this time propagates - so the player's very first login
+        // errors out. (SQLite avoids this by accident: nothing awaits between
+        // its identity read and its insert. Dialect drift, found by the v1.8
+        // final review against a real Postgres container.)
+        //
+        // The winner's row is correct and complete, so the right recovery is
+        // simply to adopt it.
+        if (e.constraint === 'users_pkey') {
+          const winner = await one('SELECT * FROM users WHERE id = $1', [id]);
+          if (winner) {
+            // Adopting the winner's users row is only correct if the identity
+            // row exists too. In the race it does - insertUserAndIdentity is
+            // one transaction, so the winner wrote both. But a `users` row
+            // WITHOUT its identity can exist from outside that path (a partial
+            // restore, a manual insert), and there the pre-fix code raised
+            // 23505 on every login - loud, and diagnosable. Returning the user
+            // without repairing the identity would convert that into permanent
+            // silence: the login "succeeds" forever, getIdentity stays null,
+            // setSupertokensUserId no-ops forever, and the shadow gate cannot
+            // see the row at all because its audit walks identities -> users.
+            // That is the mirror image of the ORPHAN blind spot fixed in the
+            // same release. Found by the fix-verification review.
+            await run(
+              `INSERT INTO identities (provider, provider_id, user_id, created_at, last_login_at)
+               VALUES ($1, $2, $3, $4, $5)
+               ON CONFLICT (provider, provider_id) DO NOTHING`,
+              [
+                identityRow.provider, identityRow.provider_id, identityRow.user_id,
+                identityRow.created_at, identityRow.last_login_at,
+              ],
+            );
+            return winner;
+          }
+          throw e;
+        }
+
         user.username = await findAvailableUsername(username, isUsernameTakenInDb);
         await insertUserAndIdentity(user, identityRow);
       }
@@ -192,6 +234,49 @@ export async function createPgDriver({ url }) {
      */
     async listIdentities(userId) {
       return all('SELECT * FROM identities WHERE user_id = $1 ORDER BY created_at ASC', [userId]);
+    },
+
+    /**
+     * One login method by its (provider, provider_id) pair - the primary key -
+     * or `undefined` when that pair has never logged in.
+     *
+     * This is the read SuperTokens' signInUp override keys off (v1.8): it maps
+     * `thirdPartyId`/`thirdPartyUserId` onto exactly this pair, and the
+     * `user_id` it returns is what gets registered as the external user id.
+     * Deliberately separate from upsertUser's internal lookup, because the
+     * override must be able to ask "does this player already exist?" WITHOUT
+     * the side effect of creating them.
+     */
+    async getIdentity(provider, providerId) {
+      return one('SELECT * FROM identities WHERE provider = $1 AND provider_id = $2', [provider, providerId]);
+    },
+
+    /**
+     * Records the SuperTokens-internal user id that has been mapped onto this
+     * identity. Bookkeeping on our side only - the mapping that actually
+     * governs what `session.getUserId()` returns lives in the SuperTokens
+     * core, created by `createUserIdMapping`.
+     *
+     * Safe to call on every login. The column is UNIQUE, but re-writing a row's
+     * own existing value is not a conflict with itself, so the re-login path
+     * needs no guard. A conflict here means two identities were handed the same
+     * SuperTokens id, which is real corruption and must surface, so it is
+     * deliberately NOT swallowed.
+     *
+     * A missing identity row is a silent no-op, matching setRoles /
+     * setToursCompleted. Throwing instead would be actively dangerous in the
+     * one place this is called from: it runs immediately AFTER
+     * createUserIdMapping, so a throw would fail the login while leaving the
+     * core-side mapping in place - and the retry would then fail on the
+     * already-exists mapping instead, locking the account out permanently.
+     * Callers reach here having just resolved or created the identity, so a
+     * miss cannot happen without a caller-side bug.
+     */
+    async setSupertokensUserId(provider, providerId, supertokensUserId) {
+      await run(
+        'UPDATE identities SET supertokens_user_id = $1 WHERE provider = $2 AND provider_id = $3',
+        [supertokensUserId, provider, providerId],
+      );
     },
 
     async getSave(userId) {

@@ -18,7 +18,7 @@ const { COOKIE_NAME } = await import('../server/auth.js');
 const { initialState } = await import('../shared/state.js');
 
 await ensureConfig();
-const app = buildApp();
+const app = await buildApp();
 
 afterAll(async () => {
   if (driver.__backend === 'pg') await driver.__raw.end();
