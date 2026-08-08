@@ -1137,10 +1137,10 @@ export default function RackStack({ user }) {
         />
       )}
 
-      {activeTab === 'upgrades' && <UpgradesPanel meta={state.meta} onBuy={buyUpgrade} />}
+      {activeTab === 'upgrades' && <UpgradesPanel meta={state.meta} config={config.data} onBuy={buyUpgrade} />}
 
       {activeTab === 'singularity' && (
-        <SingularityPanel meta={state.meta} singularityGain={singularityGain} onOpenSingularityConfirm={() => setModal({ type: 'singularity' })} onBuyShard={buyShardUpgrade} />
+        <SingularityPanel meta={state.meta} config={config.data} singularityGain={singularityGain} onOpenSingularityConfirm={() => setModal({ type: 'singularity' })} onBuyShard={buyShardUpgrade} />
       )}
 
       {activeTab === 'goals' && (

@@ -3,7 +3,7 @@ import { cardBg, cardBorder, textMain, textDim, violet, buyBtnStyle } from '../t
 import { fmt } from '../helpers.js';
 import { UPGRADE_DEFS } from '../data/upgrades.js';
 
-export default function UpgradesPanel({ meta, onBuy }) {
+export default function UpgradesPanel({ meta, config, onBuy }) {
   return (
     <div className="max-w-2xl mx-auto px-4 py-4 flex flex-col gap-3" data-tour="upgrades-list">
       <div className="rounded-lg p-3 text-xs" style={{ background: cardBg, border: `1px solid ${cardBorder}`, color: textDim }}>
@@ -11,14 +11,18 @@ export default function UpgradesPanel({ meta, onBuy }) {
       </div>
       {UPGRADE_DEFS.map((u) => {
         const level = meta.upgrades[u.id] || 0;
-        const maxed = level >= u.maxLevel;
+        // Max level is read live from config.upgrades.maxLevels (admin-tunable,
+        // same source the reducer's buyUpgrade() enforces) rather than the
+        // static u.maxLevel on the def.
+        const maxLevel = (config.upgrades.maxLevels && config.upgrades.maxLevels[u.id]) ?? u.maxLevel;
+        const maxed = level >= maxLevel;
         const cost = Math.ceil(u.baseCost * Math.pow(u.costMult, level));
         const afford = meta.wafers >= cost;
         return (
           <div key={u.id} className="rounded-xl p-3" style={{ background: cardBg, border: `1px solid ${cardBorder}` }}>
             <div className="flex items-center justify-between">
               <div className="font-semibold text-sm" style={{ color: textMain }}>{u.name}</div>
-              <div className="font-mono text-xs" style={{ color: violet }}>Lv {level}/{u.maxLevel}</div>
+              <div className="font-mono text-xs" style={{ color: violet }}>Lv {level}/{maxLevel}</div>
             </div>
             <div className="text-xs mt-0.5" style={{ color: textDim }}>{u.desc}</div>
             <button

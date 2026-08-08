@@ -2,7 +2,7 @@ import { Sparkles, Gem } from 'lucide-react';
 import { cardBg, violet, textMain, textDim } from '../theme.js';
 import { SINGULARITY_DEFS } from '../data/upgrades.js';
 
-export default function SingularityPanel({ meta, singularityGain, onOpenSingularityConfirm, onBuyShard }) {
+export default function SingularityPanel({ meta, config, singularityGain, onOpenSingularityConfirm, onBuyShard }) {
   return (
     <div className="max-w-2xl mx-auto px-4 py-4 flex flex-col gap-3" data-tour="singularity-list">
       <div className="rounded-xl p-4" style={{ background: cardBg, border: `1px solid ${violet}` }}>
@@ -21,14 +21,18 @@ export default function SingularityPanel({ meta, singularityGain, onOpenSingular
       <div className="font-mono text-sm flex items-center gap-1" style={{ color: violet }}><Gem size={14} /> {meta.singularityShards} Shards available</div>
       {SINGULARITY_DEFS.map((u) => {
         const level = meta.shardUpgrades[u.id] || 0;
-        const maxed = level >= u.maxLevel;
+        // Max level is read live from config.upgrades.maxLevels (admin-tunable,
+        // same source the reducer's buyShardUpgrade() enforces) rather than the
+        // static u.maxLevel on the def.
+        const maxLevel = (config.upgrades.maxLevels && config.upgrades.maxLevels[u.id]) ?? u.maxLevel;
+        const maxed = level >= maxLevel;
         const cost = Math.ceil(u.baseCost * Math.pow(u.costMult, level));
         const afford = meta.singularityShards >= cost;
         return (
           <div key={u.id} className="rounded-xl p-3" style={{ background: cardBg, border: `1px solid ${violet}` }}>
             <div className="flex items-center justify-between">
               <div className="font-semibold text-sm" style={{ color: textMain }}>{u.name}</div>
-              <div className="font-mono text-xs" style={{ color: violet }}>Lv {level}/{u.maxLevel}</div>
+              <div className="font-mono text-xs" style={{ color: violet }}>Lv {level}/{maxLevel}</div>
             </div>
             <div className="text-xs mt-0.5" style={{ color: textDim }}>{u.desc}</div>
             <button
