@@ -8,7 +8,8 @@ import { cardBorder, textDim, textMain, teal, amber, danger, inset } from './gam
 import { TABS } from './game/data/tabs.js';
 import {
   fetchState, fetchConfig, makeActionQueue, startMinigame, finishMinigame,
-  fetchEvent, setLeaderboardOptOut, fetchLeaderboard, setTourCompleted,
+  fetchMinigameBests, fetchEvent, setLeaderboardOptOut, fetchLeaderboard,
+  setTourCompleted,
 } from './game/api.js';
 import { evaluate } from '@shared/state.js';
 import { applyAction, EVENT_CLAIM_GRACE_MS } from '@shared/reducer.js';
@@ -119,6 +120,11 @@ export default function RackStack({ user }) {
   const [rejectToast, setRejectToast] = useState(null);
   const [activeTab, setActiveTab] = useState('racks');
   const [minigame, setMinigame] = useState(null);
+  // Best finished score per game, keyed by the server's game string. Not part
+  // of canonical `state`: it is derived server-side from minigame_sessions
+  // rows, so it neither reconciles nor belongs in the save. `{}` until the
+  // fetch lands, and refreshed after every finished round.
+  const [minigameBests, setMinigameBests] = useState({});
   const [profileOpen, setProfileOpen] = useState(false);
   // v1.6 guided tours. `toursCompleted` mirrors users.tours_completed, which
   // arrives on the `user` prop from App.jsx's /api/me fetch; `activeTour` is
@@ -228,6 +234,18 @@ export default function RackStack({ user }) {
     const t = setTimeout(() => setRejectToast(null), 3000);
     return () => clearTimeout(t);
   }, [rejectToast]);
+
+  // Personal bests: fetched once at mount and again after each finished round,
+  // so a record the player just set is on the card by the time the result
+  // modal is dismissed. A failure leaves the previous value standing - the
+  // bests line is decoration, and blanking it on a transient 401 mid-refresh
+  // would read as a lost score.
+  const refreshMinigameBests = useCallback(async () => {
+    const res = await fetchMinigameBests();
+    if (res && !res.error && res.bests) setMinigameBests(res.bests);
+  }, []);
+
+  useEffect(() => { refreshMinigameBests(); }, [refreshMinigameBests]);
 
   // Stable label for the current anomaly window - chosen once per window
   // (keyed on nextAnomalyAt) rather than re-rolled every render, matching
@@ -855,7 +873,13 @@ export default function RackStack({ user }) {
             ? `${mg.pairsFound}/${pairCount} pairs matched — +${wafers} wafers`
             : `${mg.pairsFound}/${pairCount} pairs matched — no payout, not fully matched`;
         } else text = `${mg.score} stabilizations — +${wafers} wafers`;
+        // newBest is the server's comparison against every prior finished
+        // score for this game, made before this round was written. Appended to
+        // the existing result modal rather than raised as a second popup: the
+        // player is already looking at exactly this number.
+        if (res.newBest) text += ' — NEW BEST!';
         setModal({ type: 'minigameResult', text });
+        refreshMinigameBests();
       } else {
         showToast(REJECT_MESSAGES[res && res.error] || 'Session expired');
       }
@@ -1155,6 +1179,7 @@ export default function RackStack({ user }) {
           onStartBalance={startBalanceGame}
           cooldowns={state.server.gameCooldowns}
           minigamesConfig={config.data.minigames}
+          bests={minigameBests}
         />
       )}
 

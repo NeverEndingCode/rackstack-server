@@ -187,6 +187,13 @@ export function finishMinigame(sessionId, metric) {
   return postJSON('/api/minigame/finish', { sessionId, metric });
 }
 
+// GET /api/minigame/bests -> { bests: { <game>: number } }
+// Derived server-side from finished sessions, so it is populated with scores
+// the player set before this feature existed - no backfill was needed.
+export function fetchMinigameBests() {
+  return request('/api/minigame/bests');
+}
+
 // PUT /api/me/username { username } -> { ok, username }
 //   | 400 { error: 'invalid_username' } | 409 { error: 'taken' }
 export function setUsername(name) {
