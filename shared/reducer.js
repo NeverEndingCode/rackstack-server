@@ -1,5 +1,5 @@
 import { TIER_DEFS, GRID_DEFS, OVERCLOCK_DEFS, UPGRADE_DEFS, SINGULARITY_DEFS } from './gameData.js';
-import { costForN, maxAffordable, computeEffects, migrateGain, xpForLevel } from './gameRules.js';
+import { costForN, maxAffordable, computeEffects, migrateGain, xpForLevel, milestoneThresholds, nextMilestone } from './gameRules.js';
 import { initialState, recordLegacyCorePeak } from './state.js';
 import { goalCtx, GOAL_DEFS, REPEATABLE_DEFS } from './goals.js';
 import { TOTAL_BLOCKS, JOB_TYPES, TAPE_UPGRADE_DEFS } from './coldStorageData.js';
@@ -31,8 +31,12 @@ function validIndex(index, length) {
   return Number.isInteger(index) && index >= 0 && index < length;
 }
 
-function resolveBuyCount(mode, def, owned, credits) {
+function resolveBuyCount(mode, def, owned, credits, thresholds) {
   if (mode === 'max') return maxAffordable(def, owned, credits);
+  if (mode === 'milestone') {
+    const next = nextMilestone(owned, thresholds);
+    return next === null ? 0 : next - owned;
+  }
   if (typeof mode === 'number' && Number.isInteger(mode) && mode > 0) return mode;
   return -1; // signals an invalid mode
 }
@@ -54,8 +58,13 @@ function buy(s, action, config, now) {
     return err('cooldown_active');
   }
 
-  const n = resolveBuyCount(mode, def, laneState.owned, s.run.credits);
+  const thresholds = milestoneThresholds(s.meta, config);
+  const n = resolveBuyCount(mode, def, laneState.owned, s.run.credits, thresholds);
   if (n < 0) return err('invalid_target');
+  // A milestone request returning 0 means the lane is past its final
+  // threshold - a different situation from not affording the jump, and the
+  // button renders differently for each.
+  if (n === 0 && mode === 'milestone') return err('no_milestone');
   if (n === 0) return err('insufficient_credits');
 
   const cost = costForN(def, laneState.owned, n);

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { DEFAULT_CONFIG } from '../shared/configSchema.js';
 import { TIER_DEFS, GRID_DEFS, OVERCLOCK_DEFS } from '../shared/gameData.js';
-import { costForN, maxAffordable } from '../shared/gameRules.js';
+import { costForN, maxAffordable, milestoneThresholds, milestoneMult } from '../shared/gameRules.js';
 import { initialState } from '../shared/state.js';
 import { applyAction } from '../shared/reducer.js';
 import { computeColdStorageEffects } from '../shared/coldStorage.js';
@@ -150,6 +150,69 @@ describe('reducer: buy (overclock)', () => {
     s.run.heatCooldownUntil = NOW + 5000;
     const { result } = applyAction(s, { type: 'buy', lane: 'overclock', index: 0, mode: 1 }, DEFAULT_CONFIG, NOW);
     expect(result.error).toBe('cooldown_active');
+  });
+});
+
+describe("buy mode 'milestone'", () => {
+  it('buys exactly enough to reach the next threshold', () => {
+    const s = initialState();
+    s.run.tiers[0].owned = 18;
+    s.run.credits = 1e12;
+    const { state, result } = applyAction(s, { type: 'buy', lane: 'tiers', index: 0, mode: 'milestone' }, DEFAULT_CONFIG, NOW);
+    expect(result.ok).toBe(true);
+    expect(state.run.tiers[0].owned).toBe(25); // first MILESTONES entry
+  });
+
+  it('uses the DISCOUNTED thresholds when infiniteloop is owned', () => {
+    // infiniteloop lowers milestone thresholds by 10% per level. A client
+    // computing the target from stale config would overshoot; this test is
+    // what fails if that calculation ever moves client-side.
+    const s = initialState();
+    s.meta.shardUpgrades = { ...(s.meta.shardUpgrades || {}), infiniteloop: 5 };
+    s.run.tiers[0].owned = 0;
+    s.run.credits = 1e12;
+    const thresholds = milestoneThresholds(s.meta, DEFAULT_CONFIG);
+    const { state } = applyAction(s, { type: 'buy', lane: 'tiers', index: 0, mode: 'milestone' }, DEFAULT_CONFIG, NOW);
+    expect(state.run.tiers[0].owned).toBe(thresholds[0]);
+    expect(thresholds[0]).toBeLessThan(25);
+  });
+
+  it('refuses when the full jump is unaffordable, changing nothing', () => {
+    const s = initialState();
+    s.run.tiers[0].owned = 18;
+    s.run.credits = 1;
+    const { state, result } = applyAction(s, { type: 'buy', lane: 'tiers', index: 0, mode: 'milestone' }, DEFAULT_CONFIG, NOW);
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe('insufficient_credits');
+    expect(state.run.tiers[0].owned).toBe(18);
+  });
+
+  it('reports no_milestone past the final threshold', () => {
+    const s = initialState();
+    s.run.tiers[0].owned = 1000; // the last MILESTONES entry
+    s.run.credits = 1e12;
+    const { result } = applyAction(s, { type: 'buy', lane: 'tiers', index: 0, mode: 'milestone' }, DEFAULT_CONFIG, NOW);
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe('no_milestone');
+  });
+
+  it('doubles the lane multiplier once the milestone lands', () => {
+    const s = initialState();
+    s.run.tiers[0].owned = 24;
+    s.run.credits = 1e12;
+    const before = milestoneMult(24, milestoneThresholds(s.meta, DEFAULT_CONFIG));
+    const { state } = applyAction(s, { type: 'buy', lane: 'tiers', index: 0, mode: 'milestone' }, DEFAULT_CONFIG, NOW);
+    const after = milestoneMult(state.run.tiers[0].owned, milestoneThresholds(state.meta, DEFAULT_CONFIG));
+    expect(after).toBe(before * 2);
+  });
+
+  it('targets the NEXT threshold when already exactly on one', () => {
+    const s = initialState();
+    s.run.tiers[0].owned = 25;
+    s.run.credits = 1e12;
+    const { state, result } = applyAction(s, { type: 'buy', lane: 'tiers', index: 0, mode: 'milestone' }, DEFAULT_CONFIG, NOW);
+    expect(result.ok).toBe(true);
+    expect(state.run.tiers[0].owned).toBe(50);
   });
 });
 
