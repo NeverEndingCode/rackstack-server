@@ -1,5 +1,25 @@
 # Changelog
 
+## v1.8.4
+
+- **`AUTH_MODE=dual` would have refused to start against a correctly-secured
+  core.** v1.8.3 fixed the wrong-endpoint bug in the preflight but left a second
+  copy of the same probe in the boot path, still using `/recipe/users/count` —
+  which SuperTokens core 12 does not implement. That guard *throws* on anything
+  that is not a 401, so the 404 would have been read as "the core is running
+  without API_KEYS" and stopped the container from booting.
+
+  Unlike the preflight, where the bug printed an alarming line, here it would
+  have blocked the cutover entirely and blamed the operator for a URL this code
+  got wrong.
+
+  The probe now lives in `server/supertokens/coreProbe.js` and is imported by
+  both callers, so they cannot drift again — asserted by a test. The boot guard
+  now throws **only** on a confirmed-open core (a known endpoint answering an
+  unkeyed request with 200); every other outcome warns and lets the boot
+  proceed.
+
+
 ## v1.8.3
 
 - **`supertokens:check` no longer reports a correctly-secured core as wide

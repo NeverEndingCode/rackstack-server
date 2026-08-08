@@ -108,7 +108,52 @@ describe('rejectRawOAuthTokens (authentication bypass guard)', () => {
       fetchImpl: async (url) => { probed = url; return { status: 401 }; },
     });
     expect(probed).not.toContain('/hello');
-    expect(probed).toContain('/recipe/');
+    // A key-gated endpoint. The exact path is version-dependent, so assert the
+    // property rather than a literal - the literal is what broke in v1.8.2.
+    expect(probed).toContain('users/count');
+  });
+
+  it('BOOTS against a core whose endpoints all 404, rather than calling it open', async () => {
+    // The v1.8.3 near-miss. The preflight's 404 handling was fixed, but this
+    // guard kept its own copy of the probe with the old hardcoded path - and
+    // unlike the preflight, a wrong answer here does not print a scary line,
+    // it stops the container from starting.
+    //
+    // So on core 12 (which does not implement /recipe/users/count) setting
+    // AUTH_MODE=dual against a perfectly well-secured core would have refused
+    // to boot, blaming the operator for a URL this code got wrong. The probe
+    // now lives in coreProbe.js and is shared, so the two cannot drift again.
+    const { assertCoreRejectsAnonymous } = await import('../server/supertokens/init.js');
+    const noKnownEndpoint = async () => ({ status: 404 });
+
+    await expect(assertCoreRejectsAnonymous({
+      connectionURI: 'http://core:3567', hasKey: true, fetchImpl: noKnownEndpoint,
+    })).resolves.toBe('unverified');
+  });
+
+  it('finds the tenant-scoped path a modern core actually implements', async () => {
+    const { assertCoreRejectsAnonymous } = await import('../server/supertokens/init.js');
+    const core12 = async (url) => (url.endsWith('/public/users/count')
+      ? { status: 401 }
+      : { status: 404 });
+
+    await expect(assertCoreRejectsAnonymous({
+      connectionURI: 'http://core:3567', hasKey: true, fetchImpl: core12,
+    })).resolves.toBe('closed');
+  });
+
+  it('shares one probe implementation with the preflight', async () => {
+    // The bug was duplication, so this asserts the de-duplication rather than
+    // the behaviour: both callers must import from coreProbe.js. A future
+    // caller that re-copies the paths reintroduces exactly this class of bug.
+    const init = readFileSync(new URL('../server/supertokens/init.js', import.meta.url), 'utf8');
+    const preflight = readFileSync(new URL('../server/supertokens/preflight.js', import.meta.url), 'utf8');
+
+    expect(init).toMatch(/from '\.\/coreProbe\.js'/);
+    expect(preflight).toMatch(/from '\.\/coreProbe\.js'/);
+    // Neither may hardcode a probe path of its own.
+    expect(init).not.toMatch(/users\/count/);
+    expect(preflight).not.toMatch(/'\/(public|recipe)\/users\/count'/);
   });
 
   it('refuses to boot against a core too old for this SDK', async () => {
