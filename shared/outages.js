@@ -112,3 +112,216 @@ export function laneOutageFor(outages, lane, index, at) {
   }
   return worst;
 }
+
+// ---------------------------------------------------------------------------
+// Hazards: derived, never rolled
+// ---------------------------------------------------------------------------
+
+/**
+ * A save whose nextHazardAt is far in the past - a clock change, a restored
+ * backup, a hand-edited save - must not spin the firing loop for hours of
+ * simulated time. This bound is a REQUIREMENT, not a nicety. On hitting it,
+ * fireDueHazards jumps nextHazardAt forward to a fresh schedule from `now`.
+ */
+export const MAX_HAZARDS_PER_EVALUATION = 8;
+
+export const HAZARD_KINDS = ['ransomware', 'ispOutage', 'driveFailure'];
+
+/** Which stockpile absorbs which hazard. */
+export const SUPPLY_FOR_KIND = {
+  ransomware: 'antivirus',
+  ispOutage: 'backupIsp',
+  driveFailure: 'spareDrives',
+};
+
+const HAZARD_SPECS = {
+  ransomware: { enabledKey: 'ransomwareEnabled', factorKey: 'ransomwareFactor', durationKey: 'ransomwareDurationMs' },
+  ispOutage: { enabledKey: 'ispOutageEnabled', factorKey: 'ispOutageFactor', durationKey: 'ispOutageDurationMs' },
+  driveFailure: { enabledKey: 'driveFailureEnabled', factorKey: 'driveFailureFactor', durationKey: 'driveFailureDurationMs' },
+};
+
+/**
+ * The master switch ANDed with one source's own switch, master first
+ * (spec §8). `risk.enabled` off means the whole system is inert regardless of
+ * every other value, so the owner can kill it in one click without auditing
+ * six other switches.
+ */
+export function riskOn(config, sourceKey) {
+  const risk = config && config.risk;
+  if (!risk || risk.enabled !== true) return false;
+  return risk[sourceKey] === true;
+}
+
+/**
+ * The standing risk rate the UI shows, in incidents per hour. Derived from
+ * config - NEVER from server.nextHazardAt, which must not reach the client
+ * (spec decision 3: showing it turns the prepaid economy into buying one
+ * licence twenty minutes before it fires).
+ */
+export function hazardRatePerHour(config) {
+  const { hazardMinDelayMs, hazardMaxDelayMs } = config.risk;
+  const meanMs = (hazardMinDelayMs + hazardMaxDelayMs) / 2;
+  if (!(meanMs > 0)) return 0;
+  return 3600000 / meanMs;
+}
+
+// A small, pure, well-distributed 32-bit integer hash. Both the high and low
+// halves of the millisecond timestamp are folded in, so two times 2^32ms
+// apart do not collide.
+function hash32(n) {
+  const v = Math.floor(n);
+  let x = (v ^ Math.floor(v / 4294967296)) | 0;
+  x = Math.imul(x ^ (x >>> 16), 0x45d9f3b);
+  x = Math.imul(x ^ (x >>> 16), 0x45d9f3b);
+  x = (x ^ (x >>> 16)) >>> 0;
+  return x;
+}
+
+/**
+ * A deterministic [0,1) draw keyed by (scheduledAt, salt). The scheduled time
+ * is the ONLY input, so the client and the server derive the same incident
+ * without communicating - which is the entire reason hazards are derived
+ * rather than rolled (spec §5).
+ */
+function unitAt(scheduledAt, salt) {
+  return hash32(hash32(scheduledAt) ^ Math.imul(salt + 1, 0x9e3779b1)) / 4294967296;
+}
+
+/**
+ * The hazard scheduled for `scheduledAt`: its kind, target and duration, all
+ * derived from that timestamp. Returns null when no kind is available (every
+ * kind disabled, or a drive failure with no owned racks to fail).
+ *
+ * NEVER call Math.random() from here, and never store what this returns as a
+ * second source of truth - it is re-derivable by definition, and a stored
+ * copy is a copy that can disagree.
+ */
+export function hazardFrom(scheduledAt, config, state) {
+  const kinds = HAZARD_KINDS.filter((k) => config.risk[HAZARD_SPECS[k].enabledKey] === true);
+  if (kinds.length === 0) return null;
+
+  const kind = kinds[Math.floor(unitAt(scheduledAt, 0) * kinds.length)];
+  const spec = HAZARD_SPECS[kind];
+  const factor = config.risk[spec.factorKey];
+  const durationMs = config.risk[spec.durationKey];
+
+  let scope;
+  if (kind === 'ransomware') {
+    scope = { lane: '*' };
+  } else if (kind === 'ispOutage') {
+    scope = { lane: 'grid' };
+  } else {
+    // Only an owned rack tier can suffer a drive failure. The victim is
+    // derived from the timestamp too - two clients reconciling the same
+    // incident must not disagree about which rack died.
+    const owned = [];
+    for (let i = 0; i < state.run.tiers.length; i++) {
+      const t = state.run.tiers[i];
+      if (t && t.owned > 0) owned.push(i);
+    }
+    if (owned.length === 0) return null;
+    scope = { lane: 'tiers', index: owned[Math.floor(unitAt(scheduledAt, 1) * owned.length)] };
+  }
+
+  return {
+    id: `hazard:${Math.floor(scheduledAt)}`,
+    kind,
+    scope,
+    factor,
+    startAt: scheduledAt,
+    endAt: scheduledAt + durationMs,
+    source: 'hazard',
+  };
+}
+
+/**
+ * Picks WHEN the next hazard happens. Same shape and testability as
+ * scheduleAnomaly (shared/reducer.js): an injected rng, decided once, stored.
+ * Both sides then read the stored timestamp and DERIVE what that hazard is.
+ *
+ * The rng here is safe despite the client running evaluate() too: the next
+ * hazard's time is never displayed (decision 3), and the client's whole state
+ * is replaced by the authoritative copy on the next reconcile - so a
+ * divergent draw is overwritten before anything can observe it. What must NOT
+ * diverge is the identity of a hazard that actually fired, and that is
+ * derived, not drawn.
+ */
+export function scheduleNextHazard(server, config, now, rng = Math.random) {
+  const { hazardMinDelayMs, hazardMaxDelayMs } = config.risk;
+  server.nextHazardAt = now + hazardMinDelayMs + rng() * (hazardMaxDelayMs - hazardMinDelayMs);
+}
+
+/**
+ * Spends one matching supply to absorb `hazard`, or returns false.
+ *
+ * This is the ONE place in the release that decrements a stored value, and it
+ * is not a violation of decision 1: supplies are a consumable the player
+ * bought for exactly this purpose. Nothing here may ever touch credits,
+ * wafers, tapes or owned counts.
+ */
+function absorbWithSupply(state, hazard, notices) {
+  const supply = SUPPLY_FOR_KIND[hazard.kind];
+  if (!supply) return false;
+  const bag = state.meta.supplies;
+  if (!bag) return false;
+  const stock = typeof bag[supply] === 'number' ? bag[supply] : 0;
+  if (stock < 1) return false;
+
+  bag[supply] = stock - 1;
+  // A silent save is a wasted save (spec §6): the moment a hedge pays off is
+  // the only time the player learns hedging was worth it. This notice is a
+  // requirement, not polish - do not drop it to "reduce noise".
+  notices.push({
+    kind: hazard.kind, absorbed: true, supply,
+    remaining: bag[supply], at: hazard.startAt,
+  });
+  return true;
+}
+
+/**
+ * Fires every hazard due at or before `now`, mutating `state` in place, and
+ * returns the one-shot notices for the client.
+ *
+ * An anomaly is an OPPORTUNITY the player claims and never fires on its own;
+ * a hazard fires unattended. Same scheduling shape, different lifecycle - do
+ * not assume scheduleAnomaly's call sites are the right ones to copy.
+ */
+export function fireDueHazards(state, config, now, rng = Math.random) {
+  const server = state.server;
+  const notices = [];
+  if (!riskOn(config, 'hazardsEnabled')) return notices;
+
+  // A save that has never had one scheduled (fresh, migrated, or hard-reset)
+  // gets its first schedule here rather than firing instantly from epoch 0.
+  if (!(server.nextHazardAt > 0)) {
+    scheduleNextHazard(server, config, now, rng);
+    return notices;
+  }
+
+  const seen = new Set(server.outages.map((o) => o.id));
+  let fired = 0;
+  while (server.nextHazardAt <= now && fired < MAX_HAZARDS_PER_EVALUATION) {
+    const scheduledAt = server.nextHazardAt;
+    const hazard = hazardFrom(scheduledAt, config, state);
+    if (hazard && !seen.has(hazard.id)) {
+      seen.add(hazard.id);
+      if (!absorbWithSupply(state, hazard, notices)) {
+        server.outages.push(hazard);
+        notices.push({
+          kind: hazard.kind, absorbed: false, scope: hazard.scope,
+          endAt: hazard.endAt, at: scheduledAt,
+        });
+      }
+    }
+    // From the FIRE time, not from `now` - otherwise a long absence produces
+    // exactly one hazard however long it was.
+    scheduleNextHazard(server, config, scheduledAt, rng);
+    fired++;
+  }
+
+  // Hit the bound with work still pending: jump forward to a fresh schedule
+  // from `now` and move on, rather than spinning.
+  if (server.nextHazardAt <= now) scheduleNextHazard(server, config, now, rng);
+
+  return notices;
+}

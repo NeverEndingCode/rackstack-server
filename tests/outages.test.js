@@ -1,7 +1,19 @@
 import { describe, it, expect } from 'vitest';
 import {
   scopeCovers, activeAt, pruneExpired, effectiveFactor, laneOutageFor,
+  hazardFrom, scheduleNextHazard, fireDueHazards, hazardRatePerHour, riskOn,
+  HAZARD_KINDS, MAX_HAZARDS_PER_EVALUATION,
 } from '../shared/outages.js';
+import { DEFAULT_CONFIG } from '../shared/configSchema.js';
+import { initialState } from '../shared/state.js';
+
+function stocked() {
+  const s = initialState();
+  s.run.tiers[0] = { id: 0, owned: 10, manager: true, ready: 0 };
+  s.run.tiers[3] = { id: 3, owned: 4, manager: true, ready: 0 };
+  s.run.grid[0] = { id: 0, owned: 5 };
+  return s;
+}
 
 const at = (startAt, endAt, factor, scope, extra = {}) => ({
   id: `o${startAt}-${endAt}`, kind: 'test', scope, factor, startAt, endAt,
@@ -121,5 +133,138 @@ describe('activeAt / pruneExpired / laneOutageFor', () => {
     expect(laneOutageFor(o, 'grid', 0, 100).factor).toBe(0);
     expect(laneOutageFor(o, 'tiers', 0, 100).factor).toBe(0.5);
     expect(laneOutageFor(o, 'tiers', 0, 900)).toBeNull();
+  });
+});
+
+describe('hazard derivation', () => {
+  it('is deterministic: the same timestamp derives the same hazard twice', () => {
+    const s = stocked();
+    for (const t of [1_700_000_000_000, 1_700_000_123_456, 999_999_999]) {
+      const a = hazardFrom(t, DEFAULT_CONFIG, s);
+      const b = hazardFrom(t, DEFAULT_CONFIG, s);
+      expect(a).toEqual(b);
+    }
+  });
+
+  it('produces different hazards across different timestamps', () => {
+    const s = stocked();
+    const kinds = new Set();
+    for (let i = 0; i < 300; i++) {
+      const h = hazardFrom(1_700_000_000_000 + i * 997, DEFAULT_CONFIG, s);
+      if (h) kinds.add(h.kind);
+    }
+    expect(kinds.size).toBeGreaterThan(1);
+  });
+
+  it('gives every hazard a stable, derived id - never random', () => {
+    const s = stocked();
+    const h = hazardFrom(1_700_000_000_000, DEFAULT_CONFIG, s);
+    expect(h.id).toBe('hazard:1700000000000');
+  });
+
+  it('scopes each kind as the spec table says', () => {
+    const s = stocked();
+    const seen = {};
+    for (let i = 0; i < 500; i++) {
+      const h = hazardFrom(1_700_000_000_000 + i * 8677, DEFAULT_CONFIG, s);
+      if (h) seen[h.kind] = h;
+    }
+    expect(seen.ransomware.scope).toEqual({ lane: '*' });
+    expect(seen.ransomware.factor).toBe(0.5);
+    expect(seen.ispOutage.scope).toEqual({ lane: 'grid' });
+    expect(seen.driveFailure.scope.lane).toBe('tiers');
+    // only an OWNED tier can fail
+    expect([0, 3]).toContain(seen.driveFailure.scope.index);
+    for (const h of Object.values(seen)) expect(h.source).toBe('hazard');
+  });
+
+  it('never derives a disabled kind', () => {
+    const s = stocked();
+    const cfg = structuredClone(DEFAULT_CONFIG);
+    cfg.risk.ransomwareEnabled = false;
+    cfg.risk.ispOutageEnabled = false;
+    for (let i = 0; i < 200; i++) {
+      const h = hazardFrom(1_700_000_000_000 + i * 8677, cfg, s);
+      if (h) expect(h.kind).toBe('driveFailure');
+    }
+  });
+
+  it('returns null when every kind is disabled', () => {
+    const cfg = structuredClone(DEFAULT_CONFIG);
+    cfg.risk.ransomwareEnabled = false;
+    cfg.risk.ispOutageEnabled = false;
+    cfg.risk.driveFailureEnabled = false;
+    expect(hazardFrom(1_700_000_000_000, cfg, stocked())).toBeNull();
+  });
+});
+
+describe('hazard scheduling and firing', () => {
+  it('scheduleNextHazard lands inside the configured delay band', () => {
+    const server = { nextHazardAt: 0 };
+    scheduleNextHazard(server, DEFAULT_CONFIG, 1000, () => 0);
+    expect(server.nextHazardAt).toBe(1000 + DEFAULT_CONFIG.risk.hazardMinDelayMs);
+    scheduleNextHazard(server, DEFAULT_CONFIG, 1000, () => 1);
+    expect(server.nextHazardAt).toBe(1000 + DEFAULT_CONFIG.risk.hazardMaxDelayMs);
+  });
+
+  it('schedules the NEXT hazard from the fire time, so a long absence fires many', () => {
+    const s = stocked();
+    const t0 = 1_700_000_000_000;
+    s.server.nextHazardAt = t0;
+    // 3 days later, with the shortest possible delay each time
+    const notices = fireDueHazards(s, DEFAULT_CONFIG, t0 + 3 * 24 * 3600 * 1000, () => 0);
+    expect(notices.length).toBeGreaterThan(1);
+  });
+
+  it('terminates and reschedules when nextHazardAt is far in the past', () => {
+    const s = stocked();
+    s.server.nextHazardAt = 1;           // 1970
+    const now = 1_700_000_000_000;
+    const notices = fireDueHazards(s, DEFAULT_CONFIG, now, () => 0);
+    expect(notices.length).toBeLessThanOrEqual(MAX_HAZARDS_PER_EVALUATION);
+    expect(s.server.nextHazardAt).toBeGreaterThan(now);
+  });
+
+  it('does nothing when hazards are disabled', () => {
+    const s = stocked();
+    const t0 = 1_700_000_000_000;
+    s.server.nextHazardAt = t0;
+    const cfg = structuredClone(DEFAULT_CONFIG);
+    cfg.risk.hazardsEnabled = false;
+    expect(fireDueHazards(s, cfg, t0 + 1000, () => 0)).toEqual([]);
+    expect(s.server.outages).toEqual([]);
+  });
+
+  it('never pushes the same hazard id twice', () => {
+    const s = stocked();
+    const t0 = 1_700_000_000_000;
+    s.server.nextHazardAt = t0;
+    fireDueHazards(s, DEFAULT_CONFIG, t0 + 1, () => 0);
+    s.server.nextHazardAt = t0;          // replay the same instant
+    fireDueHazards(s, DEFAULT_CONFIG, t0 + 1, () => 0);
+    const ids = s.server.outages.map((o) => o.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it('reports a rate, never a next time', () => {
+    // default band 4h-8h -> mean 6h -> 1/6 per hour
+    expect(hazardRatePerHour(DEFAULT_CONFIG)).toBeCloseTo(1 / 6, 6);
+  });
+});
+
+describe('riskOn ANDs the master switch first', () => {
+  it('is false whenever the master is off, whatever the source says', () => {
+    const cfg = structuredClone(DEFAULT_CONFIG);
+    cfg.risk.enabled = false;
+    for (const key of ['hazardsEnabled', 'maintenanceEnabled', 'overheatShutdownEnabled']) {
+      cfg.risk[key] = true;
+      expect(riskOn(cfg, key)).toBe(false);
+    }
+  });
+  it('is true only when both are on', () => {
+    const cfg = structuredClone(DEFAULT_CONFIG);
+    expect(riskOn(cfg, 'hazardsEnabled')).toBe(true);
+    cfg.risk.hazardsEnabled = false;
+    expect(riskOn(cfg, 'hazardsEnabled')).toBe(false);
   });
 });

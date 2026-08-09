@@ -2,7 +2,7 @@ import { TIER_DEFS, GRID_DEFS, OVERCLOCK_DEFS } from './gameData.js';
 import { computeMults, tierRate } from './gameRules.js';
 import { TOTAL_BLOCKS } from './coldStorageData.js';
 import { computeColdStorageEffects, jobDurationSec } from './coldStorage.js';
-import { effectiveFactor, pruneExpired } from './outages.js';
+import { effectiveFactor, pruneExpired, fireDueHazards } from './outages.js';
 
 function freshTiers() {
   return TIER_DEFS.map((t) => ({ id: t.id, owned: 0, manager: false, ready: 0 }));
@@ -215,7 +215,7 @@ export function migrateSave(raw) {
  * this closes the gap analytically, in one shot, whenever the server needs
  * an up-to-date view (a request comes in, a save happens, etc).
  */
-export function evaluate(state, config, lastEvaluatedAt, now) {
+export function evaluate(state, config, lastEvaluatedAt, now, rng = Math.random) {
   const s = structuredClone(state);
   const elapsedSec = Math.max(0, (now - lastEvaluatedAt) / 1000);
   recordLegacyCorePeak(s.meta);
@@ -230,6 +230,14 @@ export function evaluate(state, config, lastEvaluatedAt, now) {
   // lifecycle as `overheated` above - set by the evaluation that produced
   // them, cleared on every subsequent call.
   delete s.server.outageNotices;
+
+  // Fire BEFORE the integral, so an incident that started part-way through
+  // this window degrades the part it covered. (Pruning is the mirror image
+  // and happens after - see the bottom of this function.) `outages` below is
+  // the same array object fireDueHazards pushes into, so the integral sees
+  // anything that just fired - do not re-bind or clone it between these.
+  const notices = fireDueHazards(s, config, now, rng);
+  if (notices.length > 0) s.server.outageNotices = notices;
 
   const outages = s.server.outages;
 

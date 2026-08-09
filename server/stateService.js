@@ -1,5 +1,6 @@
 import { migrateSave, evaluate } from '../shared/state.js';
 import { applyAction, scheduleAnomaly } from '../shared/reducer.js';
+import { scheduleNextHazard } from '../shared/outages.js';
 import {
   getSave, putSave, updateParticipationProgress,
 } from './db.js';
@@ -71,6 +72,16 @@ export async function loadEvaluateAndSchedule(userId, now) {
     (now > state.server.anomalyExpiresAt && state.server.nextAnomalyAt <= now)
   ) {
     scheduleAnomaly(state.server, config, now, Math.random);
+  }
+
+  // v1.11: same precedent as scheduleAnomaly directly above - evaluate() fires
+  // hazards, but a save that has never had one scheduled (fresh, or written
+  // before v1.11) needs its first `nextHazardAt` seeded from the SERVER's rng,
+  // once. From then on both sides read the stored timestamp and DERIVE what
+  // that hazard is, which is what keeps the client's optimistic evaluate()
+  // agreeing with the server about what happened during an absence.
+  if (!(state.server.nextHazardAt > 0)) {
+    scheduleNextHazard(state.server, config, now, Math.random);
   }
 
   // Join-on-login (spec §5.3): if a live event is active and this user
