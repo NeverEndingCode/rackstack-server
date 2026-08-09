@@ -159,6 +159,27 @@ export function supplyPrice(supplyId, config, totalOutputPerSec) {
   return Math.max(config.risk.supplyPriceMin, rate * config.risk[key]);
 }
 
+/**
+ * What it costs to end `outage` right now.
+ *
+ *   cost = supplyPrice * cureMultiplier * (1 + remaining/total)
+ *
+ * The trailing factor is in (1, 2], so the cure's FLOOR is `cureMultiplier`
+ * times the supply that would have prevented it - strictly worse than
+ * preparing, at every remaining duration and every output rate (spec
+ * decision 2). If curing is ever cheaper than preparing, the prepaid economy
+ * is dead. tests/outages.test.js asserts that as a property across the whole
+ * space; if you change this formula, that test is the contract.
+ */
+export function cureCost(outage, config, totalOutputPerSec, now) {
+  const supply = SUPPLY_FOR_KIND[outage.kind];
+  if (!supply) return Infinity;
+  const total = outage.endAt - outage.startAt;
+  const remaining = Math.max(0, outage.endAt - now);
+  const share = total > 0 ? remaining / total : 0;
+  return supplyPrice(supply, config, totalOutputPerSec) * config.risk.cureMultiplier * (1 + share);
+}
+
 const HAZARD_SPECS = {
   ransomware: { enabledKey: 'ransomwareEnabled', factorKey: 'ransomwareFactor', durationKey: 'ransomwareDurationMs' },
   ispOutage: { enabledKey: 'ispOutageEnabled', factorKey: 'ispOutageFactor', durationKey: 'ispOutageDurationMs' },

@@ -3,7 +3,7 @@ import {
   scopeCovers, activeAt, pruneExpired, effectiveFactor, laneOutageFor,
   hazardFrom, scheduleNextHazard, fireDueHazards, hazardRatePerHour, riskOn,
   HAZARD_KINDS, MAX_HAZARDS_PER_EVALUATION,
-  SUPPLY_IDS, SUPPLY_FOR_KIND, supplyPrice,
+  SUPPLY_IDS, SUPPLY_FOR_KIND, supplyPrice, cureCost,
 } from '../shared/outages.js';
 import { DEFAULT_CONFIG } from '../shared/configSchema.js';
 import { initialState } from '../shared/state.js';
@@ -294,6 +294,35 @@ describe('stockpiles absorb hazards at fire time', () => {
     const cfg = DEFAULT_CONFIG;
     expect(supplyPrice('antivirus', cfg, 0)).toBe(cfg.risk.supplyPriceMin);
     expect(supplyPrice('antivirus', cfg, 1000)).toBe(1000 * cfg.risk.antivirusPriceSeconds);
+  });
+});
+
+describe('the reactive cure is always worse than preparing', () => {
+  const haz = (kind, startAt, endAt, factor) => ({
+    id: `hazard:${startAt}`, kind, scope: { lane: '*' }, factor,
+    startAt, endAt, source: 'hazard',
+  });
+
+  it('never costs less than the supply that would have prevented it', () => {
+    const cfg = DEFAULT_CONFIG;
+    for (const kind of HAZARD_KINDS) {
+      for (const rate of [0, 1, 1e3, 1e9]) {
+        for (const elapsed of [0, 0.25, 0.5, 0.99]) {
+          const start = 1_000_000;
+          const end = start + 1_800_000;
+          const now = start + (end - start) * elapsed;
+          const cure = cureCost(haz(kind, start, end, 0), cfg, rate, now);
+          const prep = supplyPrice(SUPPLY_FOR_KIND[kind], cfg, rate);
+          expect(cure).toBeGreaterThan(prep);
+        }
+      }
+    }
+  });
+
+  it('costs more the more time is left to buy back', () => {
+    const cfg = DEFAULT_CONFIG;
+    const h = haz('ransomware', 0, 1000, 0.5);
+    expect(cureCost(h, cfg, 1000, 100)).toBeGreaterThan(cureCost(h, cfg, 1000, 900));
   });
 });
 
