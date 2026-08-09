@@ -334,7 +334,10 @@ async function main() {
         const first = await counter.textContent();
         assert(/^1 \//.test(first.trim()), `expected to start at step 1, got "${first}"`);
         const total = Number(first.trim().split('/')[1]);
-        assert(total === 11, `expected 11 steps for a fresh account, got ${total}`);
+        // v1.11 appended 2 ungated Resilience steps to the onboarding tour
+        // (a fresh save can be hit by a hazard, so it is never gated behind
+        // progression), taking a fresh account's resolved count 11 -> 13.
+        assert(total === 13, `expected 13 steps for a fresh account, got ${total}`);
 
         await next.click();
         const second = await counter.textContent();

@@ -444,24 +444,36 @@ async function main() {
     const overheated = await bootAndGetState(econPage);
 
     assert(overheated.run.heat === 0, `expected heat reset to 0 after overheat, got ${overheated.run.heat}`);
-    assert(typeof overheated.run.heatCooldownUntil === 'number' && overheated.run.heatCooldownUntil > Date.now(),
-      'expected an active heatCooldownUntil in the future');
     assert(overheated.run.overclock[0].owned === overclockOwnedBefore,
       `expected no node loss: overclock[0].owned should still be ${overclockOwnedBefore}, got ${overheated.run.overclock[0].owned}`);
+
+    // v1.11: the overheat penalty MOVED from the Overclock lane to the Racks
+    // lane. Overclock now multiplies Racks, so running hot risks the very
+    // thing it amplifies - a rack tier goes dark for a while instead of the
+    // Overclock lane freezing. heatCooldownUntil is therefore no longer set
+    // (it survives only as the fallback when there is no owned rack to down,
+    // and as the legacy path behind risk.overheatShutdownEnabled = false).
+    assert(overheated.run.heatCooldownUntil === null,
+      `expected no legacy lane freeze, got heatCooldownUntil=${overheated.run.heatCooldownUntil}`);
+    const downed = (overheated.server.outages || []).find((o) => o.source === 'overheat');
+    assert(downed, 'expected an overheat outage in server.outages');
+    assert(downed.scope.lane === 'tiers' && downed.factor === 0,
+      `expected a rack tier fully offline, got ${JSON.stringify(downed.scope)} factor=${downed.factor}`);
 
     const bodyText = await econPage.textContent('body');
     assert(bodyText.includes('Overheated!'), 'expected the meltdown modal');
     assert(bodyText.includes('no nodes were lost'), 'expected the meltdown modal to reassure no nodes were lost');
 
-    // Dismiss the meltdown modal, switch to the Overclock tab, and check
-    // the frozen-lane messaging + disabled Vent button.
+    // Dismiss the meltdown modal. The outage strip must SAY what is down -
+    // capacity silently producing nothing reads as a bug (v1.11 spec §9).
+    // Asserted on the strip rather than the Racks panel because the strip
+    // lives in the sticky header and is visible whatever tab is open and
+    // whatever tier was picked, including one past unlockedUpTo.
     await econPage.getByRole('button', { name: 'Understood', exact: true }).click();
-    await econPage.getByRole('button', { name: 'Overclock', exact: true }).click();
-    await econPage.getByText(/Overclock lane frozen after meltdown/).waitFor({ timeout: 3000 });
-    // v1.6: the label carries the live vent percentage ("Vent Heat (-25%)"),
-    // so match the prefix rather than the whole string.
-    const ventBtn = econPage.getByRole('button', { name: /^Vent Heat/ });
-    assert(await ventBtn.isDisabled(), 'expected Vent Heat to be disabled during the meltdown lockout');
+    const strip = econPage.getByTestId('outage-strip');
+    await strip.waitFor({ timeout: 3000 });
+    const stripText = await strip.textContent();
+    assert(/overheat/.test(stripText), `expected the outage strip to name the overheat, got: ${stripText}`);
 
     // Non-admin heat-bar rescale: nameUser1's raw heat (50) never changed;
     // only the capacity did (2000 -> 100), so their displayed percentage

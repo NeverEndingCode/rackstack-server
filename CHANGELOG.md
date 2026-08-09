@@ -1,5 +1,59 @@
 # Changelog
 
+## v1.11.0
+
+- **Things can now go wrong.** Every few hours something breaks: ransomware
+  halves every lane, an ISP outage takes the Grid dark, a drive failure kills
+  one rack tier. Incidents only ever **reduce output** — they never destroy
+  racks, FLOPS, tapes or upgrades, so there is no such thing as a dead save
+  and no repair you must be able to afford. In an idle game the real currency
+  is lost time, and that is all this takes.
+
+  You are never told when the next one is coming, only the standing rate
+  (about one every six hours). That is deliberate: a schedule you can see
+  turns preparation into buying one licence twenty minutes beforehand.
+
+- **Prepaid supplies, and a cure priced worse than preparing.** Antivirus
+  licences, backup ISP lines and spare drives are bought with FLOPS and absorb
+  one matching incident automatically — **including while you are offline**,
+  which is the only defence that can reach an incident that starts and ends
+  during a nine-hour absence. They live in your permanent progress, so they
+  survive a Migrate; spend down before you prestige rather than watching the
+  balance evaporate.
+
+  Something already broken can be resolved on the spot for FLOPS, scaled by
+  how much of it is left. That price is always higher than the supply that
+  would have prevented it. Coming back to a running incident should never
+  leave you a spectator, but it should never be the cheap path either.
+
+- **Cold Storage never fails.** No incident touches it — not blocks, not jobs,
+  not tapes, not the tape tree. It is the one lane that always pays, and a
+  real reason to invest before a long absence.
+
+- **The Grid takes scheduled maintenance.** Unlike incidents, a maintenance
+  window is announced well ahead and shown with a countdown, so you can route
+  around it. Downtime you can plan for is a decision; downtime you cannot is
+  indistinguishable from the game being broken.
+
+- **The Overclock Bay no longer produces FLOPS. It multiplies your Racks.**
+  This changes how an existing lane works, so read it carefully: the nodes you
+  own now contribute a multiplier to Racks output instead of generating output
+  of their own. At the shipped balance the conversion is **exactly neutral** —
+  your total output is the same the moment it deploys — but the lane now
+  scales with your racks rather than beside them.
+
+  Overheating changed to match. Instead of freezing the Overclock lane, it now
+  knocks **one rack tier offline** for a few minutes. Running hot risks the
+  very thing it amplifies, and the punishment is self-limiting. Nothing is
+  ever destroyed, and no nodes are lost.
+
+- **All of it is switchable from the Balancing tab**, including a master kill
+  switch. Turning the system off is a true kill, not a pause: any incident
+  already running is cleared on the next reconcile, so nobody is left
+  throttled by a system that no longer exists. The config schema grew a proper
+  boolean type to make that possible — a 0/1 "boolean" is exactly the kind of
+  thing that later gets set to 2.
+
 ## v1.10.0
 
 - **Triggering a Singularity deleted you from the Legacy Cores leaderboard.**
