@@ -4,6 +4,7 @@ import {
   hazardFrom, scheduleNextHazard, fireDueHazards, hazardRatePerHour, riskOn,
   HAZARD_KINDS, MAX_HAZARDS_PER_EVALUATION,
   SUPPLY_IDS, SUPPLY_FOR_KIND, supplyPrice, cureCost,
+  scheduleGridMaintenance, activateDueMaintenance,
 } from '../shared/outages.js';
 import { DEFAULT_CONFIG } from '../shared/configSchema.js';
 import { initialState } from '../shared/state.js';
@@ -323,6 +324,47 @@ describe('the reactive cure is always worse than preparing', () => {
     const cfg = DEFAULT_CONFIG;
     const h = haz('ransomware', 0, 1000, 0.5);
     expect(cureCost(h, cfg, 1000, 100)).toBeGreaterThan(cureCost(h, cfg, 1000, 900));
+  });
+});
+
+describe('grid maintenance is telegraphed, not sprung', () => {
+  it('schedules a window at least the minimum delay ahead', () => {
+    const server = { gridMaintenance: null };
+    scheduleGridMaintenance(server, DEFAULT_CONFIG, 1000, () => 0);
+    expect(server.gridMaintenance.startAt).toBe(1000 + DEFAULT_CONFIG.risk.maintenanceMinDelayMs);
+    expect(server.gridMaintenance.endAt - server.gridMaintenance.startAt)
+      .toBe(DEFAULT_CONFIG.risk.maintenanceDurationMs);
+    expect(server.gridMaintenance.index).toBeGreaterThanOrEqual(0);
+  });
+
+  it('does not activate before its start time', () => {
+    const s = stocked();
+    s.server.gridMaintenance = { index: 2, startAt: 5000, endAt: 6000 };
+    expect(activateDueMaintenance(s, DEFAULT_CONFIG, 4999)).toBeNull();
+    expect(s.server.outages).toEqual([]);
+    expect(s.server.gridMaintenance).not.toBeNull();   // still telegraphed
+  });
+
+  it('activates into a scoped, zero-factor outage and clears the slot', () => {
+    const s = stocked();
+    s.server.gridMaintenance = { index: 2, startAt: 5000, endAt: 6000 };
+    const o = activateDueMaintenance(s, DEFAULT_CONFIG, 5000);
+    expect(o).toMatchObject({
+      kind: 'maintenance', source: 'scheduled', factor: 0,
+      scope: { lane: 'grid', index: 2 }, startAt: 5000, endAt: 6000,
+      id: 'maintenance:5000',
+    });
+    expect(s.server.outages).toHaveLength(1);
+    expect(s.server.gridMaintenance).toBeNull();
+  });
+
+  it('does nothing when maintenance is disabled', () => {
+    const s = stocked();
+    s.server.gridMaintenance = { index: 2, startAt: 5000, endAt: 6000 };
+    const cfg = structuredClone(DEFAULT_CONFIG);
+    cfg.risk.maintenanceEnabled = false;
+    expect(activateDueMaintenance(s, cfg, 9000)).toBeNull();
+    expect(s.server.outages).toEqual([]);
   });
 });
 

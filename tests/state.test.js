@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { DEFAULT_CONFIG } from '../shared/configSchema.js';
 import { initialState, migrateSave, evaluate } from '../shared/state.js';
+import { GRID_DEFS } from '../shared/gameData.js';
 
 const fixture = JSON.parse(readFileSync(new URL('./fixtures/v11-save.json', import.meta.url)));
 
@@ -263,5 +264,19 @@ describe('evaluate with outages (v1.11)', () => {
     expect(s.server.outages).toEqual([]);
     expect(s.server.nextHazardAt).toBe(0);
     expect(s.server.gridMaintenance).toBeNull();
+  });
+
+  it('an activated maintenance window darkens only its own grid node', () => {
+    const s = initialState();
+    s.run.grid[2] = { id: 2, owned: 10 };
+    s.run.grid[0] = { id: 0, owned: 10 };
+    const cfg = structuredClone(DEFAULT_CONFIG);
+    cfg.risk.hazardsEnabled = false;              // isolate maintenance
+    const t0 = 1_000_000;
+    s.server.gridMaintenance = { index: 2, startAt: t0, endAt: t0 + 30_000 };
+    const { state: s2 } = evaluate(s, cfg, t0, t0 + 30_000);
+    // node 0 paid in full, node 2 paid nothing
+    const expected = 10 * GRID_DEFS[0].baseProd * 30;
+    expect(s2.run.credits).toBeCloseTo(10 + expected);
   });
 });

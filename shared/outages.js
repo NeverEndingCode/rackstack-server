@@ -16,6 +16,8 @@
  * client's optimistic prediction, which is the whole reason it is pure.
  */
 
+import { GRID_DEFS } from './gameData.js';
+
 /**
  * Lanes an outage may cover. Cold Storage is deliberately ABSENT and must
  * stay absent: it is the safe harbour (spec decision 6), the one lane that
@@ -370,4 +372,64 @@ export function fireDueHazards(state, config, now, rng = Math.random) {
   if (server.nextHazardAt <= now) scheduleNextHazard(server, config, now, rng);
 
   return notices;
+}
+
+// ---------------------------------------------------------------------------
+// Grid maintenance: telegraphed, not sprung
+// ---------------------------------------------------------------------------
+
+/**
+ * Picks the next Grid maintenance window and stores it, VISIBLE, on
+ * `server.gridMaintenance`.
+ *
+ * Called from the server load path only (server/stateService.js), never from
+ * evaluate() - exactly the scheduleAnomaly precedent, and for a sharper
+ * reason here: this window is DISPLAYED, with a countdown. If the client drew
+ * it from its own rng the countdown would jump on every reconcile.
+ *
+ * Downtime you can route around is planning; downtime you cannot is
+ * indistinguishable from the game being broken. That is the whole difference
+ * between this and a hazard.
+ */
+export function scheduleGridMaintenance(server, config, now, rng = Math.random) {
+  const { maintenanceMinDelayMs, maintenanceMaxDelayMs, maintenanceDurationMs } = config.risk;
+  const startAt = now + maintenanceMinDelayMs
+    + rng() * (maintenanceMaxDelayMs - maintenanceMinDelayMs);
+  const index = Math.min(GRID_DEFS.length - 1, Math.floor(rng() * GRID_DEFS.length));
+  server.gridMaintenance = { index, startAt, endAt: startAt + maintenanceDurationMs };
+}
+
+/**
+ * Converts a due, already-scheduled window into an outage. Every parameter
+ * was fixed when it was scheduled, so there is nothing to derive and this is
+ * deterministic on both sides. Returns the outage, or null.
+ */
+export function activateDueMaintenance(state, config, now) {
+  if (!riskOn(config, 'maintenanceEnabled')) return null;
+  const gm = state.server.gridMaintenance;
+  if (!gm || gm.startAt > now) return null;
+
+  state.server.gridMaintenance = null;    // stateService schedules the next
+
+  // Deliberately NO "gm.endAt <= now, so it is over, skip it" guard. A window
+  // that covers the whole evaluation gap ends exactly at `now`, and skipping
+  // it would pay the player in full for time they were demonstrably down. An
+  // outage genuinely in the past is harmless to push: effectiveFactor ignores
+  // anything with endAt <= from, and pruneExpired drops it at the end of this
+  // same evaluate(). Let the integral decide, not a guard that cannot see
+  // lastEvaluatedAt.
+  const id = `maintenance:${Math.floor(gm.startAt)}`;
+  if (state.server.outages.some((o) => o && o.id === id)) return null;
+
+  const outage = {
+    id,
+    kind: 'maintenance',
+    scope: { lane: 'grid', index: gm.index },
+    factor: 0,
+    startAt: gm.startAt,
+    endAt: gm.endAt,
+    source: 'scheduled',
+  };
+  state.server.outages.push(outage);
+  return outage;
 }

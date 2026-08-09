@@ -1,6 +1,6 @@
 import { migrateSave, evaluate } from '../shared/state.js';
 import { applyAction, scheduleAnomaly } from '../shared/reducer.js';
-import { scheduleNextHazard } from '../shared/outages.js';
+import { scheduleNextHazard, scheduleGridMaintenance } from '../shared/outages.js';
 import {
   getSave, putSave, updateParticipationProgress,
 } from './db.js';
@@ -82,6 +82,16 @@ export async function loadEvaluateAndSchedule(userId, now) {
   // agreeing with the server about what happened during an absence.
   if (!(state.server.nextHazardAt > 0)) {
     scheduleNextHazard(state.server, config, now, Math.random);
+  }
+
+  // v1.11: maintenance is TELEGRAPHED, so unlike a hazard it is scheduled here
+  // (server rng, stored, then read by both sides) rather than inside
+  // evaluate() - the client must draw the same countdown the server will
+  // honour, or it would jump on every reconcile. evaluate() clears the slot
+  // when it activates the window, which is what makes this both the seed and
+  // the "schedule the next one" path.
+  if (!state.server.gridMaintenance) {
+    scheduleGridMaintenance(state.server, config, now, Math.random);
   }
 
   // Join-on-login (spec §5.3): if a live event is active and this user

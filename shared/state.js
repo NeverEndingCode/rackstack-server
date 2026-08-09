@@ -2,7 +2,9 @@ import { TIER_DEFS, GRID_DEFS, OVERCLOCK_DEFS } from './gameData.js';
 import { computeMults, tierRate } from './gameRules.js';
 import { TOTAL_BLOCKS } from './coldStorageData.js';
 import { computeColdStorageEffects, jobDurationSec } from './coldStorage.js';
-import { effectiveFactor, pruneExpired, fireDueHazards } from './outages.js';
+import {
+  effectiveFactor, pruneExpired, fireDueHazards, activateDueMaintenance,
+} from './outages.js';
 
 function freshTiers() {
   return TIER_DEFS.map((t) => ({ id: t.id, owned: 0, manager: false, ready: 0 }));
@@ -252,6 +254,7 @@ export function evaluate(state, config, lastEvaluatedAt, now, rng = Math.random)
   // and happens after - see the bottom of this function.) `outages` below is
   // the same array object fireDueHazards pushes into, so the integral sees
   // anything that just fired - do not re-bind or clone it between these.
+  activateDueMaintenance(s, config, now);
   const notices = fireDueHazards(s, config, now, rng);
   if (notices.length > 0) s.server.outageNotices = notices;
 
