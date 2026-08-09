@@ -2,6 +2,7 @@ import { TIER_DEFS, GRID_DEFS, OVERCLOCK_DEFS } from './gameData.js';
 import { computeMults, tierRate } from './gameRules.js';
 import { TOTAL_BLOCKS } from './coldStorageData.js';
 import { computeColdStorageEffects, jobDurationSec } from './coldStorage.js';
+import { effectiveFactor, pruneExpired } from './outages.js';
 
 function freshTiers() {
   return TIER_DEFS.map((t) => ({ id: t.id, owned: 0, manager: false, ready: 0 }));
@@ -75,8 +76,35 @@ export function initialState() {
       boost: null,
       lastVentAt: 0,
       gameCooldowns: { rush: 0, debug: 0, match: 0, balance: 0 },
+      // v1.11 Risk & Reliability. `outages` IS the shared notion of capacity
+      // currently offline - not a concept layered over two systems, but the
+      // only representation either has (spec §3). `server` is the right home:
+      // it already holds nextAnomalyAt/boost/gameCooldowns, it survives
+      // Migrate and Singularity, and hardReset clears it wholesale.
+      outages: [],
+      nextHazardAt: 0,
+      gridMaintenance: null,
     },
   };
+}
+
+// v1.11: an outage reaching evaluate() with a non-numeric startAt/endAt/factor
+// would poison the integral into NaN and silently zero a player's income for
+// the rest of the save's life. Validate on the way in, drop what fails.
+function isValidOutage(o) {
+  return !!o && typeof o === 'object'
+    && typeof o.id === 'string'
+    && !!o.scope && typeof o.scope === 'object' && typeof o.scope.lane === 'string'
+    && Number.isFinite(o.factor) && o.factor >= 0 && o.factor <= 1
+    && Number.isFinite(o.startAt) && Number.isFinite(o.endAt)
+    && o.endAt > o.startAt;
+}
+
+function isValidMaintenance(m) {
+  return !!m && typeof m === 'object'
+    && Number.isInteger(m.index) && m.index >= 0
+    && Number.isFinite(m.startAt) && Number.isFinite(m.endAt)
+    && m.endAt > m.startAt;
 }
 
 /**
@@ -169,6 +197,14 @@ export function migrateSave(raw) {
     ...base.server,
     ...srcServer,
     gameCooldowns: { ...base.server.gameCooldowns, ...(srcServer.gameCooldowns || {}) },
+    // v1.11: shape-pinned, not merely defaulted - same reasoning as
+    // pendingEventClaims above. effectiveFactor()/pruneExpired() iterate this
+    // on every evaluation, and a corrupt or hand-edited save carrying a
+    // non-array (or an outage with a NaN bound) must never reach them.
+    outages: Array.isArray(srcServer.outages) ? srcServer.outages.filter(isValidOutage) : [],
+    nextHazardAt: typeof srcServer.nextHazardAt === 'number' && Number.isFinite(srcServer.nextHazardAt)
+      ? srcServer.nextHazardAt : 0,
+    gridMaintenance: isValidMaintenance(srcServer.gridMaintenance) ? srcServer.gridMaintenance : null,
   };
 
   return { run, meta, server };
@@ -190,6 +226,13 @@ export function evaluate(state, config, lastEvaluatedAt, now) {
   // subsequent call regardless of what happens this time.
   delete s.server.overheated;
 
+  // v1.11: outage notices are one-shot client signals with exactly the same
+  // lifecycle as `overheated` above - set by the evaluation that produced
+  // them, cleared on every subsequent call.
+  delete s.server.outageNotices;
+
+  const outages = s.server.outages;
+
   const online = elapsedSec <= config.offline.onlineGapThresholdSec;
   let gained = 0;
 
@@ -209,7 +252,8 @@ export function evaluate(state, config, lastEvaluatedAt, now) {
     s.run.tiers = s.run.tiers.map((ts, i) => {
       const def = TIER_DEFS[i];
       if (!def || !ts || ts.owned === 0) return ts;
-      const produced = tierRate(ts.owned, def.baseProd, racksMult, thresholds) * elapsedSec;
+      const factor = effectiveFactor(outages, 'tiers', i, lastEvaluatedAt, now);
+      const produced = tierRate(ts.owned, def.baseProd, racksMult, thresholds) * elapsedSec * factor;
       lifetimeGain += produced;
       if (ts.manager) { creditsGain += produced; return ts; }
       return { ...ts, ready: (ts.ready || 0) + produced };
@@ -218,7 +262,8 @@ export function evaluate(state, config, lastEvaluatedAt, now) {
     s.run.grid.forEach((g, i) => {
       const def = GRID_DEFS[i];
       if (!def || !g || g.owned === 0) return;
-      const produced = tierRate(g.owned, def.baseProd, gridMult, thresholds) * elapsedSec;
+      const factor = effectiveFactor(outages, 'grid', i, lastEvaluatedAt, now);
+      const produced = tierRate(g.owned, def.baseProd, gridMult, thresholds) * elapsedSec * factor;
       creditsGain += produced;
       lifetimeGain += produced;
     });
@@ -235,7 +280,8 @@ export function evaluate(state, config, lastEvaluatedAt, now) {
       s.run.overclock.forEach((o, i) => {
         const def = OVERCLOCK_DEFS[i];
         if (!def || !o || o.owned === 0) return;
-        const produced = tierRate(o.owned, def.baseProd, overclockMult, thresholds) * elapsedSec;
+        const factor = effectiveFactor(outages, 'overclock', i, lastEvaluatedAt, now);
+        const produced = tierRate(o.owned, def.baseProd, overclockMult, thresholds) * elapsedSec * factor;
         creditsGain += produced;
         lifetimeGain += produced;
       });
@@ -285,10 +331,22 @@ export function evaluate(state, config, lastEvaluatedAt, now) {
     let offlineCredits = 0;
     let offlineLifetime = 0;
 
+    // DELIBERATE, AND ODD ON PURPOSE (spec decision 5): the outage factor is
+    // computed over the WHOLE absence [lastEvaluatedAt, now] and then applied
+    // to the CAPPED payout. An incident covering 2 of 12 absent hours costs
+    // 2/12ths of what you were credited, regardless of the cap - the capped
+    // window is a representative SAMPLE of the absence, not its first N hours.
+    //
+    // Do not "fix" this into the literal first-N-hours reading. At roughly one
+    // incident per six hours, most incidents would land in unpaid time and
+    // cost nothing, which quietly guts the system for exactly the players it
+    // should reach most - the ones who are away for a long time. This was
+    // considered and explicitly rejected by the owner.
     s.run.tiers = s.run.tiers.map((ts, i) => {
       const def = TIER_DEFS[i];
       if (!def || !ts || ts.owned === 0) return ts;
-      const produced = tierRate(ts.owned, def.baseProd, racksMult, thresholds) * cappedSec;
+      const factor = effectiveFactor(outages, 'tiers', i, lastEvaluatedAt, now);
+      const produced = tierRate(ts.owned, def.baseProd, racksMult, thresholds) * cappedSec * factor;
       offlineLifetime += produced;
       if (ts.manager) { offlineCredits += produced; return ts; }
       return { ...ts, ready: (ts.ready || 0) + produced };
@@ -297,7 +355,8 @@ export function evaluate(state, config, lastEvaluatedAt, now) {
     s.run.grid.forEach((g, i) => {
       const def = GRID_DEFS[i];
       if (!def || !g || g.owned === 0) return;
-      const produced = tierRate(g.owned, def.baseProd, gridMult, thresholds) * cappedSec;
+      const factor = effectiveFactor(outages, 'grid', i, lastEvaluatedAt, now);
+      const produced = tierRate(g.owned, def.baseProd, gridMult, thresholds) * cappedSec * factor;
       offlineCredits += produced;
       offlineLifetime += produced;
     });
@@ -305,7 +364,8 @@ export function evaluate(state, config, lastEvaluatedAt, now) {
     s.run.overclock.forEach((o, i) => {
       const def = OVERCLOCK_DEFS[i];
       if (!def || !o || o.owned === 0) return;
-      const produced = tierRate(o.owned, def.baseProd, overclockMult, thresholds) * cappedSec;
+      const factor = effectiveFactor(outages, 'overclock', i, lastEvaluatedAt, now);
+      const produced = tierRate(o.owned, def.baseProd, overclockMult, thresholds) * cappedSec * factor;
       offlineCredits += produced;
       offlineLifetime += produced;
     });
@@ -323,6 +383,11 @@ export function evaluate(state, config, lastEvaluatedAt, now) {
   if (s.server.boost && now >= s.server.boost.until) {
     s.server.boost = null;
   }
+
+  // Prune AFTER the integral, never before: an outage that ended part-way
+  // through this window still degraded the part it covered, and pruning first
+  // would silently pay that time in full.
+  s.server.outages = pruneExpired(s.server.outages, now);
 
   return { state: s, gained };
 }

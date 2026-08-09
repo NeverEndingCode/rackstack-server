@@ -186,3 +186,82 @@ describe('coldStorage state wiring', () => {
     expect(s2.run.tiers[0].ready).toBeCloseTo(10 * 0.5 * 9 * 3600, 0); // capped at 9h, not the base 4h
   });
 });
+
+describe('evaluate with outages (v1.11)', () => {
+  const outage = (startAt, endAt, factor, scope) => ({
+    id: `x${startAt}`, kind: 'test', scope, factor, startAt, endAt, source: 'hazard',
+  });
+
+  it('zero outages leaves online production identical to today', () => {
+    const s = initialState();
+    s.run.tiers[0] = { id: 0, owned: 10, manager: true, ready: 0 };
+    const t0 = 1_000_000;
+    const { state: s2 } = evaluate(s, DEFAULT_CONFIG, t0, t0 + 30_000);
+    expect(s2.run.credits).toBeCloseTo(10 + 150);
+    expect(s2.server.outages).toEqual([]);
+  });
+
+  it('a full-window outage at 0 stops that lane dead', () => {
+    const s = initialState();
+    s.run.tiers[0] = { id: 0, owned: 10, manager: true, ready: 0 };
+    const t0 = 1_000_000;
+    s.server.outages = [outage(t0, t0 + 30_000, 0, { lane: 'tiers', index: 0 })];
+    const { state: s2 } = evaluate(s, DEFAULT_CONFIG, t0, t0 + 30_000);
+    expect(s2.run.credits).toBeCloseTo(10);
+  });
+
+  it('half a window dark pays exactly half', () => {
+    const s = initialState();
+    s.run.tiers[0] = { id: 0, owned: 10, manager: true, ready: 0 };
+    const t0 = 1_000_000;
+    s.server.outages = [outage(t0 + 15_000, t0 + 30_000, 0, { lane: '*' })];
+    const { state: s2 } = evaluate(s, DEFAULT_CONFIG, t0, t0 + 30_000);
+    expect(s2.run.credits).toBeCloseTo(10 + 75);
+  });
+
+  it('the offline cap samples the WHOLE absence proportionally', () => {
+    // 12h absent, 4h capped payout, an outage covering 6h of the absence.
+    // The credited amount is the 4h payout * 0.5, NOT the first 4h unaffected.
+    const s = initialState();
+    s.run.tiers[0] = { id: 0, owned: 10, manager: true, ready: 0 };
+    const t0 = 1_000_000;
+    const twelveH = 12 * 3600 * 1000;
+    s.server.outages = [outage(t0 + 6 * 3600 * 1000, t0 + twelveH, 0, { lane: '*' })];
+    const { state: s2 } = evaluate(s, DEFAULT_CONFIG, t0, t0 + twelveH);
+    // 4h cap * 10 pis * 0.5 F/s = 72000, halved by the sampled factor
+    expect(s2.run.credits).toBeCloseTo(10 + 36000);
+  });
+
+  it('Cold Storage is untouched by a wildcard outage', () => {
+    const mk = () => {
+      const s = initialState();
+      s.meta.coldStorage.job = { type: 'defrag', accruedOfflineSec: 0, startedAt: 0 };
+      return s;
+    };
+    const t0 = 1_000_000;
+    const twelveH = 12 * 3600 * 1000;
+    const clean = evaluate(mk(), DEFAULT_CONFIG, t0, t0 + twelveH).state;
+    const hit = mk();
+    hit.server.outages = [outage(t0, t0 + twelveH, 0, { lane: '*' })];
+    const dark = evaluate(hit, DEFAULT_CONFIG, t0, t0 + twelveH).state;
+    expect(dark.meta.coldStorage.job.accruedOfflineSec)
+      .toBe(clean.meta.coldStorage.job.accruedOfflineSec);
+    expect(dark.meta.coldStorage.tapes).toBe(clean.meta.coldStorage.tapes);
+  });
+
+  it('prunes outages that ended before now', () => {
+    const s = initialState();
+    const t0 = 1_000_000;
+    s.server.outages = [outage(t0, t0 + 1000, 0, { lane: '*' })];
+    const { state: s2 } = evaluate(s, DEFAULT_CONFIG, t0, t0 + 30_000);
+    expect(s2.server.outages).toEqual([]);
+  });
+
+  it('migrateSave defaults and shape-pins the v1.11 server fields', () => {
+    const pre = { run: { credits: 5 }, meta: {}, server: { outages: 'not-an-array' } };
+    const s = migrateSave(pre);
+    expect(s.server.outages).toEqual([]);
+    expect(s.server.nextHazardAt).toBe(0);
+    expect(s.server.gridMaintenance).toBeNull();
+  });
+});
