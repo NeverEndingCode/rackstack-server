@@ -122,3 +122,15 @@ describe('rungProgress', () => {
     expect(rungProgress(rung, meta, {})).toEqual({ current: 1000, target: 500, met: true });
   });
 });
+
+describe('event modifiers vs boolean tunables (v1.11)', () => {
+  it('rejects a modifier targeting a boolean tunable', () => {
+    const res = validateModifiers([{ path: 'risk.enabled', value: 0 }]);
+    expect(res.ok).toBe(false);
+    expect(res.errors.some((e) => e.includes('risk.enabled'))).toBe(true);
+  });
+
+  it('still accepts a numeric risk modifier', () => {
+    expect(validateModifiers([{ path: 'risk.ransomwareFactor', value: 0.25 }]).ok).toBe(true);
+  });
+});
