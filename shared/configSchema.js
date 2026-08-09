@@ -56,6 +56,56 @@ export const DEFAULT_CONFIG = {
     leaderboardCacheMs: 60000,
     leaderboardLimit: 50,
   },
+  // v1.11 Risk & Reliability. Every effect in the release is an "outage"
+  // (shared/outages.js); these are its dials. The seven booleans AND together
+  // with `enabled` first, so the owner can kill the whole system in one click
+  // without auditing the rest - see shared/outages.js's riskOn().
+  risk: {
+    enabled: true,
+    hazardsEnabled: true,
+    maintenanceEnabled: true,
+    overheatShutdownEnabled: true,
+    ransomwareEnabled: true,
+    ispOutageEnabled: true,
+    driveFailureEnabled: true,
+
+    // ~1 incident per 6h on average. The player is shown this RATE, derived
+    // from these two numbers - never server.nextHazardAt (spec decision 3).
+    hazardMinDelayMs: 14400000,   // 4h
+    hazardMaxDelayMs: 28800000,   // 8h
+
+    ransomwareFactor: 0.5,
+    ransomwareDurationMs: 1800000,    // 30m, all lanes at half
+    ispOutageFactor: 0,
+    ispOutageDurationMs: 900000,      // 15m, Grid dark
+    driveFailureFactor: 0,
+    driveFailureDurationMs: 1200000,  // 20m, one rack tier dark
+
+    // Supply prices are expressed in SECONDS OF CURRENT OUTPUT, the same
+    // idiom as social.contractFlopsSeconds and batchQueue.blockFlopsSeconds,
+    // so a sink priced today still bites at 1e12 FLOPS/s. supplyPriceMin is
+    // the floor for a fresh save whose output is ~0.
+    antivirusPriceSeconds: 900,
+    backupIspPriceSeconds: 600,
+    spareDrivesPriceSeconds: 750,
+    supplyPriceMin: 500,
+
+    // The reactive cure is priced strictly worse than preparing (decision 2):
+    // cost = supplyPrice * cureMultiplier * (1 + remaining/total), so its
+    // FLOOR is cureMultiplier times the supply it should have been.
+    cureMultiplier: 2.5,
+
+    maintenanceMinDelayMs: 43200000,  // 12h
+    maintenanceMaxDelayMs: 86400000,  // 24h
+    maintenanceDurationMs: 1800000,   // 30m
+
+    overheatOutageMs: 600000,         // 10m of one rack tier offline
+
+    // Overclock's conversion factor (spec §7). At 1 the lane contributes
+    // exactly the output it used to produce directly, so a mid-game save's
+    // total output is unchanged on the deploy - see shared/gameRules.js.
+    overclockBoostGain: 1,
+  },
 };
 
 export const TUNABLES = [
@@ -168,6 +218,36 @@ export const TUNABLES = [
   { path: 'social.streakDay7Tapes', label: 'Streak final-day tape reward', min: 0, max: 10000, integer: true },
   { path: 'social.leaderboardCacheMs', label: 'Leaderboard cache TTL (ms)', min: 0, max: 3600000, integer: true },
   { path: 'social.leaderboardLimit', label: 'Leaderboard rows per board', min: 1, max: 500, integer: true },
+
+  // v1.11 Risk & Reliability. `type: 'boolean'` rows carry no min/max - the
+  // type is the range. Encoding these as 0/1 numbers was explicitly rejected:
+  // a 0/1 "boolean" is exactly the kind of thing that later gets set to 2.
+  { path: 'risk.enabled', label: 'Risk system enabled (master)', type: 'boolean' },
+  { path: 'risk.hazardsEnabled', label: 'Hazards enabled', type: 'boolean' },
+  { path: 'risk.maintenanceEnabled', label: 'Grid maintenance enabled', type: 'boolean' },
+  { path: 'risk.overheatShutdownEnabled', label: 'Overheat knocks a rack offline', type: 'boolean' },
+  { path: 'risk.ransomwareEnabled', label: 'Hazard enabled: Ransomware', type: 'boolean' },
+  { path: 'risk.ispOutageEnabled', label: 'Hazard enabled: ISP outage', type: 'boolean' },
+  { path: 'risk.driveFailureEnabled', label: 'Hazard enabled: Drive failure', type: 'boolean' },
+
+  { path: 'risk.hazardMinDelayMs', label: 'Hazard min delay (ms)', min: 60000, max: 604800000, integer: true },
+  { path: 'risk.hazardMaxDelayMs', label: 'Hazard max delay (ms)', min: 60000, max: 604800000, integer: true },
+  { path: 'risk.ransomwareFactor', label: 'Ransomware output factor', min: 0, max: 1, integer: false },
+  { path: 'risk.ransomwareDurationMs', label: 'Ransomware duration (ms)', min: 1000, max: 86400000, integer: true },
+  { path: 'risk.ispOutageFactor', label: 'ISP outage output factor', min: 0, max: 1, integer: false },
+  { path: 'risk.ispOutageDurationMs', label: 'ISP outage duration (ms)', min: 1000, max: 86400000, integer: true },
+  { path: 'risk.driveFailureFactor', label: 'Drive failure output factor', min: 0, max: 1, integer: false },
+  { path: 'risk.driveFailureDurationMs', label: 'Drive failure duration (ms)', min: 1000, max: 86400000, integer: true },
+  { path: 'risk.antivirusPriceSeconds', label: 'Antivirus price (seconds of output)', min: 0, max: 86400, integer: true },
+  { path: 'risk.backupIspPriceSeconds', label: 'Backup ISP price (seconds of output)', min: 0, max: 86400, integer: true },
+  { path: 'risk.spareDrivesPriceSeconds', label: 'Spare drive price (seconds of output)', min: 0, max: 86400, integer: true },
+  { path: 'risk.supplyPriceMin', label: 'Supply price floor (FLOPS)', min: 0, max: 1e12, integer: false },
+  { path: 'risk.cureMultiplier', label: 'Cure price multiplier', min: 1, max: 100, integer: false },
+  { path: 'risk.maintenanceMinDelayMs', label: 'Maintenance min delay (ms)', min: 60000, max: 604800000, integer: true },
+  { path: 'risk.maintenanceMaxDelayMs', label: 'Maintenance max delay (ms)', min: 60000, max: 604800000, integer: true },
+  { path: 'risk.maintenanceDurationMs', label: 'Maintenance duration (ms)', min: 1000, max: 86400000, integer: true },
+  { path: 'risk.overheatOutageMs', label: 'Overheat rack shutdown (ms)', min: 1000, max: 86400000, integer: true },
+  { path: 'risk.overclockBoostGain', label: 'Overclock boost gain', min: 0, max: 100, integer: false },
 ];
 
 export function getAtPath(obj, path) {
@@ -200,6 +280,13 @@ export function validateConfig(doc) {
   }
   for (const t of TUNABLES) {
     const v = getAtPath(doc, t.path);
+    // v1.11: a boolean tunable accepts ONLY a boolean. Both directions are
+    // enforced - a number here, or a boolean on a numeric path below, is a
+    // rejection rather than a silent coercion.
+    if (t.type === 'boolean') {
+      if (typeof v !== 'boolean') errors.push(`${t.path}: missing or not a boolean`);
+      continue;
+    }
     if (typeof v !== 'number' || Number.isNaN(v)) { errors.push(`${t.path}: missing or not a number`); continue; }
     if (v < t.min || v > t.max) errors.push(`${t.path}: ${v} outside [${t.min}, ${t.max}]`);
     if (t.integer && !Number.isInteger(v)) errors.push(`${t.path}: must be an integer`);
@@ -211,6 +298,10 @@ export function upgradeConfig(doc) {
   const out = structuredClone(DEFAULT_CONFIG);
   for (const t of TUNABLES) {
     const v = getAtPath(doc || {}, t.path);
+    if (t.type === 'boolean') {
+      if (typeof v === 'boolean') setAtPath(out, t.path, v);
+      continue;
+    }
     if (typeof v === 'number' && !Number.isNaN(v)) setAtPath(out, t.path, v);
   }
   return out;

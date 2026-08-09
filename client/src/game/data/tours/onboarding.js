@@ -1,7 +1,7 @@
 import {
   welcomeSteps, racksSteps, gridSteps, overclockSteps, upgradesSteps, goalsSteps,
   gamesSteps, coldStorageSteps, socialSteps, singularitySteps, migrateSteps,
-  eventSteps, wrapUpSteps,
+  eventSteps, wrapUpSteps, resilienceSteps,
 } from './steps.js';
 import { ONBOARDING_TOUR_ID } from '../../../../../shared/tours.js';
 
@@ -23,6 +23,10 @@ export const onboardingTour = {
     ...goalsSteps,
     ...gamesSteps,
     ...coldStorageSteps,
+    // v1.11: appended per the maintenance obligation above. No separate
+    // Resilience tour is registered in CLIENT_TOURS - these steps exist only
+    // here, so onboarding remains a strict superset.
+    ...resilienceSteps,
     ...socialSteps,
     ...singularitySteps,
     ...migrateSteps,

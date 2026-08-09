@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { DEFAULT_CONFIG } from '../shared/configSchema.js';
 import { initialState, migrateSave, evaluate } from '../shared/state.js';
+import { GRID_DEFS } from '../shared/gameData.js';
 
 const fixture = JSON.parse(readFileSync(new URL('./fixtures/v11-save.json', import.meta.url)));
 
@@ -184,5 +185,224 @@ describe('coldStorage state wiring', () => {
     const t0 = 1_000_000;
     const { state: s2 } = evaluate(s, DEFAULT_CONFIG, t0, t0 + 20 * 3600 * 1000); // 20h offline
     expect(s2.run.tiers[0].ready).toBeCloseTo(10 * 0.5 * 9 * 3600, 0); // capped at 9h, not the base 4h
+  });
+});
+
+describe('evaluate with outages (v1.11)', () => {
+  const outage = (startAt, endAt, factor, scope) => ({
+    id: `x${startAt}`, kind: 'test', scope, factor, startAt, endAt, source: 'hazard',
+  });
+
+  it('zero outages leaves online production identical to today', () => {
+    const s = initialState();
+    s.run.tiers[0] = { id: 0, owned: 10, manager: true, ready: 0 };
+    const t0 = 1_000_000;
+    const { state: s2 } = evaluate(s, DEFAULT_CONFIG, t0, t0 + 30_000);
+    expect(s2.run.credits).toBeCloseTo(10 + 150);
+    expect(s2.server.outages).toEqual([]);
+  });
+
+  it('a full-window outage at 0 stops that lane dead', () => {
+    const s = initialState();
+    s.run.tiers[0] = { id: 0, owned: 10, manager: true, ready: 0 };
+    const t0 = 1_000_000;
+    s.server.outages = [outage(t0, t0 + 30_000, 0, { lane: 'tiers', index: 0 })];
+    const { state: s2 } = evaluate(s, DEFAULT_CONFIG, t0, t0 + 30_000);
+    expect(s2.run.credits).toBeCloseTo(10);
+  });
+
+  it('half a window dark pays exactly half', () => {
+    const s = initialState();
+    s.run.tiers[0] = { id: 0, owned: 10, manager: true, ready: 0 };
+    const t0 = 1_000_000;
+    s.server.outages = [outage(t0 + 15_000, t0 + 30_000, 0, { lane: '*' })];
+    const { state: s2 } = evaluate(s, DEFAULT_CONFIG, t0, t0 + 30_000);
+    expect(s2.run.credits).toBeCloseTo(10 + 75);
+  });
+
+  it('the offline cap samples the WHOLE absence proportionally', () => {
+    // 12h absent, 4h capped payout, an outage covering 6h of the absence.
+    // The credited amount is the 4h payout * 0.5, NOT the first 4h unaffected.
+    const s = initialState();
+    s.run.tiers[0] = { id: 0, owned: 10, manager: true, ready: 0 };
+    const t0 = 1_000_000;
+    const twelveH = 12 * 3600 * 1000;
+    s.server.outages = [outage(t0 + 6 * 3600 * 1000, t0 + twelveH, 0, { lane: '*' })];
+    const { state: s2 } = evaluate(s, DEFAULT_CONFIG, t0, t0 + twelveH);
+    // 4h cap * 10 pis * 0.5 F/s = 72000, halved by the sampled factor
+    expect(s2.run.credits).toBeCloseTo(10 + 36000);
+  });
+
+  it('Cold Storage is untouched by a wildcard outage', () => {
+    const mk = () => {
+      const s = initialState();
+      s.meta.coldStorage.job = { type: 'defrag', accruedOfflineSec: 0, startedAt: 0 };
+      return s;
+    };
+    const t0 = 1_000_000;
+    const twelveH = 12 * 3600 * 1000;
+    const clean = evaluate(mk(), DEFAULT_CONFIG, t0, t0 + twelveH).state;
+    const hit = mk();
+    hit.server.outages = [outage(t0, t0 + twelveH, 0, { lane: '*' })];
+    const dark = evaluate(hit, DEFAULT_CONFIG, t0, t0 + twelveH).state;
+    expect(dark.meta.coldStorage.job.accruedOfflineSec)
+      .toBe(clean.meta.coldStorage.job.accruedOfflineSec);
+    expect(dark.meta.coldStorage.tapes).toBe(clean.meta.coldStorage.tapes);
+  });
+
+  it('prunes outages that ended before now', () => {
+    const s = initialState();
+    const t0 = 1_000_000;
+    s.server.outages = [outage(t0, t0 + 1000, 0, { lane: '*' })];
+    const { state: s2 } = evaluate(s, DEFAULT_CONFIG, t0, t0 + 30_000);
+    expect(s2.server.outages).toEqual([]);
+  });
+
+  it('migrateSave defaults and shape-pins the v1.11 server fields', () => {
+    const pre = { run: { credits: 5 }, meta: {}, server: { outages: 'not-an-array' } };
+    const s = migrateSave(pre);
+    expect(s.server.outages).toEqual([]);
+    expect(s.server.nextHazardAt).toBe(0);
+    expect(s.server.gridMaintenance).toBeNull();
+  });
+
+  it('an activated maintenance window darkens only its own grid node', () => {
+    const s = initialState();
+    s.run.grid[2] = { id: 2, owned: 10 };
+    s.run.grid[0] = { id: 0, owned: 10 };
+    const cfg = structuredClone(DEFAULT_CONFIG);
+    cfg.risk.hazardsEnabled = false;              // isolate maintenance
+    const t0 = 1_000_000;
+    s.server.gridMaintenance = { index: 2, startAt: t0, endAt: t0 + 30_000 };
+    const { state: s2 } = evaluate(s, cfg, t0, t0 + 30_000);
+    // node 0 paid in full, node 2 paid nothing
+    const expected = 10 * GRID_DEFS[0].baseProd * 30;
+    expect(s2.run.credits).toBeCloseTo(10 + expected);
+  });
+});
+
+describe('the Overclock rework (v1.11)', () => {
+  const quiet = () => {
+    const cfg = structuredClone(DEFAULT_CONFIG);
+    cfg.risk.hazardsEnabled = false;
+    cfg.risk.maintenanceEnabled = false;
+    return cfg;
+  };
+
+  it('overheating knocks a rack tier offline instead of freezing the lane', () => {
+    const s = initialState();
+    s.run.tiers[0] = { id: 0, owned: 10, manager: true, ready: 0 };
+    s.run.overclock[0] = { id: 0, owned: 200 };
+    const cfg = quiet();
+    cfg.heat.capacity = 100;
+    const t0 = 1_000_000;
+    const { state: s2 } = evaluate(s, cfg, t0, t0 + 10_000);
+    expect(s2.server.overheated).toBe(true);
+    expect(s2.run.heat).toBe(0);
+    expect(s2.run.heatCooldownUntil).toBeNull();
+    const o = s2.server.outages.find((x) => x.source === 'overheat');
+    expect(o).toBeTruthy();
+    expect(o.scope.lane).toBe('tiers');
+    expect(o.factor).toBe(0);
+  });
+
+  it('falls back to the legacy lane freeze when the shutdown is disabled', () => {
+    const s = initialState();
+    s.run.tiers[0] = { id: 0, owned: 10, manager: true, ready: 0 };
+    s.run.overclock[0] = { id: 0, owned: 200 };
+    const cfg = quiet();
+    cfg.heat.capacity = 100;
+    cfg.risk.overheatShutdownEnabled = false;
+    const t0 = 1_000_000;
+    const { state: s2 } = evaluate(s, cfg, t0, t0 + 10_000);
+    expect(s2.server.overheated).toBe(true);
+    expect(s2.run.heatCooldownUntil).toBe(t0 + 10_000 + cfg.heat.overheatCooldownMs);
+    expect(s2.server.outages.some((x) => x.source === 'overheat')).toBe(false);
+  });
+
+  it('the overheat victim is derived, so two evaluations agree', () => {
+    const mk = () => {
+      const s = initialState();
+      for (const i of [0, 2, 5]) s.run.tiers[i] = { id: i, owned: 9, manager: true, ready: 0 };
+      s.run.overclock[0] = { id: 0, owned: 200 };
+      return s;
+    };
+    const cfg = quiet();
+    cfg.heat.capacity = 100;
+    const t0 = 1_000_000;
+    const a = evaluate(mk(), cfg, t0, t0 + 10_000).state;
+    const b = evaluate(mk(), cfg, t0, t0 + 10_000).state;
+    const pick = (st) => st.server.outages.find((x) => x.source === 'overheat').scope.index;
+    expect(pick(a)).toBe(pick(b));
+    expect([0, 2, 5]).toContain(pick(a));
+  });
+});
+
+describe('the kill switch and decision 1 (v1.11)', () => {
+  it('the kill switch clears live outages and restores full production', () => {
+    const s = initialState();
+    s.run.tiers[0] = { id: 0, owned: 10, manager: true, ready: 0 };
+    const t0 = 1_000_000;
+    s.server.outages = [{
+      id: 'hazard:1', kind: 'ransomware', scope: { lane: '*' }, factor: 0,
+      startAt: t0 - 1000, endAt: t0 + 1e9, source: 'hazard',
+    }];
+    s.server.gridMaintenance = { index: 1, startAt: t0, endAt: t0 + 1e6 };
+    const cfg = structuredClone(DEFAULT_CONFIG);
+    cfg.risk.enabled = false;
+
+    const { state: s2 } = evaluate(s, cfg, t0, t0 + 30_000);
+    expect(s2.server.outages).toEqual([]);            // cleared, not paused
+    expect(s2.server.gridMaintenance).toBeNull();
+    expect(s2.run.credits).toBeCloseTo(10 + 150);     // paid in full
+  });
+
+  it('the master switch beats every per-source switch', () => {
+    const s = initialState();
+    s.run.tiers[0] = { id: 0, owned: 10, manager: true, ready: 0 };
+    const cfg = structuredClone(DEFAULT_CONFIG);
+    cfg.risk.enabled = false;
+    cfg.risk.hazardsEnabled = true;
+    cfg.risk.maintenanceEnabled = true;
+    cfg.risk.overheatShutdownEnabled = true;
+    const t0 = 1_000_000;
+    s.server.nextHazardAt = t0;
+    const { state: s2 } = evaluate(s, cfg, t0, t0 + 7 * 24 * 3600 * 1000);
+    expect(s2.server.outages).toEqual([]);
+  });
+
+  it('DECISION 1: no hazard ever reduces a stored value', () => {
+    // A randomised sweep. meta.supplies is excluded BY DESIGN - it is a
+    // consumable the player bought to be spent. Everything else is a
+    // guardrail against a later change reintroducing asset loss.
+    const cfg = structuredClone(DEFAULT_CONFIG);
+    cfg.risk.hazardMinDelayMs = 60000;
+    cfg.risk.hazardMaxDelayMs = 120000;
+
+    for (let seed = 0; seed < 60; seed++) {
+      const s = initialState();
+      s.run.credits = 5000;
+      s.run.lifetimeRun = 5000;
+      s.meta.wafers = 40;
+      s.meta.coldStorage.tapes = 25;
+      for (const i of [0, 1, 2]) s.run.tiers[i] = { id: i, owned: 6 + i, manager: i % 2 === 0, ready: 3 };
+      s.run.grid[0] = { id: 0, owned: 4 };
+      s.run.overclock[0] = { id: 0, owned: 2 };
+      s.server.nextHazardAt = 1_000_000 + seed * 1013;
+
+      const before = {
+        credits: s.run.credits, wafers: s.meta.wafers,
+        tapes: s.meta.coldStorage.tapes,
+        owned: s.run.tiers.map((t) => t.owned),
+        lifetime: s.run.lifetimeRun,
+      };
+      const { state: after } = evaluate(s, cfg, 1_000_000, 1_000_000 + 6 * 3600 * 1000);
+
+      expect(after.run.credits).toBeGreaterThanOrEqual(before.credits);
+      expect(after.meta.wafers).toBe(before.wafers);
+      expect(after.meta.coldStorage.tapes).toBe(before.tapes);
+      expect(after.run.lifetimeRun).toBeGreaterThanOrEqual(before.lifetime);
+      after.run.tiers.forEach((t, i) => expect(t.owned).toBe(before.owned[i]));
+    }
   });
 });

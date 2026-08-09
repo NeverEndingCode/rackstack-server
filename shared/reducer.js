@@ -9,6 +9,7 @@ import { utcDateKey } from './daily.js';
 import { contractsForState, contractProgress } from './contracts.js';
 import { canClaimStreak, nextStreakCount, streakReward } from './streak.js';
 import { checkAchievements } from './achievements.js';
+import { SUPPLY_IDS, supplyPrice, cureCost } from './outages.js';
 
 const LANE_DEFS = { tiers: TIER_DEFS, grid: GRID_DEFS, overclock: OVERCLOCK_DEFS };
 
@@ -338,6 +339,52 @@ function buyTapeUpgrade(s, action, config) {
   return { ok: true };
 }
 
+// v1.11: prepaid mitigation, priced in seconds of current output (see
+// supplyPrice). `id` is user-supplied, so it is resolved with .includes()
+// against a frozen list - never as a bare key into an object literal, which
+// is the prototype-pollution shape validIndex/HANDLERS already guard against
+// elsewhere in this file.
+function buySupply(s, action, config, now) {
+  const { id } = action;
+  if (typeof id !== 'string' || !SUPPLY_IDS.includes(id)) return err('invalid_target');
+
+  const ctx = goalCtx(s, config, now);
+  const cost = supplyPrice(id, config, ctx.totalOutputPerSec);
+  if (!Number.isFinite(cost) || cost > s.run.credits) return err('insufficient_credits');
+
+  s.run.credits -= cost;
+  s.meta.supplies[id] = (s.meta.supplies[id] || 0) + 1;
+  return { ok: true, id, cost, stock: s.meta.supplies[id] };
+}
+
+// v1.11: the reactive cure. A returning player is never merely a spectator -
+// but this is priced strictly worse than preparing (see cureCost) and only
+// applies to a hazard still running.
+//
+// Ends the outage by TRUNCATING endAt to `now`, not by splicing it out: an
+// evaluation window that straddles the cure must still see the time the lane
+// was actually down. pruneExpired drops it on the next evaluate().
+function resolveOutage(s, action, config, now) {
+  const { id } = action;
+  if (typeof id !== 'string') return err('invalid_target');
+  // .find over the array, never a bare key lookup - same hardening as
+  // claimEventRung's claimables resolution.
+  const outage = s.server.outages.find((o) => o && o.id === id);
+  if (!outage) return err('invalid_target');
+  // Maintenance is scheduled and telegraphed, not misfortune; an overheat is
+  // the player's own doing. Neither is curable (spec §6).
+  if (outage.source !== 'hazard') return err('invalid_target');
+  if (now >= outage.endAt) return err('invalid_target');
+
+  const ctx = goalCtx(s, config, now);
+  const cost = cureCost(outage, config, ctx.totalOutputPerSec, now);
+  if (!Number.isFinite(cost) || cost > s.run.credits) return err('insufficient_credits');
+
+  s.run.credits -= cost;
+  outage.endAt = now;
+  return { ok: true, id, cost };
+}
+
 function applyLevelUps(meta, xpGain) {
   let xp = meta.xp + xpGain;
   let level = meta.level;
@@ -649,6 +696,7 @@ const HANDLERS = Object.assign(Object.create(null), {
   claimBlock, claimAllBlocks, resetTrack, startJob, cancelJob, claimJob, buyTapeUpgrade,
   claimEventRung, setLeaderboardOptOut,
   claimContract, claimStreak,
+  buySupply, resolveOutage,
 });
 
 export function applyAction(state, action, config, now, rng = Math.random) {

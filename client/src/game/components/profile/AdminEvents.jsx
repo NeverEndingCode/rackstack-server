@@ -56,11 +56,18 @@ const GROUP_LABELS = {
   anomaly: 'Anomaly',
   upgrades: 'Upgrade max levels',
   batchQueue: 'Cold Storage (batch queue)',
+  // v1.11. Keep in sync with AdminBalancing.jsx's copy of this map.
+  risk: 'Risk & Reliability',
 };
 const TUNABLE_GROUPS = (() => {
   const order = [];
   const byKey = new Map();
   for (const t of TUNABLES) {
+    // v1.11: boolean tunables are admin-only, never event-overlayable
+    // (validateModifiers rejects them), so they must not be offerable in the
+    // modifier path picker - and ModifierRow's min/max validation would read
+    // undefined on them anyway.
+    if (t.type === 'boolean') continue;
     const key = groupKeyFor(t.path);
     if (!byKey.has(key)) { byKey.set(key, []); order.push(key); }
     byKey.get(key).push(t);

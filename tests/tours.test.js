@@ -87,8 +87,10 @@ describe('client tour content', () => {
     const onboarding = CLIENT_TOURS.onboarding;
     const full = resolveSteps(onboarding, FULL_CTX);
     const fresh = resolveSteps(onboarding, FRESH_CTX);
-    expect(full.length).toBe(17);
-    expect(fresh.length).toBe(11);
+    // v1.11 added 2 resilience steps with no visibleWhen - a fresh save can be
+    // hit by a hazard, so they are never gated - hence both counts move by 2.
+    expect(full.length).toBe(19);
+    expect(fresh.length).toBe(13);
     expect(fresh.every((s) => s.tab !== 'coldstorage')).toBe(true);
     expect(fresh.every((s) => s.tab !== 'event')).toBe(true);
   });
@@ -98,7 +100,7 @@ describe('tour selection', () => {
   it('selects onboarding for a user who has completed nothing', () => {
     const sel = selectTour(CLIENT_TOURS, TOUR_IDS, [], FRESH_CTX);
     expect(sel.id).toBe(ONBOARDING_TOUR_ID);
-    expect(sel.steps.length).toBe(11);
+    expect(sel.steps.length).toBe(13);   // v1.11: +2 resilience steps
   });
 
   it('selects nothing once onboarding is complete', () => {

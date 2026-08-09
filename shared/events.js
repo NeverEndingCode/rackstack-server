@@ -73,6 +73,17 @@ export function validateModifiers(modifiers) {
       errors.push(`unknown modifier path: ${path}`);
       continue;
     }
+    // v1.11: boolean tunables are admin-only. mergeEventModifiers would
+    // happily setAtPath a number onto a boolean path, and the merged document
+    // would then fail validateConfig below with a confusing "not a boolean" -
+    // reject it here, where the author can read it. An event may turn the risk
+    // system UP (its numeric dials are all overlayable); it may not flip its
+    // switches.
+    const tDef = TUNABLES.find((t) => t.path === path);
+    if (tDef && tDef.type === 'boolean') {
+      errors.push(`${path}: boolean tunables cannot be set by an event modifier`);
+      continue;
+    }
     if (typeof value !== 'number' || Number.isNaN(value)) {
       errors.push(`${path}: value must be a number`);
     }

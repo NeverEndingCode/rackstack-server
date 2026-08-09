@@ -367,3 +367,88 @@ describe('reducer: vent', () => {
     expect(s2.run.heat).toBe(0);
   });
 });
+
+describe('buySupply (v1.11)', () => {
+  it('buys one, charges credits, and stacks', () => {
+    const s = initialState();
+    s.run.credits = 1e9;
+    const { state: s1, result: r1 } = applyAction(s, { type: 'buySupply', id: 'antivirus' }, DEFAULT_CONFIG, 1000);
+    expect(r1.ok).toBe(true);
+    expect(s1.meta.supplies.antivirus).toBe(1);
+    expect(s1.run.credits).toBeLessThan(1e9);
+
+    const { state: s2 } = applyAction(s1, { type: 'buySupply', id: 'antivirus' }, DEFAULT_CONFIG, 1000);
+    expect(s2.meta.supplies.antivirus).toBe(2);
+  });
+
+  it('rejects an unknown supply id without touching anything', () => {
+    const s = initialState();
+    s.run.credits = 1e9;
+    const { state: s1, result } = applyAction(s, { type: 'buySupply', id: '__proto__' }, DEFAULT_CONFIG, 1000);
+    expect(result).toEqual({ ok: false, error: 'invalid_target' });
+    expect(s1.run.credits).toBe(1e9);
+  });
+
+  it('rejects when the player cannot afford it', () => {
+    const s = initialState();
+    s.run.credits = 0;
+    const { result } = applyAction(s, { type: 'buySupply', id: 'backupIsp' }, DEFAULT_CONFIG, 1000);
+    expect(result).toEqual({ ok: false, error: 'insufficient_credits' });
+  });
+
+  it('supplies survive a Migrate', () => {
+    const s = initialState();
+    s.meta.supplies.spareDrives = 3;
+    s.run.lifetimeRun = 1e12;
+    const { state: s1, result } = applyAction(s, { type: 'migrate' }, DEFAULT_CONFIG, 1000);
+    expect(result.ok).toBe(true);
+    expect(s1.meta.supplies.spareDrives).toBe(3);
+  });
+});
+
+describe('resolveOutage (v1.11)', () => {
+  function withOutage(extra = {}) {
+    const s = initialState();
+    s.run.credits = 1e12;
+    s.server.outages = [{
+      id: 'hazard:1000', kind: 'ransomware', scope: { lane: '*' }, factor: 0.5,
+      startAt: 1000, endAt: 100000, source: 'hazard', ...extra,
+    }];
+    return s;
+  }
+
+  it('ends a running hazard early and charges for it', () => {
+    const s = withOutage();
+    const { state: s1, result } = applyAction(s, { type: 'resolveOutage', id: 'hazard:1000' }, DEFAULT_CONFIG, 50000);
+    expect(result.ok).toBe(true);
+    expect(result.cost).toBeGreaterThan(0);
+    expect(s1.run.credits).toBeLessThan(1e12);
+    // truncated, not deleted - a window straddling the cure still sees the
+    // time it was actually down
+    expect(s1.server.outages[0].endAt).toBe(50000);
+  });
+
+  it('refuses a hazard that already ended - no retroactive refunds', () => {
+    const s = withOutage();
+    const { result } = applyAction(s, { type: 'resolveOutage', id: 'hazard:1000' }, DEFAULT_CONFIG, 200000);
+    expect(result).toEqual({ ok: false, error: 'invalid_target' });
+  });
+
+  it('refuses scheduled maintenance and self-inflicted overheats', () => {
+    for (const source of ['scheduled', 'overheat']) {
+      const s = withOutage({ source, kind: source === 'scheduled' ? 'maintenance' : 'overheat' });
+      const { result } = applyAction(s, { type: 'resolveOutage', id: 'hazard:1000' }, DEFAULT_CONFIG, 50000);
+      expect(result).toEqual({ ok: false, error: 'invalid_target' });
+    }
+  });
+
+  it('refuses an unknown id and an unaffordable cure', () => {
+    const s = withOutage();
+    expect(applyAction(s, { type: 'resolveOutage', id: 'nope' }, DEFAULT_CONFIG, 50000).result)
+      .toEqual({ ok: false, error: 'invalid_target' });
+    const poor = withOutage();
+    poor.run.credits = 0;
+    expect(applyAction(poor, { type: 'resolveOutage', id: 'hazard:1000' }, DEFAULT_CONFIG, 50000).result)
+      .toEqual({ ok: false, error: 'insufficient_credits' });
+  });
+});

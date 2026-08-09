@@ -1,7 +1,11 @@
 import { TIER_DEFS, GRID_DEFS, OVERCLOCK_DEFS } from './gameData.js';
-import { computeMults, tierRate } from './gameRules.js';
+import { computeMults, tierRate, overclockBoost } from './gameRules.js';
 import { TOTAL_BLOCKS } from './coldStorageData.js';
 import { computeColdStorageEffects, jobDurationSec } from './coldStorage.js';
+import {
+  effectiveFactor, pruneExpired, fireDueHazards, activateDueMaintenance,
+  overheatOutage, riskOn,
+} from './outages.js';
 
 function freshTiers() {
   return TIER_DEFS.map((t) => ({ id: t.id, owned: 0, manager: false, ready: 0 }));
@@ -50,6 +54,12 @@ export function initialState() {
       // Pure prestige - no payout, ever (spec §6.3). { [id]: unlockedAtMs }.
       achievements: {},
       streak: { count: 0, lastClaimDate: null },
+      // v1.11: prepaid mitigation. Bought with CREDITS (the run currency, so
+      // this is a sink for what players have most of) but stored in META, so
+      // it survives Migrate - which gives a real reason to spend down before
+      // prestiging instead of watching the balance evaporate. hardReset wipes
+      // it along with everything else.
+      supplies: { antivirus: 0, backupIsp: 0, spareDrives: 0 },
       eventProgress: null,
       // Live Events (v1.4): personal windows that were force-ended early by
       // a NEW event going active (spec §5.2) but whose 48h claim grace
@@ -75,8 +85,35 @@ export function initialState() {
       boost: null,
       lastVentAt: 0,
       gameCooldowns: { rush: 0, debug: 0, match: 0, balance: 0 },
+      // v1.11 Risk & Reliability. `outages` IS the shared notion of capacity
+      // currently offline - not a concept layered over two systems, but the
+      // only representation either has (spec §3). `server` is the right home:
+      // it already holds nextAnomalyAt/boost/gameCooldowns, it survives
+      // Migrate and Singularity, and hardReset clears it wholesale.
+      outages: [],
+      nextHazardAt: 0,
+      gridMaintenance: null,
     },
   };
+}
+
+// v1.11: an outage reaching evaluate() with a non-numeric startAt/endAt/factor
+// would poison the integral into NaN and silently zero a player's income for
+// the rest of the save's life. Validate on the way in, drop what fails.
+function isValidOutage(o) {
+  return !!o && typeof o === 'object'
+    && typeof o.id === 'string'
+    && !!o.scope && typeof o.scope === 'object' && typeof o.scope.lane === 'string'
+    && Number.isFinite(o.factor) && o.factor >= 0 && o.factor <= 1
+    && Number.isFinite(o.startAt) && Number.isFinite(o.endAt)
+    && o.endAt > o.startAt;
+}
+
+function isValidMaintenance(m) {
+  return !!m && typeof m === 'object'
+    && Number.isInteger(m.index) && m.index >= 0
+    && Number.isFinite(m.startAt) && Number.isFinite(m.endAt)
+    && m.endAt > m.startAt;
 }
 
 /**
@@ -165,10 +202,28 @@ export function migrateSave(raw) {
     lastClaimDate: typeof srcStreak.lastClaimDate === 'string' ? srcStreak.lastClaimDate : null,
   };
 
+  // v1.11: defaulted AND clamped. Absorption decrements this inside
+  // evaluate(), so a negative or non-numeric count would let a hand-edited
+  // save absorb hazards forever.
+  const srcSupplies = isPlainObject(srcMeta.supplies) ? srcMeta.supplies : {};
+  meta.supplies = {};
+  for (const id of ['antivirus', 'backupIsp', 'spareDrives']) {
+    const v = srcSupplies[id];
+    meta.supplies[id] = typeof v === 'number' && Number.isFinite(v) && v > 0 ? Math.floor(v) : 0;
+  }
+
   const server = {
     ...base.server,
     ...srcServer,
     gameCooldowns: { ...base.server.gameCooldowns, ...(srcServer.gameCooldowns || {}) },
+    // v1.11: shape-pinned, not merely defaulted - same reasoning as
+    // pendingEventClaims above. effectiveFactor()/pruneExpired() iterate this
+    // on every evaluation, and a corrupt or hand-edited save carrying a
+    // non-array (or an outage with a NaN bound) must never reach them.
+    outages: Array.isArray(srcServer.outages) ? srcServer.outages.filter(isValidOutage) : [],
+    nextHazardAt: typeof srcServer.nextHazardAt === 'number' && Number.isFinite(srcServer.nextHazardAt)
+      ? srcServer.nextHazardAt : 0,
+    gridMaintenance: isValidMaintenance(srcServer.gridMaintenance) ? srcServer.gridMaintenance : null,
   };
 
   return { run, meta, server };
@@ -179,7 +234,7 @@ export function migrateSave(raw) {
  * this closes the gap analytically, in one shot, whenever the server needs
  * an up-to-date view (a request comes in, a save happens, etc).
  */
-export function evaluate(state, config, lastEvaluatedAt, now) {
+export function evaluate(state, config, lastEvaluatedAt, now, rng = Math.random) {
   const s = structuredClone(state);
   const elapsedSec = Math.max(0, (now - lastEvaluatedAt) / 1000);
   recordLegacyCorePeak(s.meta);
@@ -189,6 +244,35 @@ export function evaluate(state, config, lastEvaluatedAt, now) {
   // on the evaluate() call that crossed the heat cap, cleared on every
   // subsequent call regardless of what happens this time.
   delete s.server.overheated;
+
+  // v1.11: outage notices are one-shot client signals with exactly the same
+  // lifecycle as `overheated` above - set by the evaluation that produced
+  // them, cleared on every subsequent call.
+  delete s.server.outageNotices;
+
+  // Fire BEFORE the integral, so an incident that started part-way through
+  // this window degrades the part it covered. (Pruning is the mirror image
+  // and happens after - see the bottom of this function.) `outages` below is
+  // the same array object fireDueHazards pushes into, so the integral sees
+  // anything that just fired - do not re-bind or clone it between these.
+  // v1.11 (spec §8): the master switch is a TRUE KILL SWITCH, not a pause.
+  // Clearing here - BEFORE the integral - means even the window currently
+  // being evaluated is paid in full, so killing the system visibly un-breaks
+  // every affected save on the next evaluation. A player mid-ransomware when
+  // the owner flips this must not stay throttled with nothing in the UI to
+  // explain it.
+  if (!config.risk || config.risk.enabled !== true) {
+    if (s.server.outages.length > 0) s.server.outages = [];
+    s.server.gridMaintenance = null;
+  } else {
+    activateDueMaintenance(s, config, now);
+    const notices = fireDueHazards(s, config, now, rng);
+    if (notices.length > 0) s.server.outageNotices = notices;
+  }
+
+  // Bound AFTER the block above: the kill branch reassigns s.server.outages
+  // to a fresh array, so a binding taken earlier would point at the old one.
+  const outages = s.server.outages;
 
   const online = elapsedSec <= config.offline.onlineGapThresholdSec;
   let gained = 0;
@@ -206,10 +290,33 @@ export function evaluate(state, config, lastEvaluatedAt, now) {
     let creditsGain = 0;
     let lifetimeGain = 0;
 
+    // v1.11: the Overclock lane contributes a multiplier to Racks instead of
+    // producing directly. The boost is NOT itself degraded by outages -
+    // ransomware's { lane: '*' } already covers the Racks lane the boost
+    // multiplies, and applying it to both would square the penalty.
+    // An active heat cooldown freezes the lane, however it came to be set -
+    // NOT gated on the toggle. Under the v1.11 default a cooldown is only ever
+    // set by overheatOutage's fallback (shutdown enabled but no owned rack to
+    // down), and a cooldown that is set but not honoured would let heat
+    // re-cross the cap on every single evaluation. This also matches
+    // goalCtx's condition exactly, so the displayed rate and the produced
+    // rate cannot disagree.
+    const legacyFreeze = !!s.run.heatCooldownUntil && now < s.run.heatCooldownUntil;
+    const racksBase = s.run.tiers.reduce((sum, ts, i) => {
+      const def = TIER_DEFS[i];
+      if (!def || !ts || ts.owned === 0) return sum;
+      return sum + tierRate(ts.owned, def.baseProd, racksMult, thresholds);
+    }, 0);
+    const ocBoost = legacyFreeze
+      ? 1
+      : overclockBoost(s.run, config, overclockMult, thresholds, racksBase);
+
     s.run.tiers = s.run.tiers.map((ts, i) => {
       const def = TIER_DEFS[i];
       if (!def || !ts || ts.owned === 0) return ts;
-      const produced = tierRate(ts.owned, def.baseProd, racksMult, thresholds) * elapsedSec;
+      const factor = effectiveFactor(outages, 'tiers', i, lastEvaluatedAt, now);
+      const produced = tierRate(ts.owned, def.baseProd, racksMult, thresholds)
+        * elapsedSec * factor * ocBoost;
       lifetimeGain += produced;
       if (ts.manager) { creditsGain += produced; return ts; }
       return { ...ts, ready: (ts.ready || 0) + produced };
@@ -218,38 +325,40 @@ export function evaluate(state, config, lastEvaluatedAt, now) {
     s.run.grid.forEach((g, i) => {
       const def = GRID_DEFS[i];
       if (!def || !g || g.owned === 0) return;
-      const produced = tierRate(g.owned, def.baseProd, gridMult, thresholds) * elapsedSec;
+      const factor = effectiveFactor(outages, 'grid', i, lastEvaluatedAt, now);
+      const produced = tierRate(g.owned, def.baseProd, gridMult, thresholds) * elapsedSec * factor;
       creditsGain += produced;
       lifetimeGain += produced;
     });
 
-    // Overclock lane: frozen entirely (no production, no heat change) while
-    // an overheat cooldown from a previous gap is still active.
-    const onCooldownNow = !!s.run.heatCooldownUntil && now < s.run.heatCooldownUntil;
-    if (onCooldownNow) {
-      // leave heat/cooldown as-is; nothing produced this gap on this lane
-    } else {
+    // v1.11: the Overclock lane no longer produces - its output became the
+    // `ocBoost` multiplier applied to Racks above. Heat still accrues here,
+    // which is what makes the lane a risk dial rather than free money.
+    //
+    // The legacy freeze (risk.overheatShutdownEnabled off) still stops heat
+    // accrual entirely for the duration of the cooldown, exactly as it did
+    // before v1.11.
+    if (!legacyFreeze) {
       if (s.run.heatCooldownUntil && now >= s.run.heatCooldownUntil) {
         s.run.heatCooldownUntil = null;
       }
-      s.run.overclock.forEach((o, i) => {
-        const def = OVERCLOCK_DEFS[i];
-        if (!def || !o || o.owned === 0) return;
-        const produced = tierRate(o.owned, def.baseProd, overclockMult, thresholds) * elapsedSec;
-        creditsGain += produced;
-        lifetimeGain += produced;
-      });
       const heatGain = s.run.overclock.reduce((sum, o, i) => {
         const def = OVERCLOCK_DEFS[i];
         if (!def || !o) return sum;
         return sum + o.owned * def.heatPerSec;
       }, 0) * eff.heatDiscount;
       const netHeat = heatGain - eff.autoVentPerSec;
-      let newHeat = Math.max(0, s.run.heat + netHeat * elapsedSec);
+      const newHeat = Math.max(0, s.run.heat + netHeat * elapsedSec);
       if (newHeat >= config.heat.capacity + csEff.heatCapacityBonus) {
         s.run.heat = 0;
-        s.run.heatCooldownUntil = now + config.heat.overheatCooldownMs;
         s.server.overheated = true;
+        // The penalty moved from the Overclock lane to the Racks lane, which
+        // is coherent now that Overclock multiplies Racks. overheatOutage
+        // returns null when the shutdown is disabled (or there is no owned
+        // tier to down), in which case fall back to today's lane freeze.
+        if (!overheatOutage(s, config, now)) {
+          s.run.heatCooldownUntil = now + config.heat.overheatCooldownMs;
+        }
       } else {
         s.run.heat = newHeat;
       }
@@ -285,10 +394,32 @@ export function evaluate(state, config, lastEvaluatedAt, now) {
     let offlineCredits = 0;
     let offlineLifetime = 0;
 
+    // DELIBERATE, AND ODD ON PURPOSE (spec decision 5): the outage factor is
+    // computed over the WHOLE absence [lastEvaluatedAt, now] and then applied
+    // to the CAPPED payout. An incident covering 2 of 12 absent hours costs
+    // 2/12ths of what you were credited, regardless of the cap - the capped
+    // window is a representative SAMPLE of the absence, not its first N hours.
+    //
+    // Do not "fix" this into the literal first-N-hours reading. At roughly one
+    // incident per six hours, most incidents would land in unpaid time and
+    // cost nothing, which quietly guts the system for exactly the players it
+    // should reach most - the ones who are away for a long time. This was
+    // considered and explicitly rejected by the owner.
+    // v1.11: same conversion as the online branch - Overclock multiplies
+    // Racks rather than producing. Heat is untouched offline, as before.
+    const racksBaseOffline = s.run.tiers.reduce((sum, ts, i) => {
+      const def = TIER_DEFS[i];
+      if (!def || !ts || ts.owned === 0) return sum;
+      return sum + tierRate(ts.owned, def.baseProd, racksMult, thresholds);
+    }, 0);
+    const ocBoostOffline = overclockBoost(s.run, config, overclockMult, thresholds, racksBaseOffline);
+
     s.run.tiers = s.run.tiers.map((ts, i) => {
       const def = TIER_DEFS[i];
       if (!def || !ts || ts.owned === 0) return ts;
-      const produced = tierRate(ts.owned, def.baseProd, racksMult, thresholds) * cappedSec;
+      const factor = effectiveFactor(outages, 'tiers', i, lastEvaluatedAt, now);
+      const produced = tierRate(ts.owned, def.baseProd, racksMult, thresholds)
+        * cappedSec * factor * ocBoostOffline;
       offlineLifetime += produced;
       if (ts.manager) { offlineCredits += produced; return ts; }
       return { ...ts, ready: (ts.ready || 0) + produced };
@@ -297,15 +428,8 @@ export function evaluate(state, config, lastEvaluatedAt, now) {
     s.run.grid.forEach((g, i) => {
       const def = GRID_DEFS[i];
       if (!def || !g || g.owned === 0) return;
-      const produced = tierRate(g.owned, def.baseProd, gridMult, thresholds) * cappedSec;
-      offlineCredits += produced;
-      offlineLifetime += produced;
-    });
-
-    s.run.overclock.forEach((o, i) => {
-      const def = OVERCLOCK_DEFS[i];
-      if (!def || !o || o.owned === 0) return;
-      const produced = tierRate(o.owned, def.baseProd, overclockMult, thresholds) * cappedSec;
+      const factor = effectiveFactor(outages, 'grid', i, lastEvaluatedAt, now);
+      const produced = tierRate(g.owned, def.baseProd, gridMult, thresholds) * cappedSec * factor;
       offlineCredits += produced;
       offlineLifetime += produced;
     });
@@ -323,6 +447,11 @@ export function evaluate(state, config, lastEvaluatedAt, now) {
   if (s.server.boost && now >= s.server.boost.until) {
     s.server.boost = null;
   }
+
+  // Prune AFTER the integral, never before: an outage that ended part-way
+  // through this window still degraded the part it covered, and pruning first
+  // would silently pay that time in full.
+  s.server.outages = pruneExpired(s.server.outages, now);
 
   return { state: s, gained };
 }

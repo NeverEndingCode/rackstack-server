@@ -35,6 +35,8 @@ const GROUP_LABELS = {
   // v1.3 added 11 batchQueue.* tunables; without this they rendered under the
   // raw key. Keep in sync with AdminEvents.jsx's copy of this map.
   batchQueue: 'Cold Storage (batch queue)',
+  // v1.11. Keep in sync with AdminEvents.jsx's copy of this map.
+  risk: 'Risk & Reliability',
 };
 
 function buildGroups() {
@@ -51,20 +53,30 @@ const GROUPS = buildGroups();
 
 function rawFromData(data) {
   const out = {};
-  for (const t of TUNABLES) out[t.path] = String(getAtPath(data, t.path));
+  for (const t of TUNABLES) {
+    const v = getAtPath(data, t.path);
+    // v1.11: a boolean row holds a real boolean in `raw`, not a string - the
+    // checkbox binds to it directly.
+    out[t.path] = t.type === 'boolean' ? v === true : String(v);
+  }
   return out;
 }
 
-// Parses/validates one field's current raw (string) input against its
-// TUNABLES range, and reports whether it differs from the last-known
-// server value for that path.
+// Parses/validates one field's current raw input against its TUNABLES row,
+// and reports whether it differs from the last-known server value for that
+// path. A boolean row is always valid - a checkbox cannot hold a malformed
+// value - so only `dirty` is meaningful for it.
 function fieldStatus(raw, serverValue, tunable) {
+  if (tunable.type === 'boolean') {
+    const value = raw === true;
+    return { value, valid: true, dirty: value !== (serverValue === true) };
+  }
   const num = raw === '' ? NaN : Number(raw);
   const valid = raw !== '' && !Number.isNaN(num)
     && num >= tunable.min && num <= tunable.max
     && (!tunable.integer || Number.isInteger(num));
   const dirty = valid ? num !== serverValue : String(raw) !== String(serverValue);
-  return { num, valid, dirty };
+  return { value: num, valid, dirty };
 }
 
 function fmtDate(ms) {
@@ -135,7 +147,7 @@ export default function AdminBalancing({ onConfigSaved }) {
     setGeneralErrors([]);
     setSaveNote(null);
     const clone = structuredClone(serverConfig.data);
-    for (const t of TUNABLES) setAtPath(clone, t.path, statuses[t.path].num);
+    for (const t of TUNABLES) setAtPath(clone, t.path, statuses[t.path].value);
     const res = await putAdminConfig(clone);
     setSaving(false);
     if (res && typeof res.version === 'number') {
@@ -213,22 +225,35 @@ export default function AdminBalancing({ onConfigSaved }) {
                       <label className="flex-1 text-xs truncate" style={{ color: textMain }} title={t.path}>
                         {t.label}
                       </label>
-                      <input
-                        type="number"
-                        data-testid={`tunable-${t.path}`}
-                        value={raw[t.path]}
-                        onChange={(e) => handleChange(t.path, e.target.value)}
-                        step={t.integer ? 1 : 'any'}
-                        className="w-24 rounded-md px-2 py-1 text-xs font-mono text-right"
-                        style={{
-                          background: '#0E141B',
-                          border: `1px solid ${err ? danger : (st.dirty ? amber : cardBorder)}`,
-                          color: st.valid ? textMain : danger,
-                        }}
-                      />
+                      {t.type === 'boolean' ? (
+                        <input
+                          type="checkbox"
+                          data-testid={`tunable-${t.path}`}
+                          checked={raw[t.path] === true}
+                          onChange={(e) => handleChange(t.path, e.target.checked)}
+                          className="w-4 h-4"
+                          style={{ accentColor: amber }}
+                        />
+                      ) : (
+                        <input
+                          type="number"
+                          data-testid={`tunable-${t.path}`}
+                          value={raw[t.path]}
+                          onChange={(e) => handleChange(t.path, e.target.value)}
+                          step={t.integer ? 1 : 'any'}
+                          className="w-24 rounded-md px-2 py-1 text-xs font-mono text-right"
+                          style={{
+                            background: '#0E141B',
+                            border: `1px solid ${err ? danger : (st.dirty ? amber : cardBorder)}`,
+                            color: st.valid ? textMain : danger,
+                          }}
+                        />
+                      )}
                     </div>
                     <div className="text-[10px]" style={{ color: textDim }}>
-                      range [{t.min}, {t.max}]{t.integer ? ', integer' : ''} &middot; default {defaultVal}
+                      {t.type === 'boolean'
+                        ? `default ${String(defaultVal)}`
+                        : `range [${t.min}, ${t.max}]${t.integer ? ', integer' : ''} · default ${defaultVal}`}
                     </div>
                     {err && <div className="text-[10px]" style={{ color: danger }}>{err}</div>}
                   </div>

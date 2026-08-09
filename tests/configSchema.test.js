@@ -23,6 +23,11 @@ describe('configSchema', () => {
   it('every TUNABLES path resolves in DEFAULT_CONFIG and is in range', () => {
     for (const t of TUNABLES) {
       const v = getAtPath(DEFAULT_CONFIG, t.path);
+      // v1.11: boolean tunables carry no min/max - the type IS the range.
+      if (t.type === 'boolean') {
+        expect(v, t.path).toBeTypeOf('boolean');
+        continue;
+      }
       expect(v, t.path).toBeTypeOf('number');
       expect(v).toBeGreaterThanOrEqual(t.min);
       expect(v).toBeLessThanOrEqual(t.max);
@@ -97,5 +102,41 @@ describe('v1.6 heat tunables', () => {
     expect(out.heat.overheatPopupMs).toBe(15000);
     expect(out.heat.capacity).toBe(4000);      // tuned values still carry over
     expect(out.heat.ventCooldownMs).toBe(3000);
+  });
+});
+
+describe('boolean tunables (v1.11)', () => {
+  it('validates booleans on boolean paths and rejects numbers there', () => {
+    expect(validateConfig(DEFAULT_CONFIG).ok).toBe(true);
+
+    const bad = structuredClone(DEFAULT_CONFIG);
+    bad.risk.enabled = 1;
+    const res = validateConfig(bad);
+    expect(res.ok).toBe(false);
+    expect(res.errors.some((e) => e.startsWith('risk.enabled:'))).toBe(true);
+  });
+
+  it('rejects a boolean on a numeric path', () => {
+    const bad = structuredClone(DEFAULT_CONFIG);
+    bad.heat.capacity = true;
+    expect(validateConfig(bad).ok).toBe(false);
+  });
+
+  it('upgradeConfig copies booleans through and fills missing ones', () => {
+    const old = { schemaVersion: 1, risk: { enabled: false } };
+    const up = upgradeConfig(old);
+    expect(up.risk.enabled).toBe(false);          // preserved
+    expect(up.risk.hazardsEnabled).toBe(true);    // filled from defaults
+    expect(validateConfig(up).ok).toBe(true);
+  });
+
+  it('has the v1.11 risk defaults and every risk leaf is a TUNABLES row', () => {
+    expect(DEFAULT_CONFIG.risk.enabled).toBe(true);
+    expect(DEFAULT_CONFIG.risk.ransomwareFactor).toBe(0.5);
+    expect(DEFAULT_CONFIG.risk.overclockBoostGain).toBe(1);
+    const paths = new Set(TUNABLES.map((t) => t.path));
+    for (const key of Object.keys(DEFAULT_CONFIG.risk)) {
+      expect(paths.has(`risk.${key}`), `risk.${key}`).toBe(true);
+    }
   });
 });

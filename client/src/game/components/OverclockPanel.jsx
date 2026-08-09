@@ -30,7 +30,7 @@ export default function OverclockPanel({ run, overclockMult, thresholds, onBuy, 
         </button>
       </div>
       <div className="rounded-lg p-3 text-xs" style={{ background: cardBg, border: `1px solid ${cardBorder}`, color: textDim }}>
-        Overclock nodes run on their own like the Grid, but generate heat. Let it hit 100% and the lane freezes for {Math.round(overheatCooldownMs / 1000)}s while it cools down - no nodes are ever lost. Venting sheds {Math.round(ventPercent)}% of your heat capacity, so keep venting to avoid the lockout.
+        Overclock nodes no longer produce FLOPS on their own - they multiply your Racks output instead, and generate heat doing it. Let heat hit 100% and one of your rack tiers goes dark for a while: running hot risks the very thing it amplifies. No nodes are ever lost. Venting sheds {Math.round(ventPercent)}% of your heat capacity, so keep venting to avoid it.
       </div>
       {OVERCLOCK_DEFS.map((def, i) => {
         const o = run.overclock[i];
@@ -54,7 +54,7 @@ export default function OverclockPanel({ run, overclockMult, thresholds, onBuy, 
                   <div className="font-mono text-xs" style={{ color: textDim }}>&times;{o.owned}</div>
                 </div>
                 <div className="text-xs font-mono" style={{ color: textDim }}>
-                  {fmt(rate)} F/s &middot; {def.heatPerSec.toFixed(2)} heat/s each
+                  +{fmt(rate)} to Racks &middot; {def.heatPerSec.toFixed(2)} heat/s each
                   {msMult > 1 && <span style={{ color: teal }}> &middot; &times;{msMult} milestone</span>}
                 </div>
               </div>

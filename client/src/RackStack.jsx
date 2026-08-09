@@ -34,6 +34,8 @@ import ColdStoragePanel from './game/components/ColdStoragePanel.jsx';
 import EventPanel from './game/components/EventPanel.jsx';
 import SocialPanel from './game/components/SocialPanel.jsx';
 import StreakBanner from './game/components/StreakBanner.jsx';
+import OutageStrip from './game/components/OutageStrip.jsx';
+import ResiliencePanel from './game/components/ResiliencePanel.jsx';
 import AnomalyToast from './game/components/AnomalyToast.jsx';
 import RushOverlay from './game/components/minigames/RushOverlay.jsx';
 import DebugOverlay from './game/components/minigames/DebugOverlay.jsx';
@@ -96,6 +98,16 @@ function buildTourCtx(state, now) {
     eventLive: isEventLive(state.meta.eventProgress, now),
   };
 }
+
+// v1.11: display names for the one-shot outage notices evaluate() attaches to
+// server.outageNotices. Module scope, not component scope - it is static, and
+// handleReconcile (defined above where a component-scope const would live)
+// reads it.
+const OUTAGE_NOTICE_LABEL = {
+  ransomware: 'Ransomware',
+  ispOutage: 'ISP outage',
+  driveFailure: 'Drive failure',
+};
 
 // Identity of the EFFECTIVE gameplay config. The stored config's `version`
 // alone is not enough: activating or ending a live event changes the numbers
@@ -328,6 +340,18 @@ export default function RackStack({ user }) {
     setState(next);
 
     if (serverState.server.overheated) setModal({ type: 'meltdown' });
+
+    // v1.11: one-shot outage notices, same lifecycle as `overheated` above.
+    // Toast, not modal - these are information, not a reward (the v1.10 rule:
+    // rewards use the modal, everything else uses the toast). The ABSORBED
+    // notice is mandatory (spec §6): the moment a hedge pays off is the only
+    // time the player learns hedging was worth it, and a silent save is a
+    // wasted save.
+    for (const n of serverState.server.outageNotices || []) {
+      showToast(n.absorbed
+        ? `${OUTAGE_NOTICE_LABEL[n.kind] || n.kind} absorbed. ${n.remaining} left.`
+        : `${OUTAGE_NOTICE_LABEL[n.kind] || n.kind} - part of your farm is degraded.`);
+    }
 
     // Live Events (v1.4): activeEvent/eventLeaderboard aren't part of
     // canonical state (see refreshEventData's own doc comment) - piggyback
@@ -602,6 +626,12 @@ export default function RackStack({ user }) {
   function buyGrid(i, mode) { dispatchAction({ type: 'buy', lane: 'grid', index: i, mode }); }
   function buyOverclock(i, mode) { dispatchAction({ type: 'buy', lane: 'overclock', index: i, mode }); }
   function ventHeat() { dispatchAction({ type: 'vent' }); }
+  // v1.11. Neither belongs in api.js's IMMEDIATE set: both are ordinary
+  // economy actions whose optimistic result is exactly what the server will
+  // confirm, so the normal 1s flush is right. (claimAnomaly is IMMEDIATE only
+  // because its reward is rolled server-side and cannot be predicted.)
+  function buySupply(id) { dispatchAction({ type: 'buySupply', id }); }
+  function resolveOutage(id) { dispatchAction({ type: 'resolveOutage', id }); }
   function buyUpgrade(u) { dispatchAction({ type: 'buyUpgrade', id: u.id }); }
   function buyShardUpgrade(u) { dispatchAction({ type: 'buyShardUpgrade', id: u.id }); }
   function claimBlock(index) { dispatchAction({ type: 'claimBlock', index }); }
@@ -1122,6 +1152,7 @@ export default function RackStack({ user }) {
         <div className="max-w-2xl mx-auto px-4 pt-3">
           <HeaderBar user={user} displayName={displayName} level={state.meta.level} onOpenProfile={() => setProfileOpen(true)} />
           <StatsRow run={state.run} meta={state.meta} totalOutputPerSec={ctx.totalOutputPerSec} xpNeeded={xpNeeded} boost={boost} boostMultNow={boostMultNow} />
+          <OutageStrip outages={state.server.outages} gridMaintenance={state.server.gridMaintenance} now={now} />
           {eventLive && activeEvent && (
             <EventBanner event={activeEvent} endsAt={eventProgress.endsAt} onOpen={() => setActiveTab('event')} />
           )}
@@ -1138,7 +1169,7 @@ export default function RackStack({ user }) {
       </div>
 
       {activeTab === 'racks' && (
-        <RacksPanel run={state.run} unlockedUpTo={ctx.unlockedUpTo} racksMult={racksMult} thresholds={thresholds} eff={eff} onBuy={buy} onCollect={collectTier} onHire={hireManager} />
+        <RacksPanel run={state.run} unlockedUpTo={ctx.unlockedUpTo} racksMult={racksMult} thresholds={thresholds} eff={eff} outages={state.server.outages} now={now} onBuy={buy} onCollect={collectTier} onHire={hireManager} />
       )}
 
       {activeTab === 'grid' && (
@@ -1158,6 +1189,17 @@ export default function RackStack({ user }) {
           cooldownSecondsLeft={cooldownSecondsLeft}
           ventPercent={config.data.heat.ventPercent}
           overheatCooldownMs={config.data.heat.overheatCooldownMs}
+        />
+      )}
+
+      {activeTab === 'resilience' && (
+        <ResiliencePanel
+          state={state}
+          config={config.data}
+          totalOutputPerSec={ctx.totalOutputPerSec}
+          now={now}
+          onBuySupply={buySupply}
+          onResolveOutage={resolveOutage}
         />
       )}
 
