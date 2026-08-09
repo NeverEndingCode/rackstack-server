@@ -337,3 +337,72 @@ describe('the Overclock rework (v1.11)', () => {
     expect([0, 2, 5]).toContain(pick(a));
   });
 });
+
+describe('the kill switch and decision 1 (v1.11)', () => {
+  it('the kill switch clears live outages and restores full production', () => {
+    const s = initialState();
+    s.run.tiers[0] = { id: 0, owned: 10, manager: true, ready: 0 };
+    const t0 = 1_000_000;
+    s.server.outages = [{
+      id: 'hazard:1', kind: 'ransomware', scope: { lane: '*' }, factor: 0,
+      startAt: t0 - 1000, endAt: t0 + 1e9, source: 'hazard',
+    }];
+    s.server.gridMaintenance = { index: 1, startAt: t0, endAt: t0 + 1e6 };
+    const cfg = structuredClone(DEFAULT_CONFIG);
+    cfg.risk.enabled = false;
+
+    const { state: s2 } = evaluate(s, cfg, t0, t0 + 30_000);
+    expect(s2.server.outages).toEqual([]);            // cleared, not paused
+    expect(s2.server.gridMaintenance).toBeNull();
+    expect(s2.run.credits).toBeCloseTo(10 + 150);     // paid in full
+  });
+
+  it('the master switch beats every per-source switch', () => {
+    const s = initialState();
+    s.run.tiers[0] = { id: 0, owned: 10, manager: true, ready: 0 };
+    const cfg = structuredClone(DEFAULT_CONFIG);
+    cfg.risk.enabled = false;
+    cfg.risk.hazardsEnabled = true;
+    cfg.risk.maintenanceEnabled = true;
+    cfg.risk.overheatShutdownEnabled = true;
+    const t0 = 1_000_000;
+    s.server.nextHazardAt = t0;
+    const { state: s2 } = evaluate(s, cfg, t0, t0 + 7 * 24 * 3600 * 1000);
+    expect(s2.server.outages).toEqual([]);
+  });
+
+  it('DECISION 1: no hazard ever reduces a stored value', () => {
+    // A randomised sweep. meta.supplies is excluded BY DESIGN - it is a
+    // consumable the player bought to be spent. Everything else is a
+    // guardrail against a later change reintroducing asset loss.
+    const cfg = structuredClone(DEFAULT_CONFIG);
+    cfg.risk.hazardMinDelayMs = 60000;
+    cfg.risk.hazardMaxDelayMs = 120000;
+
+    for (let seed = 0; seed < 60; seed++) {
+      const s = initialState();
+      s.run.credits = 5000;
+      s.run.lifetimeRun = 5000;
+      s.meta.wafers = 40;
+      s.meta.coldStorage.tapes = 25;
+      for (const i of [0, 1, 2]) s.run.tiers[i] = { id: i, owned: 6 + i, manager: i % 2 === 0, ready: 3 };
+      s.run.grid[0] = { id: 0, owned: 4 };
+      s.run.overclock[0] = { id: 0, owned: 2 };
+      s.server.nextHazardAt = 1_000_000 + seed * 1013;
+
+      const before = {
+        credits: s.run.credits, wafers: s.meta.wafers,
+        tapes: s.meta.coldStorage.tapes,
+        owned: s.run.tiers.map((t) => t.owned),
+        lifetime: s.run.lifetimeRun,
+      };
+      const { state: after } = evaluate(s, cfg, 1_000_000, 1_000_000 + 6 * 3600 * 1000);
+
+      expect(after.run.credits).toBeGreaterThanOrEqual(before.credits);
+      expect(after.meta.wafers).toBe(before.wafers);
+      expect(after.meta.coldStorage.tapes).toBe(before.tapes);
+      expect(after.run.lifetimeRun).toBeGreaterThanOrEqual(before.lifetime);
+      after.run.tiers.forEach((t, i) => expect(t.owned).toBe(before.owned[i]));
+    }
+  });
+});

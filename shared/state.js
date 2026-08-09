@@ -255,10 +255,23 @@ export function evaluate(state, config, lastEvaluatedAt, now, rng = Math.random)
   // and happens after - see the bottom of this function.) `outages` below is
   // the same array object fireDueHazards pushes into, so the integral sees
   // anything that just fired - do not re-bind or clone it between these.
-  activateDueMaintenance(s, config, now);
-  const notices = fireDueHazards(s, config, now, rng);
-  if (notices.length > 0) s.server.outageNotices = notices;
+  // v1.11 (spec §8): the master switch is a TRUE KILL SWITCH, not a pause.
+  // Clearing here - BEFORE the integral - means even the window currently
+  // being evaluated is paid in full, so killing the system visibly un-breaks
+  // every affected save on the next evaluation. A player mid-ransomware when
+  // the owner flips this must not stay throttled with nothing in the UI to
+  // explain it.
+  if (!config.risk || config.risk.enabled !== true) {
+    if (s.server.outages.length > 0) s.server.outages = [];
+    s.server.gridMaintenance = null;
+  } else {
+    activateDueMaintenance(s, config, now);
+    const notices = fireDueHazards(s, config, now, rng);
+    if (notices.length > 0) s.server.outageNotices = notices;
+  }
 
+  // Bound AFTER the block above: the kill branch reassigns s.server.outages
+  // to a fresh array, so a binding taken earlier would point at the old one.
   const outages = s.server.outages;
 
   const online = elapsedSec <= config.offline.onlineGapThresholdSec;
