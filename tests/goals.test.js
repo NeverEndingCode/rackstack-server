@@ -37,17 +37,31 @@ describe('goalCtx', () => {
     expect(ctx.totalOutputPerSec).toBeCloseTo(expected);
   });
 
-  it('overclock lane contributes 0 while a heat cooldown is active, matching normal computation once cleared', () => {
+  // v1.11: the Overclock lane no longer produces on its own - it multiplies
+  // Racks. So a save with overclock nodes and NO racks now has nothing to
+  // amplify and contributes nothing, which is why this test needs racks to
+  // say anything at all. A live heat cooldown still zeroes the lane's
+  // contribution, exactly as it zeroed its output before.
+  it('overclock lane contributes 0 while a heat cooldown is active, and lifts Racks once cleared', () => {
     const s = initialState();
+    s.run.tiers[0] = { id: 0, owned: 20, manager: true, ready: 0 };
     s.run.overclock[0].owned = 100;
     s.run.heatCooldownUntil = NOW + 5000;
     const onCooldown = goalCtx(s, DEFAULT_CONFIG, NOW);
-    expect(onCooldown.totalOutputPerSec).toBe(0);
 
     const s2 = structuredClone(s);
     s2.run.heatCooldownUntil = null;
     const normal = goalCtx(s2, DEFAULT_CONFIG, NOW);
-    expect(normal.totalOutputPerSec).toBeGreaterThan(0);
+
+    // Frozen: the racks lane alone. Cleared: strictly more than that.
+    expect(onCooldown.totalOutputPerSec).toBeGreaterThan(0);
+    expect(normal.totalOutputPerSec).toBeGreaterThan(onCooldown.totalOutputPerSec);
+  });
+
+  it('a lane with nothing to amplify contributes nothing (v1.11)', () => {
+    const s = initialState();
+    s.run.overclock[0].owned = 100;   // no racks owned
+    expect(goalCtx(s, DEFAULT_CONFIG, NOW).totalOutputPerSec).toBe(0);
   });
 
   it('includes the active boost multiplier in totalOutputPerSec, and excludes it once expired', () => {

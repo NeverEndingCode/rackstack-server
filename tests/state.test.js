@@ -280,3 +280,60 @@ describe('evaluate with outages (v1.11)', () => {
     expect(s2.run.credits).toBeCloseTo(10 + expected);
   });
 });
+
+describe('the Overclock rework (v1.11)', () => {
+  const quiet = () => {
+    const cfg = structuredClone(DEFAULT_CONFIG);
+    cfg.risk.hazardsEnabled = false;
+    cfg.risk.maintenanceEnabled = false;
+    return cfg;
+  };
+
+  it('overheating knocks a rack tier offline instead of freezing the lane', () => {
+    const s = initialState();
+    s.run.tiers[0] = { id: 0, owned: 10, manager: true, ready: 0 };
+    s.run.overclock[0] = { id: 0, owned: 200 };
+    const cfg = quiet();
+    cfg.heat.capacity = 100;
+    const t0 = 1_000_000;
+    const { state: s2 } = evaluate(s, cfg, t0, t0 + 10_000);
+    expect(s2.server.overheated).toBe(true);
+    expect(s2.run.heat).toBe(0);
+    expect(s2.run.heatCooldownUntil).toBeNull();
+    const o = s2.server.outages.find((x) => x.source === 'overheat');
+    expect(o).toBeTruthy();
+    expect(o.scope.lane).toBe('tiers');
+    expect(o.factor).toBe(0);
+  });
+
+  it('falls back to the legacy lane freeze when the shutdown is disabled', () => {
+    const s = initialState();
+    s.run.tiers[0] = { id: 0, owned: 10, manager: true, ready: 0 };
+    s.run.overclock[0] = { id: 0, owned: 200 };
+    const cfg = quiet();
+    cfg.heat.capacity = 100;
+    cfg.risk.overheatShutdownEnabled = false;
+    const t0 = 1_000_000;
+    const { state: s2 } = evaluate(s, cfg, t0, t0 + 10_000);
+    expect(s2.server.overheated).toBe(true);
+    expect(s2.run.heatCooldownUntil).toBe(t0 + 10_000 + cfg.heat.overheatCooldownMs);
+    expect(s2.server.outages.some((x) => x.source === 'overheat')).toBe(false);
+  });
+
+  it('the overheat victim is derived, so two evaluations agree', () => {
+    const mk = () => {
+      const s = initialState();
+      for (const i of [0, 2, 5]) s.run.tiers[i] = { id: i, owned: 9, manager: true, ready: 0 };
+      s.run.overclock[0] = { id: 0, owned: 200 };
+      return s;
+    };
+    const cfg = quiet();
+    cfg.heat.capacity = 100;
+    const t0 = 1_000_000;
+    const a = evaluate(mk(), cfg, t0, t0 + 10_000).state;
+    const b = evaluate(mk(), cfg, t0, t0 + 10_000).state;
+    const pick = (st) => st.server.outages.find((x) => x.source === 'overheat').scope.index;
+    expect(pick(a)).toBe(pick(b));
+    expect([0, 2, 5]).toContain(pick(a));
+  });
+});

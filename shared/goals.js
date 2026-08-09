@@ -1,4 +1,4 @@
-import { fmt, computeMults, tierRate } from './gameRules.js';
+import { fmt, computeMults, tierRate, overclockBoost } from './gameRules.js';
 import { TIER_DEFS, GRID_DEFS, OVERCLOCK_DEFS } from './gameData.js';
 
 export const GOAL_DEFS = [
@@ -49,11 +49,24 @@ export function goalCtx(state, config, now) {
   const gridOutput = state.run.grid.reduce(
     (sum, g, i) => sum + tierRate(g.owned, GRID_DEFS[i].baseProd, gridMult, thresholds), 0
   );
+  // v1.11: the Overclock lane multiplies Racks rather than producing directly.
+  // At the default gain this is algebraically racks + overclock, so the number
+  // every goal, repeatable, contract, streak reward and achievement reads is
+  // unchanged across the deploy.
+  //
+  // The legacy heat-cooldown freeze (still reachable with
+  // risk.overheatShutdownEnabled off) zeroes the lane's contribution exactly
+  // as it zeroed its output before.
+  //
+  // Note this deliberately does NOT apply outages: goalCtx reports the
+  // player's INSTALLED capacity, which is what goals, contracts and supply
+  // prices should be measured against. A hazard must not make a contract
+  // easier or a supply cheaper.
   const heatOnCooldown = !!state.run.heatCooldownUntil && now < state.run.heatCooldownUntil;
-  const overclockOutput = heatOnCooldown ? 0 : state.run.overclock.reduce(
-    (sum, o, i) => sum + tierRate(o.owned, OVERCLOCK_DEFS[i].baseProd, overclockMult, thresholds), 0
-  );
-  const totalOutputPerSec = racksOutput + gridOutput + overclockOutput;
+  const boost = heatOnCooldown
+    ? 1
+    : overclockBoost(state.run, config, overclockMult, thresholds, racksOutput);
+  const totalOutputPerSec = racksOutput * boost + gridOutput;
 
   let unlockedUpTo = 0;
   for (let i = 1; i < TIER_DEFS.length; i++) {

@@ -374,6 +374,46 @@ export function fireDueHazards(state, config, now, rng = Math.random) {
   return notices;
 }
 
+/**
+ * Knocks one rack tier offline after a meltdown. Returns the outage, or null
+ * when the shutdown is disabled (the caller then falls back to the pre-v1.11
+ * Overclock-lane freeze) or there is no owned tier to knock out.
+ *
+ * The victim is DERIVED from the overheat's timestamp, exactly as a hazard's
+ * target is: two clients reconciling the same overheat must not disagree
+ * about which rack died.
+ *
+ * The penalty moved from the Overclock lane to the Racks lane because
+ * Overclock now multiplies Racks - running hot risks the very thing it
+ * amplifies, and the punishment is self-limiting.
+ */
+export function overheatOutage(state, config, now) {
+  if (!riskOn(config, 'overheatShutdownEnabled')) return null;
+
+  const owned = [];
+  for (let i = 0; i < state.run.tiers.length; i++) {
+    const t = state.run.tiers[i];
+    if (t && t.owned > 0) owned.push(i);
+  }
+  if (owned.length === 0) return null;
+
+  const index = owned[Math.floor(unitAt(now, 2) * owned.length)];
+  const id = `overheat:${Math.floor(now)}`;
+  if (state.server.outages.some((o) => o && o.id === id)) return null;
+
+  const outage = {
+    id,
+    kind: 'overheat',
+    scope: { lane: 'tiers', index },
+    factor: 0,
+    startAt: now,
+    endAt: now + config.risk.overheatOutageMs,
+    source: 'overheat',
+  };
+  state.server.outages.push(outage);
+  return outage;
+}
+
 // ---------------------------------------------------------------------------
 // Grid maintenance: telegraphed, not sprung
 // ---------------------------------------------------------------------------

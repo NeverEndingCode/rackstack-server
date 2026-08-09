@@ -1,9 +1,10 @@
 import { TIER_DEFS, GRID_DEFS, OVERCLOCK_DEFS } from './gameData.js';
-import { computeMults, tierRate } from './gameRules.js';
+import { computeMults, tierRate, overclockBoost } from './gameRules.js';
 import { TOTAL_BLOCKS } from './coldStorageData.js';
 import { computeColdStorageEffects, jobDurationSec } from './coldStorage.js';
 import {
   effectiveFactor, pruneExpired, fireDueHazards, activateDueMaintenance,
+  overheatOutage, riskOn,
 } from './outages.js';
 
 function freshTiers() {
@@ -276,11 +277,33 @@ export function evaluate(state, config, lastEvaluatedAt, now, rng = Math.random)
     let creditsGain = 0;
     let lifetimeGain = 0;
 
+    // v1.11: the Overclock lane contributes a multiplier to Racks instead of
+    // producing directly. The boost is NOT itself degraded by outages -
+    // ransomware's { lane: '*' } already covers the Racks lane the boost
+    // multiplies, and applying it to both would square the penalty.
+    // An active heat cooldown freezes the lane, however it came to be set -
+    // NOT gated on the toggle. Under the v1.11 default a cooldown is only ever
+    // set by overheatOutage's fallback (shutdown enabled but no owned rack to
+    // down), and a cooldown that is set but not honoured would let heat
+    // re-cross the cap on every single evaluation. This also matches
+    // goalCtx's condition exactly, so the displayed rate and the produced
+    // rate cannot disagree.
+    const legacyFreeze = !!s.run.heatCooldownUntil && now < s.run.heatCooldownUntil;
+    const racksBase = s.run.tiers.reduce((sum, ts, i) => {
+      const def = TIER_DEFS[i];
+      if (!def || !ts || ts.owned === 0) return sum;
+      return sum + tierRate(ts.owned, def.baseProd, racksMult, thresholds);
+    }, 0);
+    const ocBoost = legacyFreeze
+      ? 1
+      : overclockBoost(s.run, config, overclockMult, thresholds, racksBase);
+
     s.run.tiers = s.run.tiers.map((ts, i) => {
       const def = TIER_DEFS[i];
       if (!def || !ts || ts.owned === 0) return ts;
       const factor = effectiveFactor(outages, 'tiers', i, lastEvaluatedAt, now);
-      const produced = tierRate(ts.owned, def.baseProd, racksMult, thresholds) * elapsedSec * factor;
+      const produced = tierRate(ts.owned, def.baseProd, racksMult, thresholds)
+        * elapsedSec * factor * ocBoost;
       lifetimeGain += produced;
       if (ts.manager) { creditsGain += produced; return ts; }
       return { ...ts, ready: (ts.ready || 0) + produced };
@@ -295,34 +318,34 @@ export function evaluate(state, config, lastEvaluatedAt, now, rng = Math.random)
       lifetimeGain += produced;
     });
 
-    // Overclock lane: frozen entirely (no production, no heat change) while
-    // an overheat cooldown from a previous gap is still active.
-    const onCooldownNow = !!s.run.heatCooldownUntil && now < s.run.heatCooldownUntil;
-    if (onCooldownNow) {
-      // leave heat/cooldown as-is; nothing produced this gap on this lane
-    } else {
+    // v1.11: the Overclock lane no longer produces - its output became the
+    // `ocBoost` multiplier applied to Racks above. Heat still accrues here,
+    // which is what makes the lane a risk dial rather than free money.
+    //
+    // The legacy freeze (risk.overheatShutdownEnabled off) still stops heat
+    // accrual entirely for the duration of the cooldown, exactly as it did
+    // before v1.11.
+    if (!legacyFreeze) {
       if (s.run.heatCooldownUntil && now >= s.run.heatCooldownUntil) {
         s.run.heatCooldownUntil = null;
       }
-      s.run.overclock.forEach((o, i) => {
-        const def = OVERCLOCK_DEFS[i];
-        if (!def || !o || o.owned === 0) return;
-        const factor = effectiveFactor(outages, 'overclock', i, lastEvaluatedAt, now);
-        const produced = tierRate(o.owned, def.baseProd, overclockMult, thresholds) * elapsedSec * factor;
-        creditsGain += produced;
-        lifetimeGain += produced;
-      });
       const heatGain = s.run.overclock.reduce((sum, o, i) => {
         const def = OVERCLOCK_DEFS[i];
         if (!def || !o) return sum;
         return sum + o.owned * def.heatPerSec;
       }, 0) * eff.heatDiscount;
       const netHeat = heatGain - eff.autoVentPerSec;
-      let newHeat = Math.max(0, s.run.heat + netHeat * elapsedSec);
+      const newHeat = Math.max(0, s.run.heat + netHeat * elapsedSec);
       if (newHeat >= config.heat.capacity + csEff.heatCapacityBonus) {
         s.run.heat = 0;
-        s.run.heatCooldownUntil = now + config.heat.overheatCooldownMs;
         s.server.overheated = true;
+        // The penalty moved from the Overclock lane to the Racks lane, which
+        // is coherent now that Overclock multiplies Racks. overheatOutage
+        // returns null when the shutdown is disabled (or there is no owned
+        // tier to down), in which case fall back to today's lane freeze.
+        if (!overheatOutage(s, config, now)) {
+          s.run.heatCooldownUntil = now + config.heat.overheatCooldownMs;
+        }
       } else {
         s.run.heat = newHeat;
       }
@@ -369,11 +392,21 @@ export function evaluate(state, config, lastEvaluatedAt, now, rng = Math.random)
     // cost nothing, which quietly guts the system for exactly the players it
     // should reach most - the ones who are away for a long time. This was
     // considered and explicitly rejected by the owner.
+    // v1.11: same conversion as the online branch - Overclock multiplies
+    // Racks rather than producing. Heat is untouched offline, as before.
+    const racksBaseOffline = s.run.tiers.reduce((sum, ts, i) => {
+      const def = TIER_DEFS[i];
+      if (!def || !ts || ts.owned === 0) return sum;
+      return sum + tierRate(ts.owned, def.baseProd, racksMult, thresholds);
+    }, 0);
+    const ocBoostOffline = overclockBoost(s.run, config, overclockMult, thresholds, racksBaseOffline);
+
     s.run.tiers = s.run.tiers.map((ts, i) => {
       const def = TIER_DEFS[i];
       if (!def || !ts || ts.owned === 0) return ts;
       const factor = effectiveFactor(outages, 'tiers', i, lastEvaluatedAt, now);
-      const produced = tierRate(ts.owned, def.baseProd, racksMult, thresholds) * cappedSec * factor;
+      const produced = tierRate(ts.owned, def.baseProd, racksMult, thresholds)
+        * cappedSec * factor * ocBoostOffline;
       offlineLifetime += produced;
       if (ts.manager) { offlineCredits += produced; return ts; }
       return { ...ts, ready: (ts.ready || 0) + produced };
@@ -384,15 +417,6 @@ export function evaluate(state, config, lastEvaluatedAt, now, rng = Math.random)
       if (!def || !g || g.owned === 0) return;
       const factor = effectiveFactor(outages, 'grid', i, lastEvaluatedAt, now);
       const produced = tierRate(g.owned, def.baseProd, gridMult, thresholds) * cappedSec * factor;
-      offlineCredits += produced;
-      offlineLifetime += produced;
-    });
-
-    s.run.overclock.forEach((o, i) => {
-      const def = OVERCLOCK_DEFS[i];
-      if (!def || !o || o.owned === 0) return;
-      const factor = effectiveFactor(outages, 'overclock', i, lastEvaluatedAt, now);
-      const produced = tierRate(o.owned, def.baseProd, overclockMult, thresholds) * cappedSec * factor;
       offlineCredits += produced;
       offlineLifetime += produced;
     });

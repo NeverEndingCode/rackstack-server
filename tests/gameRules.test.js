@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { DEFAULT_CONFIG } from '../shared/configSchema.js';
-import { TIER_DEFS } from '../shared/gameData.js';
-import { costAt, costForN, maxAffordable, milestoneMult, tierRate, xpForLevel, computeEffects, computeMults, migrateGain, minigameWafers } from '../shared/gameRules.js';
+import { TIER_DEFS, OVERCLOCK_DEFS } from '../shared/gameData.js';
+import { costAt, costForN, maxAffordable, milestoneMult, tierRate, xpForLevel, computeEffects, computeMults, migrateGain, minigameWafers, overclockBoost } from '../shared/gameRules.js';
+import { initialState } from '../shared/state.js';
 
 const meta0 = { legacyCores: 0, level: 0, upgrades: {}, shardUpgrades: {} };
 
@@ -50,5 +51,46 @@ describe('gameRules', () => {
     expect(minigameWafers('rush', 40, meta0, DEFAULT_CONFIG)).toBe(10);
     expect(minigameWafers('match', 10, meta0, DEFAULT_CONFIG)).toBe(20);
     expect(minigameWafers('balance', 6, meta0, DEFAULT_CONFIG)).toBe(9);
+  });
+});
+
+describe('overclockBoost (v1.11)', () => {
+  it('is exactly 1 with an empty overclock lane', () => {
+    const s = initialState();
+    s.run.tiers[0] = { id: 0, owned: 10, manager: true, ready: 0 };
+    const { thresholds, racksMult, overclockMult } = computeMults(s.meta, DEFAULT_CONFIG, 1);
+    const racksOutput = tierRate(10, TIER_DEFS[0].baseProd, racksMult, thresholds);
+    expect(overclockBoost(s.run, DEFAULT_CONFIG, overclockMult, thresholds, racksOutput)).toBe(1);
+  });
+
+  it('is 1 when there is nothing to amplify', () => {
+    const s = initialState();
+    s.run.overclock[0] = { id: 0, owned: 5 };
+    const { thresholds, overclockMult } = computeMults(s.meta, DEFAULT_CONFIG, 1);
+    expect(overclockBoost(s.run, DEFAULT_CONFIG, overclockMult, thresholds, 0)).toBe(1);
+  });
+
+  it('at gain 1 it exactly preserves the pre-v1.11 total', () => {
+    const s = initialState();
+    s.run.tiers[0] = { id: 0, owned: 40, manager: true, ready: 0 };
+    s.run.overclock[0] = { id: 0, owned: 3 };
+    const { thresholds, racksMult, overclockMult } = computeMults(s.meta, DEFAULT_CONFIG, 1);
+    const racksOutput = tierRate(40, TIER_DEFS[0].baseProd, racksMult, thresholds);
+    const ocOutput = tierRate(3, OVERCLOCK_DEFS[0].baseProd, overclockMult, thresholds);
+    const boost = overclockBoost(s.run, DEFAULT_CONFIG, overclockMult, thresholds, racksOutput);
+    expect(racksOutput * boost).toBeCloseTo(racksOutput + ocOutput, 6);
+  });
+
+  it('scales with the gain tunable', () => {
+    const s = initialState();
+    s.run.tiers[0] = { id: 0, owned: 40, manager: true, ready: 0 };
+    s.run.overclock[0] = { id: 0, owned: 3 };
+    const cfg = structuredClone(DEFAULT_CONFIG);
+    cfg.risk.overclockBoostGain = 2;
+    const { thresholds, racksMult, overclockMult } = computeMults(s.meta, cfg, 1);
+    const racksOutput = tierRate(40, TIER_DEFS[0].baseProd, racksMult, thresholds);
+    const b1 = overclockBoost(s.run, DEFAULT_CONFIG, overclockMult, thresholds, racksOutput);
+    const b2 = overclockBoost(s.run, cfg, overclockMult, thresholds, racksOutput);
+    expect(b2 - 1).toBeCloseTo(2 * (b1 - 1), 9);
   });
 });

@@ -1,4 +1,4 @@
-import { GROWTH, MILESTONES } from './gameData.js';
+import { GROWTH, MILESTONES, OVERCLOCK_DEFS } from './gameData.js';
 import { computeColdStorageEffects } from './coldStorage.js';
 
 export function costAt(def, owned) {
@@ -101,6 +101,38 @@ export function computeMults(meta, config, boostMult = 1) {
     gridMult: base * eff.gridExtraMult * config.production.gridMult * coldFusionMult,
     overclockMult: base * eff.overclockExtraMult * config.production.overclockMult * coldFusionMult,
   };
+}
+
+/**
+ * v1.11: the Racks-output multiplier contributed by the Overclock lane.
+ *
+ * Overclock nodes no longer produce FLOPS directly - OVERCLOCK_DEFS[].baseProd
+ * is now a BOOST CONTRIBUTION. The lane's would-be output is expressed as a
+ * fraction of the Racks lane's:
+ *
+ *   boost = 1 + gain * overclockOutput / racksOutput
+ *
+ * At the default gain of 1 that is algebraically racksOutput +
+ * overclockOutput, so a mid-game save's total output is UNCHANGED across the
+ * deploy - which is what lets the existing goals/contracts/achievements suites
+ * pass untouched, and turns the balance pass into one tunable rather than a
+ * re-costing exercise. Raising risk.overclockBoostGain is how the lane becomes
+ * worth pushing.
+ *
+ * Returns exactly 1 when there is nothing to amplify (racksOutput <= 0) or
+ * nothing amplifying it, so an untouched save is unaffected.
+ */
+export function overclockBoost(run, config, overclockMult, thresholds, racksOutput) {
+  if (!(racksOutput > 0)) return 1;
+  const gain = config.risk.overclockBoostGain;
+  if (!(gain > 0)) return 1;
+  const ocOutput = run.overclock.reduce((sum, o, i) => {
+    const def = OVERCLOCK_DEFS[i];
+    if (!def || !o || o.owned === 0) return sum;
+    return sum + tierRate(o.owned, def.baseProd, overclockMult, thresholds);
+  }, 0);
+  if (ocOutput <= 0) return 1;
+  return 1 + gain * (ocOutput / racksOutput);
 }
 
 export function migrateGain(lifetimeRun, legacyGainMult) {
