@@ -176,3 +176,20 @@ export const wrapUpSteps = [
     body: 'Locked tabs open up as you grow. You can replay this tour any time from Profile -> Settings -> Tutorials.',
   },
 ];
+
+export const resilienceSteps = [
+  {
+    id: 'resilience-risk',
+    tab: 'resilience',
+    anchor: 'resilience-risk',
+    title: 'Things go wrong',
+    body: 'Every few hours something breaks - ransomware, a dead link, a failed drive. It only ever slows you down: you never lose racks, FLOPS, tapes or upgrades. You are told the rate, never the schedule.',
+  },
+  {
+    id: 'resilience-supplies',
+    tab: 'resilience',
+    anchor: 'resilience-supplies',
+    title: 'Stock up before it happens',
+    body: 'Each supply absorbs one matching incident automatically - even while you are offline, which is the only time it can save you. Fixing something already broken always costs more than having prepared. Cold Storage is never affected.',
+  },
+];

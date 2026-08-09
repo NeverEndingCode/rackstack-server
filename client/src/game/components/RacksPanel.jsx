@@ -1,8 +1,9 @@
 import { costAt, costForN, maxAffordable, milestoneMult, nextMilestone, tierRate, fmt } from '../helpers.js';
-import { cardBg, cardBorder, inset, textMain, textDim, amber, teal, buyBtnStyle } from '../theme.js';
+import { cardBg, cardBorder, inset, textMain, textDim, amber, teal, danger, buyBtnStyle } from '../theme.js';
 import { TIER_DEFS } from '../data/tiers.js';
+import { laneOutageFor } from '@shared/outages.js';
 
-export default function RacksPanel({ run, unlockedUpTo, racksMult, thresholds, eff, onBuy, onCollect, onHire }) {
+export default function RacksPanel({ run, unlockedUpTo, racksMult, thresholds, eff, outages, now, onBuy, onCollect, onHire }) {
   const LockedIcon = unlockedUpTo + 1 < TIER_DEFS.length ? TIER_DEFS[unlockedUpTo + 1].Icon : null;
   return (
     <div className="max-w-2xl mx-auto px-4 py-4 flex flex-col gap-3">
@@ -17,6 +18,10 @@ export default function RacksPanel({ run, unlockedUpTo, racksMult, thresholds, e
         const msMult = milestoneMult(ts.owned, thresholds);
         const nextMs = nextMilestone(ts.owned, thresholds);
         const managerCost = def.managerCost * eff.automationDiscount;
+        // v1.11: a tier silently producing nothing reads as a bug, so say
+        // why. laneOutageFor returns the most severe cover, which is the one
+        // worth naming.
+        const down = laneOutageFor(outages, 'tiers', i, now);
         return (
           <div key={def.id} className="tier-card rounded-xl p-3" style={{ background: cardBg, border: `1px solid ${cardBorder}`, animationDelay: `${i * 40}ms` }}>
             <div className="flex items-center gap-3">
@@ -32,6 +37,14 @@ export default function RacksPanel({ run, unlockedUpTo, racksMult, thresholds, e
                   {fmt(rate)} F/s{ts.manager ? ' · automated' : ''}
                   {msMult > 1 && <span style={{ color: teal }}> &middot; &times;{msMult} milestone</span>}
                 </div>
+                {down && (
+                  <div className="text-xs mt-0.5" style={{ color: danger }}>
+                    {down.factor === 0 ? 'Offline' : `At ${Math.round(down.factor * 100)}%`}
+                    {down.kind === 'overheat'
+                      ? ' - overheated'
+                      : down.kind === 'driveFailure' ? ' - drive failure' : ' - incident'}
+                  </div>
+                )}
               </div>
             </div>
 
