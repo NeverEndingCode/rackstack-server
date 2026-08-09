@@ -51,6 +51,12 @@ export function initialState() {
       // Pure prestige - no payout, ever (spec §6.3). { [id]: unlockedAtMs }.
       achievements: {},
       streak: { count: 0, lastClaimDate: null },
+      // v1.11: prepaid mitigation. Bought with CREDITS (the run currency, so
+      // this is a sink for what players have most of) but stored in META, so
+      // it survives Migrate - which gives a real reason to spend down before
+      // prestiging instead of watching the balance evaporate. hardReset wipes
+      // it along with everything else.
+      supplies: { antivirus: 0, backupIsp: 0, spareDrives: 0 },
       eventProgress: null,
       // Live Events (v1.4): personal windows that were force-ended early by
       // a NEW event going active (spec §5.2) but whose 48h claim grace
@@ -192,6 +198,16 @@ export function migrateSave(raw) {
     count: typeof srcStreak.count === 'number' && Number.isFinite(srcStreak.count) ? srcStreak.count : 0,
     lastClaimDate: typeof srcStreak.lastClaimDate === 'string' ? srcStreak.lastClaimDate : null,
   };
+
+  // v1.11: defaulted AND clamped. Absorption decrements this inside
+  // evaluate(), so a negative or non-numeric count would let a hand-edited
+  // save absorb hazards forever.
+  const srcSupplies = isPlainObject(srcMeta.supplies) ? srcMeta.supplies : {};
+  meta.supplies = {};
+  for (const id of ['antivirus', 'backupIsp', 'spareDrives']) {
+    const v = srcSupplies[id];
+    meta.supplies[id] = typeof v === 'number' && Number.isFinite(v) && v > 0 ? Math.floor(v) : 0;
+  }
 
   const server = {
     ...base.server,

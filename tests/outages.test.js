@@ -3,6 +3,7 @@ import {
   scopeCovers, activeAt, pruneExpired, effectiveFactor, laneOutageFor,
   hazardFrom, scheduleNextHazard, fireDueHazards, hazardRatePerHour, riskOn,
   HAZARD_KINDS, MAX_HAZARDS_PER_EVALUATION,
+  SUPPLY_IDS, SUPPLY_FOR_KIND, supplyPrice,
 } from '../shared/outages.js';
 import { DEFAULT_CONFIG } from '../shared/configSchema.js';
 import { initialState } from '../shared/state.js';
@@ -249,6 +250,50 @@ describe('hazard scheduling and firing', () => {
   it('reports a rate, never a next time', () => {
     // default band 4h-8h -> mean 6h -> 1/6 per hour
     expect(hazardRatePerHour(DEFAULT_CONFIG)).toBeCloseTo(1 / 6, 6);
+  });
+});
+
+describe('stockpiles absorb hazards at fire time', () => {
+  // A timestamp that derives a ransomware hazard, so the test can stock
+  // exactly the supply that counters it.
+  const ransomwareAt = [...Array(500)].map((_, i) => 1_700_000_000_000 + i * 8677)
+    .find((t) => hazardFrom(t, DEFAULT_CONFIG, stocked()).kind === 'ransomware');
+
+  function withStock(counts) {
+    const s = stocked();
+    s.meta.supplies = { antivirus: 0, backupIsp: 0, spareDrives: 0, ...counts };
+    return s;
+  }
+
+  it('consumes exactly one supply, applies no penalty, and says so', () => {
+    const s = withStock({ antivirus: 2 });
+    s.server.nextHazardAt = ransomwareAt;
+    const notices = fireDueHazards(s, DEFAULT_CONFIG, ransomwareAt + 1, () => 0);
+
+    expect(s.server.outages).toEqual([]);           // no penalty
+    expect(s.meta.supplies.antivirus).toBe(1);      // exactly one consumed
+    const n = notices.find((x) => x.absorbed);
+    expect(n).toMatchObject({
+      kind: 'ransomware', absorbed: true, supply: 'antivirus', remaining: 1,
+    });
+  });
+
+  it('cannot absorb with an empty stockpile', () => {
+    const s = withStock({ antivirus: 0 });
+    s.server.nextHazardAt = ransomwareAt;
+    fireDueHazards(s, DEFAULT_CONFIG, ransomwareAt + 1, () => 0);
+    expect(s.server.outages).toHaveLength(1);
+    expect(s.meta.supplies.antivirus).toBe(0);      // never goes negative
+  });
+
+  it('every hazard kind maps to a real supply id', () => {
+    for (const kind of HAZARD_KINDS) expect(SUPPLY_IDS).toContain(SUPPLY_FOR_KIND[kind]);
+  });
+
+  it('prices supplies in seconds of output, with a floor', () => {
+    const cfg = DEFAULT_CONFIG;
+    expect(supplyPrice('antivirus', cfg, 0)).toBe(cfg.risk.supplyPriceMin);
+    expect(supplyPrice('antivirus', cfg, 1000)).toBe(1000 * cfg.risk.antivirusPriceSeconds);
   });
 });
 

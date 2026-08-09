@@ -134,6 +134,31 @@ export const SUPPLY_FOR_KIND = {
   driveFailure: 'spareDrives',
 };
 
+export const SUPPLY_IDS = ['antivirus', 'backupIsp', 'spareDrives'];
+
+const SUPPLY_PRICE_KEY = {
+  antivirus: 'antivirusPriceSeconds',
+  backupIsp: 'backupIspPriceSeconds',
+  spareDrives: 'spareDrivesPriceSeconds',
+};
+
+/**
+ * A supply's credit price, expressed as seconds of the player's current
+ * output with a flat floor - the same idiom as social.contractFlopsSeconds
+ * and batchQueue.blockFlopsSeconds. A flat price would be a meaningful sink
+ * for an hour and free forever after.
+ *
+ * `totalOutputPerSec` comes from goalCtx and is deliberately the UNDEGRADED
+ * rate: pricing off a degraded rate would make supplies cheapest exactly when
+ * an incident is running, which inverts the intended pressure.
+ */
+export function supplyPrice(supplyId, config, totalOutputPerSec) {
+  const key = SUPPLY_PRICE_KEY[supplyId];
+  if (!key) return Infinity;
+  const rate = typeof totalOutputPerSec === 'number' && totalOutputPerSec > 0 ? totalOutputPerSec : 0;
+  return Math.max(config.risk.supplyPriceMin, rate * config.risk[key]);
+}
+
 const HAZARD_SPECS = {
   ransomware: { enabledKey: 'ransomwareEnabled', factorKey: 'ransomwareFactor', durationKey: 'ransomwareDurationMs' },
   ispOutage: { enabledKey: 'ispOutageEnabled', factorKey: 'ispOutageFactor', durationKey: 'ispOutageDurationMs' },

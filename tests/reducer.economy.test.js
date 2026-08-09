@@ -367,3 +367,41 @@ describe('reducer: vent', () => {
     expect(s2.run.heat).toBe(0);
   });
 });
+
+describe('buySupply (v1.11)', () => {
+  it('buys one, charges credits, and stacks', () => {
+    const s = initialState();
+    s.run.credits = 1e9;
+    const { state: s1, result: r1 } = applyAction(s, { type: 'buySupply', id: 'antivirus' }, DEFAULT_CONFIG, 1000);
+    expect(r1.ok).toBe(true);
+    expect(s1.meta.supplies.antivirus).toBe(1);
+    expect(s1.run.credits).toBeLessThan(1e9);
+
+    const { state: s2 } = applyAction(s1, { type: 'buySupply', id: 'antivirus' }, DEFAULT_CONFIG, 1000);
+    expect(s2.meta.supplies.antivirus).toBe(2);
+  });
+
+  it('rejects an unknown supply id without touching anything', () => {
+    const s = initialState();
+    s.run.credits = 1e9;
+    const { state: s1, result } = applyAction(s, { type: 'buySupply', id: '__proto__' }, DEFAULT_CONFIG, 1000);
+    expect(result).toEqual({ ok: false, error: 'invalid_target' });
+    expect(s1.run.credits).toBe(1e9);
+  });
+
+  it('rejects when the player cannot afford it', () => {
+    const s = initialState();
+    s.run.credits = 0;
+    const { result } = applyAction(s, { type: 'buySupply', id: 'backupIsp' }, DEFAULT_CONFIG, 1000);
+    expect(result).toEqual({ ok: false, error: 'insufficient_credits' });
+  });
+
+  it('supplies survive a Migrate', () => {
+    const s = initialState();
+    s.meta.supplies.spareDrives = 3;
+    s.run.lifetimeRun = 1e12;
+    const { state: s1, result } = applyAction(s, { type: 'migrate' }, DEFAULT_CONFIG, 1000);
+    expect(result.ok).toBe(true);
+    expect(s1.meta.supplies.spareDrives).toBe(3);
+  });
+});

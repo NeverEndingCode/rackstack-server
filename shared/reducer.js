@@ -9,6 +9,7 @@ import { utcDateKey } from './daily.js';
 import { contractsForState, contractProgress } from './contracts.js';
 import { canClaimStreak, nextStreakCount, streakReward } from './streak.js';
 import { checkAchievements } from './achievements.js';
+import { SUPPLY_IDS, supplyPrice } from './outages.js';
 
 const LANE_DEFS = { tiers: TIER_DEFS, grid: GRID_DEFS, overclock: OVERCLOCK_DEFS };
 
@@ -338,6 +339,24 @@ function buyTapeUpgrade(s, action, config) {
   return { ok: true };
 }
 
+// v1.11: prepaid mitigation, priced in seconds of current output (see
+// supplyPrice). `id` is user-supplied, so it is resolved with .includes()
+// against a frozen list - never as a bare key into an object literal, which
+// is the prototype-pollution shape validIndex/HANDLERS already guard against
+// elsewhere in this file.
+function buySupply(s, action, config, now) {
+  const { id } = action;
+  if (typeof id !== 'string' || !SUPPLY_IDS.includes(id)) return err('invalid_target');
+
+  const ctx = goalCtx(s, config, now);
+  const cost = supplyPrice(id, config, ctx.totalOutputPerSec);
+  if (!Number.isFinite(cost) || cost > s.run.credits) return err('insufficient_credits');
+
+  s.run.credits -= cost;
+  s.meta.supplies[id] = (s.meta.supplies[id] || 0) + 1;
+  return { ok: true, id, cost, stock: s.meta.supplies[id] };
+}
+
 function applyLevelUps(meta, xpGain) {
   let xp = meta.xp + xpGain;
   let level = meta.level;
@@ -649,6 +668,7 @@ const HANDLERS = Object.assign(Object.create(null), {
   claimBlock, claimAllBlocks, resetTrack, startJob, cancelJob, claimJob, buyTapeUpgrade,
   claimEventRung, setLeaderboardOptOut,
   claimContract, claimStreak,
+  buySupply,
 });
 
 export function applyAction(state, action, config, now, rng = Math.random) {
