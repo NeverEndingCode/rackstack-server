@@ -1,4 +1,5 @@
-// Seeded seasonal Live Events (v1.4). Pure data, no runtime dependencies -
+// Seeded seasonal Live Events (v1.4, ladders retuned in v1.12). Pure data, no
+// runtime dependencies -
 // consumed by server/db.js's seedSeasonalEvents() at boot.
 //
 // Every entry's `modifiers` and `ladder` are asserted (tests/db.events.test.js)
@@ -8,6 +9,14 @@
 // increase. `recurrence` is annual: {month (1-indexed), day, durationDays} -
 // Task 4's scheduler materializes these into concrete starts_at/ends_at
 // windows; the seeded rows themselves carry no window (status 'draft').
+//
+// v1.12: every flopsEarned rung is expressed in `unit: 'secondsOfOutput'`.
+// Absolute FLOPS targets were the one reward system not priced against the
+// player's rate, so the entire FLOPS ladder of every event cleared in under
+// 0.02 seconds. The count-based rungs are raised to suit the event's duration
+// under the retuned economy, and every `flops` REWARD is now paid in
+// wafers/tapes - a literal FLOPS payout has exactly the scaling problem the
+// targets did.
 
 export const SEASONAL_EVENTS = [
   {
@@ -20,16 +29,16 @@ export const SEASONAL_EVENTS = [
       { path: 'production.gridMult', value: 1.5 },
     ],
     ladder: [
-      { metric: 'wafersEarned', target: 500, reward: { wafers: 20 } },
-      { metric: 'flopsEarned', target: 5000, reward: { flops: 2000 } },
-      { metric: 'minigamesWon', target: 3, reward: { wafers: 15 } },
-      { metric: 'tapesEarned', target: 50, reward: { tapes: 10 } },
-      { metric: 'blocksClaimed', target: 5, reward: { wafers: 25 } },
+      { metric: 'wafersEarned', target: 400, reward: { wafers: 20 } },
+      { metric: 'flopsEarned', target: 600, unit: 'secondsOfOutput', reward: { wafers: 15 } },
+      { metric: 'minigamesWon', target: 10, reward: { wafers: 15 } },
+      { metric: 'tapesEarned', target: 150, reward: { tapes: 10 } },
+      { metric: 'blocksClaimed', target: 10, reward: { wafers: 25 } },
       { metric: 'wafersEarned', target: 1500, reward: { wafers: 40 } },
-      { metric: 'flopsEarned', target: 20000, reward: { flops: 8000 } },
-      { metric: 'minigamesWon', target: 8, reward: { wafers: 35 } },
-      { metric: 'tapesEarned', target: 150, reward: { tapes: 30 } },
-      { metric: 'blocksClaimed', target: 15, reward: { wafers: 75, tapes: 20, flops: 5000 } },
+      { metric: 'flopsEarned', target: 1800, unit: 'secondsOfOutput', reward: { wafers: 35 } },
+      { metric: 'minigamesWon', target: 30, reward: { wafers: 35 } },
+      { metric: 'tapesEarned', target: 500, reward: { tapes: 30 } },
+      { metric: 'blocksClaimed', target: 30, reward: { wafers: 75, tapes: 20 } },
     ],
     recurrence: { month: 7, day: 1, durationDays: 14 },
   },
@@ -45,16 +54,16 @@ export const SEASONAL_EVENTS = [
       { path: 'minigames.balance.riskZoneWidth', value: 10 },
     ],
     ladder: [
-      { metric: 'minigamesWon', target: 5, reward: { wafers: 15 } },
-      { metric: 'tapesEarned', target: 30, reward: { tapes: 8 } },
-      { metric: 'wafersEarned', target: 300, reward: { wafers: 20 } },
-      { metric: 'blocksClaimed', target: 3, reward: { wafers: 15 } },
-      { metric: 'flopsEarned', target: 3000, reward: { flops: 1500 } },
-      { metric: 'minigamesWon', target: 15, reward: { wafers: 40 } },
-      { metric: 'tapesEarned', target: 90, reward: { tapes: 20 } },
+      { metric: 'minigamesWon', target: 12, reward: { wafers: 15 } },
+      { metric: 'tapesEarned', target: 100, reward: { tapes: 8 } },
+      { metric: 'wafersEarned', target: 250, reward: { wafers: 20 } },
+      { metric: 'blocksClaimed', target: 6, reward: { wafers: 15 } },
+      { metric: 'flopsEarned', target: 600, unit: 'secondsOfOutput', reward: { wafers: 15 } },
+      { metric: 'minigamesWon', target: 36, reward: { wafers: 40 } },
+      { metric: 'tapesEarned', target: 300, reward: { tapes: 20 } },
       { metric: 'wafersEarned', target: 900, reward: { wafers: 45 } },
-      { metric: 'blocksClaimed', target: 9, reward: { tapes: 35 } },
-      { metric: 'flopsEarned', target: 12000, reward: { flops: 6000, wafers: 60 } },
+      { metric: 'blocksClaimed', target: 18, reward: { tapes: 35 } },
+      { metric: 'flopsEarned', target: 1800, unit: 'secondsOfOutput', reward: { wafers: 60 } },
     ],
     recurrence: { month: 10, day: 24, durationDays: 8 },
   },
@@ -69,16 +78,16 @@ export const SEASONAL_EVENTS = [
       { path: 'production.racksMult', value: 1.5 },
     ],
     ladder: [
-      { metric: 'flopsEarned', target: 4000, reward: { flops: 2500 } },
-      { metric: 'wafersEarned', target: 400, reward: { wafers: 25 } },
-      { metric: 'tapesEarned', target: 40, reward: { tapes: 15 } },
-      { metric: 'blocksClaimed', target: 4, reward: { wafers: 20 } },
+      { metric: 'flopsEarned', target: 600, unit: 'secondsOfOutput', reward: { wafers: 20 } },
+      { metric: 'wafersEarned', target: 150, reward: { wafers: 25 } },
+      { metric: 'tapesEarned', target: 50, reward: { tapes: 15 } },
+      { metric: 'blocksClaimed', target: 3, reward: { wafers: 20 } },
       { metric: 'minigamesWon', target: 4, reward: { wafers: 20 } },
-      { metric: 'flopsEarned', target: 12000, reward: { flops: 8000 } },
-      { metric: 'wafersEarned', target: 1200, reward: { wafers: 60 } },
-      { metric: 'tapesEarned', target: 120, reward: { tapes: 45 } },
-      { metric: 'blocksClaimed', target: 12, reward: { tapes: 60 } },
-      { metric: 'minigamesWon', target: 12, reward: { wafers: 50, tapes: 30, flops: 5000 } },
+      { metric: 'flopsEarned', target: 1800, unit: 'secondsOfOutput', reward: { wafers: 55 } },
+      { metric: 'wafersEarned', target: 500, reward: { wafers: 60 } },
+      { metric: 'tapesEarned', target: 160, reward: { tapes: 45 } },
+      { metric: 'blocksClaimed', target: 9, reward: { tapes: 60 } },
+      { metric: 'minigamesWon', target: 12, reward: { wafers: 50, tapes: 30 } },
     ],
     recurrence: { month: 11, day: 27, durationDays: 4 },
   },
@@ -94,16 +103,16 @@ export const SEASONAL_EVENTS = [
       { path: 'batchQueue.blockCycleBonusPct', value: 0.08 },
     ],
     ladder: [
-      { metric: 'blocksClaimed', target: 8, reward: { wafers: 20 } },
-      { metric: 'tapesEarned', target: 80, reward: { tapes: 20 } },
-      { metric: 'wafersEarned', target: 800, reward: { wafers: 30 } },
-      { metric: 'flopsEarned', target: 8000, reward: { flops: 3000 } },
-      { metric: 'minigamesWon', target: 6, reward: { wafers: 25 } },
-      { metric: 'blocksClaimed', target: 24, reward: { tapes: 50 } },
-      { metric: 'tapesEarned', target: 240, reward: { tapes: 60 } },
-      { metric: 'wafersEarned', target: 2400, reward: { wafers: 80 } },
-      { metric: 'flopsEarned', target: 30000, reward: { flops: 12000 } },
-      { metric: 'minigamesWon', target: 18, reward: { wafers: 100, tapes: 80, flops: 8000 } },
+      { metric: 'blocksClaimed', target: 20, reward: { wafers: 20 } },
+      { metric: 'tapesEarned', target: 250, reward: { tapes: 20 } },
+      { metric: 'wafersEarned', target: 600, reward: { wafers: 30 } },
+      { metric: 'flopsEarned', target: 600, unit: 'secondsOfOutput', reward: { wafers: 25 } },
+      { metric: 'minigamesWon', target: 15, reward: { wafers: 25 } },
+      { metric: 'blocksClaimed', target: 60, reward: { tapes: 50 } },
+      { metric: 'tapesEarned', target: 800, reward: { tapes: 60 } },
+      { metric: 'wafersEarned', target: 2200, reward: { wafers: 80 } },
+      { metric: 'flopsEarned', target: 1800, unit: 'secondsOfOutput', reward: { wafers: 70 } },
+      { metric: 'minigamesWon', target: 45, reward: { wafers: 100, tapes: 80 } },
     ],
     recurrence: { month: 12, day: 20, durationDays: 21 },
   },

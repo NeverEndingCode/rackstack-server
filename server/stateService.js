@@ -99,7 +99,7 @@ export async function loadEvaluateAndSchedule(userId, now) {
   // window; if their in-flight progress belongs to a now-superseded event,
   // clear it. Mutates state.meta.eventProgress in place, same convention as
   // scheduleAnomaly above.
-  const activeEvent = await joinEventIfEligible(userId, state, now);
+  const activeEvent = await joinEventIfEligible(userId, state, now, config);
 
   // Resolve the per-user claimable event(s), if any, AFTER join-on-login has
   // had a chance to settle state.meta.eventProgress/pendingEventClaims (new

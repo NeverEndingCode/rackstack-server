@@ -17,6 +17,7 @@ import {
   EVENT_METRIC_IDS, eventMetricValue, isValidRecurrence, rungProgress,
 } from '../shared/events.js';
 import { EVENT_CLAIM_GRACE_MS } from '../shared/reducer.js';
+import { goalCtx } from '../shared/goals.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -244,7 +245,7 @@ export async function runScheduler(now = Date.now()) {
  * (stateService) don't need a second DB round-trip to build the API
  * response's `activeEvent` field.
  */
-export async function joinEventIfEligible(userId, state, now = Date.now()) {
+export async function joinEventIfEligible(userId, state, now = Date.now(), config = null) {
   const activeEvent = await getActiveEvent();
   const progress = state.meta.eventProgress;
 
@@ -271,11 +272,22 @@ export async function joinEventIfEligible(userId, state, now = Date.now()) {
   const eventDurationMs = activeEvent.ends_at - activeEvent.starts_at;
   const endsAt = Math.min(now + eventDurationMs, activeEvent.ends_at + DAY_MS);
 
+  // v1.12: materialise each rung's effective target ONCE, at join. A
+  // rate-scaled target recomputed on every read would recede as fast as the
+  // player approached it - the same reasoning as rolloverContracts' snapshot.
+  // `config` is optional so existing callers/tests that omit it still work;
+  // without it every target stays absolute, which is the pre-v1.12 behaviour.
+  const outputPerSec = config ? goalCtx(state, config, now).totalOutputPerSec : 0;
+  const targets = (activeEvent.ladder || []).map((rung) => (
+    rung.unit === 'secondsOfOutput' ? rung.target * outputPerSec : rung.target
+  ));
+
   state.meta.eventProgress = {
     eventId: activeEvent.id,
     joinedAt: now,
     endsAt,
     baseline,
+    targets,
     rungsClaimed: [],
   };
 

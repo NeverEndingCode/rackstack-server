@@ -566,7 +566,8 @@ function claimEventRung(s, action, config, now) {
   // no such field and is measured normally.
   if (Array.isArray(ep.claimableRungs)) {
     if (!ep.claimableRungs.includes(index)) return err('not_met');
-  } else if (!rungProgress(ladder[index], s.meta, ep.baseline).met) {
+  } else if (!rungProgress(ladder[index], s.meta, ep.baseline,
+      Array.isArray(ep.targets) ? ep.targets[index] : undefined).met) {
     return err('not_met');
   }
 

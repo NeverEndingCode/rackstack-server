@@ -134,3 +134,38 @@ describe('event modifiers vs boolean tunables (v1.11)', () => {
     expect(validateModifiers([{ path: 'risk.ransomwareFactor', value: 0.25 }]).ok).toBe(true);
   });
 });
+
+describe('v1.12 rate-scaled event rungs', () => {
+  it('accepts a secondsOfOutput unit', () => {
+    expect(validateLadder([
+      { metric: 'flopsEarned', target: 600, unit: 'secondsOfOutput', reward: { wafers: 10 } },
+      { metric: 'flopsEarned', target: 1800, unit: 'secondsOfOutput', reward: { wafers: 20 } },
+    ])).toEqual({ ok: true });
+  });
+
+  it('rejects an unknown unit', () => {
+    const r = validateLadder([{ metric: 'flopsEarned', target: 600, unit: 'furlongs', reward: { wafers: 10 } }]);
+    expect(r.ok).toBe(false);
+    expect(r.errors[0]).toMatch(/unit/);
+  });
+
+  it('still requires targets to strictly increase within a (metric, unit) pair', () => {
+    const r = validateLadder([
+      { metric: 'flopsEarned', target: 1800, unit: 'secondsOfOutput', reward: { wafers: 10 } },
+      { metric: 'flopsEarned', target: 600, unit: 'secondsOfOutput', reward: { wafers: 20 } },
+    ]);
+    expect(r.ok).toBe(false);
+  });
+
+  it('uses the materialised target when one is supplied', () => {
+    const rung = { metric: 'flopsEarned', target: 600, unit: 'secondsOfOutput', reward: {} };
+    const m = { stats: { lifetimeFlopsAllTime: 5_000_000 } };
+    expect(rungProgress(rung, m, {}, 6_000_000).met).toBe(false);
+    expect(rungProgress(rung, m, {}, 4_000_000).met).toBe(true);
+  });
+
+  it('falls back to the literal target for absolute rungs', () => {
+    const rung = { metric: 'minigamesWon', target: 5, reward: {} };
+    expect(rungProgress(rung, { stats: { minigamesWon: 5 } }, {}).met).toBe(true);
+  });
+});
