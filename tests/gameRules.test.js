@@ -7,10 +7,11 @@ import { initialState } from '../shared/state.js';
 const meta0 = { legacyCores: 0, level: 0, upgrades: {}, shardUpgrades: {} };
 
 describe('gameRules', () => {
+  // The FORMULAS are unchanged; only tier 0's baseCost moved 4 -> 5 in v1.12.
   it('cost math matches v1.1 formulas', () => {
-    expect(costAt(TIER_DEFS[0], 0)).toBe(4);
-    expect(costAt(TIER_DEFS[0], 1)).toBeCloseTo(4 * 1.14);
-    expect(costForN(TIER_DEFS[0], 0, 2)).toBeCloseTo(4 + 4 * 1.14);
+    expect(costAt(TIER_DEFS[0], 0)).toBe(5);
+    expect(costAt(TIER_DEFS[0], 1)).toBeCloseTo(5 * 1.14);
+    expect(costForN(TIER_DEFS[0], 0, 2)).toBeCloseTo(5 + 5 * 1.14);
     expect(maxAffordable(TIER_DEFS[0], 0, 100)).toBeGreaterThan(0);
     expect(maxAffordable(TIER_DEFS[0], 0, 3)).toBe(0);
   });
@@ -48,7 +49,8 @@ describe('gameRules', () => {
     expect(migrateGain(4e6, 1)).toBe(2);
   });
   it('minigame payouts', () => {
-    expect(minigameWafers('rush', 40, meta0, DEFAULT_CONFIG)).toBe(10);
+    // v1.12 divisors: rush 6 (was 4), debug 3 (was 2)
+    expect(minigameWafers('rush', 40, meta0, DEFAULT_CONFIG)).toBe(6);
     expect(minigameWafers('match', 10, meta0, DEFAULT_CONFIG)).toBe(20);
     expect(minigameWafers('balance', 6, meta0, DEFAULT_CONFIG)).toBe(9);
   });

@@ -45,11 +45,11 @@ describe('reducer: unknown action', () => {
 
 describe('reducer: buy (tiers)', () => {
   it('buy 1 tier deducts exact cost', () => {
-    const s = initialState(); // credits: 10, tier0 costs 4
+    const s = initialState(); // credits: 10, tier0 costs 5 (v1.12)
     const { state: s2, result } = applyAction(s, { type: 'buy', lane: 'tiers', index: 0, mode: 1 }, DEFAULT_CONFIG, NOW);
     expect(result.ok).toBe(true);
     expect(s2.run.tiers[0].owned).toBe(1);
-    expect(s2.run.credits).toBeCloseTo(6);
+    expect(s2.run.credits).toBeCloseTo(5);
     expect(s.run.credits).toBe(10); // input not mutated
   });
   it('buy rejects when unaffordable', () => {
