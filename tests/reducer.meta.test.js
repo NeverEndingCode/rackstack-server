@@ -65,16 +65,23 @@ describe('reducer: singularity', () => {
 
   it('happy path: resets run + legacyCores, grants shards, bumps stats.singularities', () => {
     const s = initialState();
-    s.meta.legacyCores = 50; // floor(sqrt(50)) = 7
+    s.meta.legacyCores = 400;        // v1.12: floor(400 * 0.4) = 160
     s.run.tiers[0].owned = 3;
     s.meta.wafers = 42; // untouched
     const { state: s2, result } = applyAction(s, { type: 'singularity' }, DEFAULT_CONFIG, NOW);
     expect(result.ok).toBe(true);
     expect(s2.meta.legacyCores).toBe(0);
-    expect(s2.meta.singularityShards).toBe(7);
+    expect(s2.meta.singularityShards).toBe(160);
     expect(s2.meta.stats.singularities).toBe(1);
     expect(s2.run.tiers[0].owned).toBe(0);
     expect(s2.meta.wafers).toBe(42);
+  });
+
+  it('yield is linear in cores, so a capped core pool still funds the tree', () => {
+    const s = initialState();
+    s.meta.legacyCores = 800;
+    const { state: s2 } = applyAction(s, { type: 'singularity' }, DEFAULT_CONFIG, NOW);
+    expect(s2.meta.singularityShards).toBe(320);   // 2x the cores => 2x the shards
   });
 });
 
@@ -314,11 +321,11 @@ describe('bestLegacyCores', () => {
     // The test that fails if the singularity() call site is ever removed as
     // "redundant with evaluate()". /api/actions applies batches.
     //
-    // migrateGain = floor(sqrt(lifetimeRun / 1e6) * legacyGainMult), so 1e8
-    // grants 10 cores at the default multiplier - comfortably above the
-    // `shardsGained > 0` floor singularity() requires.
+    // v1.12: migrateGain = floor((lifetimeRun / 2e12) ** 1.0 * legacyGainMult),
+    // so 2e13 grants 10 cores at the default multiplier - comfortably above the
+    // `shardsGained > 0` floor singularity() requires (10 * 0.4 = 4 shards).
     let s = initialState();
-    s.run.lifetimeRun = 1e8;
+    s.run.lifetimeRun = 2e13;
     s = applyAction(s, { type: 'migrate' }, DEFAULT_CONFIG, NOW).state;
     const granted = s.meta.legacyCores;
     expect(granted).toBe(10);

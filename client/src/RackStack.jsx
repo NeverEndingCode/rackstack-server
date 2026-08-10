@@ -1094,7 +1094,7 @@ export default function RackStack({ user }) {
 
   const ctx = goalCtx(state, config.data, now);
   const gain = migrateGain(state.run.lifetimeRun, eff.legacyGainMult, config.data);
-  const singularityGain = Math.floor(Math.sqrt(state.meta.legacyCores || 0));
+  const singularityGain = Math.floor((state.meta.legacyCores || 0) * config.data.prestige.shardsPerCore);
 
   // Single source of truth with the tour's auto-start effect above.
   const { gridUnlocked, overclockUnlocked, singularityUnlocked, coldStorageUnlocked } = buildTourCtx(state, now);

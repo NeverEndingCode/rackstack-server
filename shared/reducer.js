@@ -155,8 +155,15 @@ function migrate(s, action, config) {
   return { ok: true };
 }
 
-function singularity(s) {
-  const shardsGained = Math.floor(Math.sqrt(s.meta.legacyCores || 0));
+// v1.12: linear in cores, not sqrt. Once legacyCores is capped (computeMults),
+// the square root has nothing left to damp and only starves the shard tree -
+// 400 cores returned 20 shards against a ~17k-shard tree, so the tree could
+// never progress and the late tiers kept no engine.
+//
+// `config` arrives because HANDLERS invokes every handler as
+// handler(s, action, config, now, rng); no call site needs changing.
+function singularity(s, action, config) {
+  const shardsGained = Math.floor((s.meta.legacyCores || 0) * config.prestige.shardsPerCore);
   if (shardsGained <= 0) return err('invalid_target');
 
   recordLegacyCorePeak(s.meta);
