@@ -180,6 +180,9 @@ export function minigameWafers(game, metric, meta, config) {
   if (game === 'rush') return Math.max(1, Math.floor((metric / mg.rush.waferDivisor) * lucky));
   if (game === 'debug') return Math.max(1, Math.floor((metric / mg.debug.waferDivisor) * lucky));
   if (game === 'match') return Math.floor(metric * mg.match.waferPerPair * lucky);
-  if (game === 'balance') return Math.max(1, Math.floor(metric * 1.5 * lucky));
+  // v1.12: the coefficient is a tunable. At the old hardcoded 1.5, a maxScore
+  // run with Lucky Silicon paid 562 wafers per 12-second game, so ~2.5 hours of
+  // minigames maxed every permanent upgrade in the game.
+  if (game === 'balance') return Math.max(1, Math.floor(metric * mg.balance.waferPerPoint * lucky));
   throw new Error(`unknown game: ${game}`);
 }

@@ -56,7 +56,13 @@ describe('gameRules', () => {
     // v1.12 divisors: rush 6 (was 4), debug 3 (was 2)
     expect(minigameWafers('rush', 40, meta0, DEFAULT_CONFIG)).toBe(6);
     expect(minigameWafers('match', 10, meta0, DEFAULT_CONFIG)).toBe(20);
-    expect(minigameWafers('balance', 6, meta0, DEFAULT_CONFIG)).toBe(9);
+    expect(minigameWafers('balance', 150, meta0, DEFAULT_CONFIG)).toBe(30);   // 150 * 0.20
+  });
+
+  it('balance payout is config-driven, not a hardcoded 1.5', () => {
+    const doubled = structuredClone(DEFAULT_CONFIG);
+    doubled.minigames.balance.waferPerPoint = 0.40;
+    expect(minigameWafers('balance', 150, meta0, doubled)).toBe(60);
   });
 });
 
