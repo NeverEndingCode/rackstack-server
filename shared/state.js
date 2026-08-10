@@ -351,12 +351,18 @@ export function evaluate(state, config, lastEvaluatedAt, now, rng = Math.random)
       const newHeat = Math.max(0, s.run.heat + netHeat * elapsedSec);
       if (newHeat >= config.heat.capacity + csEff.heatCapacityBonus) {
         s.run.heat = 0;
-        s.server.overheated = true;
         // The penalty moved from the Overclock lane to the Racks lane, which
         // is coherent now that Overclock multiplies Racks. overheatOutage
         // returns null when the shutdown is disabled (or there is no owned
         // tier to down), in which case fall back to today's lane freeze.
-        if (!overheatOutage(s, config, now)) {
+        // v1.12: carry WHICH tier went dark so the client can name it in the
+        // meltdown toast. Finding 2.7 was as much a legibility failure as a
+        // math one - the penalty was never attributed to overclocking, so it
+        // read as the game being broken. Still truthy either way, so every
+        // existing `if (server.overheated)` check is unaffected.
+        const downed = overheatOutage(s, config, now);
+        s.server.overheated = downed ? { tierIndex: downed.scope.index } : true;
+        if (!downed) {
           s.run.heatCooldownUntil = now + config.heat.overheatCooldownMs;
         }
       } else {

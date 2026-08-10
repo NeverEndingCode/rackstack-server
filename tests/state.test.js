@@ -297,7 +297,9 @@ describe('the Overclock rework (v1.11)', () => {
     cfg.heat.capacity = 100;
     const t0 = 1_000_000;
     const { state: s2 } = evaluate(s, cfg, t0, t0 + 10_000);
-    expect(s2.server.overheated).toBe(true);
+    // v1.12: the signal now names the downed tier (tier 0 is the only one
+    // owned here). Still truthy, so client `if (overheated)` checks hold.
+    expect(s2.server.overheated).toEqual({ tierIndex: 0 });
     expect(s2.run.heat).toBe(0);
     expect(s2.run.heatCooldownUntil).toBeNull();
     const o = s2.server.outages.find((x) => x.source === 'overheat');
@@ -404,5 +406,19 @@ describe('the kill switch and decision 1 (v1.11)', () => {
       expect(after.run.lifetimeRun).toBeGreaterThanOrEqual(before.lifetime);
       after.run.tiers.forEach((t, i) => expect(t.owned).toBe(before.owned[i]));
     }
+  });
+});
+
+describe('v1.12 overheat reports which tier went dark', () => {
+  it('carries the downed tier index on the one-shot signal', () => {
+    const s = initialState();
+    s.run.tiers[0].owned = 10;
+    s.run.tiers[4].owned = 3;
+    s.run.overclock[0].owned = 500;          // enough heat to cross the cap
+    s.run.heat = DEFAULT_CONFIG.heat.capacity - 1;
+    const now = Date.now();
+    const { state: s2 } = evaluate(s, DEFAULT_CONFIG, now - 5000, now);
+    expect(s2.server.overheated).toEqual({ tierIndex: 4 });
+    expect(s2.server.outages.some((o) => o.kind === 'overheat' && o.scope.index === 4)).toBe(true);
   });
 });
