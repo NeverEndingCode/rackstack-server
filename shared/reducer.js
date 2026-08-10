@@ -140,10 +140,13 @@ function vent(s, action, config, now) {
 
 function migrate(s, action, config) {
   const eff = computeEffects(s.meta, config);
-  const gain = migrateGain(s.run.lifetimeRun, eff.legacyGainMult);
+  const gain = migrateGain(s.run.lifetimeRun, eff.legacyGainMult, config);
   if (gain <= 0) return err('invalid_target');
 
-  const echoBonus = eff.echoCoresBonus || 0;
+  // v1.12: a share of the gain, not a flat grant. A flat +10 cores per Migrate
+  // is farmable once cores are scarce - migrate cheaply and repeatedly for free
+  // cores - which the new curve would otherwise make the dominant strategy.
+  const echoBonus = Math.floor(gain * config.prestige.echoPercentPerLevel * (eff.echoCoresBonus || 0));
   const startCredits = (10 + eff.deepCacheBonus) * eff.bootstrapMult;
 
   s.run = { ...initialState().run, credits: startCredits };
@@ -152,8 +155,15 @@ function migrate(s, action, config) {
   return { ok: true };
 }
 
-function singularity(s) {
-  const shardsGained = Math.floor(Math.sqrt(s.meta.legacyCores || 0));
+// v1.12: linear in cores, not sqrt. Once legacyCores is capped (computeMults),
+// the square root has nothing left to damp and only starves the shard tree -
+// 400 cores returned 20 shards against a ~17k-shard tree, so the tree could
+// never progress and the late tiers kept no engine.
+//
+// `config` arrives because HANDLERS invokes every handler as
+// handler(s, action, config, now, rng); no call site needs changing.
+function singularity(s, action, config) {
+  const shardsGained = Math.floor((s.meta.legacyCores || 0) * config.prestige.shardsPerCore);
   if (shardsGained <= 0) return err('invalid_target');
 
   recordLegacyCorePeak(s.meta);
@@ -453,14 +463,21 @@ function claimAnomaly(s, action, config, now, rng) {
 
   if (roll < 0.5) {
     const ctx = goalCtx(s, config, now);
-    const seconds = 30 + rng() * 60;
+    const ac = config.anomaly;
+    const seconds = ac.creditsSecondsMin + rng() * (ac.creditsSecondsMax - ac.creditsSecondsMin);
     const amount = Math.max(ctx.totalOutputPerSec * seconds, 20) * eff.eventRewardMult;
     s.run.credits += amount;
     s.run.lifetimeRun += amount;
     reward = { kind: 'credits', amount };
   } else {
-    const mult = [2, 3, 4][Math.floor(rng() * 3)];
-    const duration = (45 + rng() * 30) * eff.eventRewardMult;
+    // v1.12: the boost's DURATION must never be scaled by eventRewardMult. It
+    // was, and at max Signal Boost that pushed the duration (135-225s) past the
+    // respawn interval (70-150s), so a 2-4x GLOBAL multiplier was permanently
+    // active - measured at 55% boost uptime, worth ~+245% output. Signal Boost
+    // scales the payout only.
+    const ab = config.anomaly;
+    const mult = ab.boostMultMin + rng() * (ab.boostMultMax - ab.boostMultMin);
+    const duration = (ab.boostDurationMinMs + rng() * (ab.boostDurationMaxMs - ab.boostDurationMinMs)) / 1000;
     s.server.boost = { mult, until: now + duration * 1000 };
     reward = { kind: 'boost', mult, until: s.server.boost.until };
   }
@@ -549,7 +566,8 @@ function claimEventRung(s, action, config, now) {
   // no such field and is measured normally.
   if (Array.isArray(ep.claimableRungs)) {
     if (!ep.claimableRungs.includes(index)) return err('not_met');
-  } else if (!rungProgress(ladder[index], s.meta, ep.baseline).met) {
+  } else if (!rungProgress(ladder[index], s.meta, ep.baseline,
+      Array.isArray(ep.targets) ? ep.targets[index] : undefined).met) {
     return err('not_met');
   }
 

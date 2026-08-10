@@ -268,7 +268,17 @@ export function hazardFrom(scheduledAt, config, state) {
       if (t && t.owned > 0) owned.push(i);
     }
     if (owned.length === 0) return null;
-    scope = { lane: 'tiers', index: owned[Math.floor(unitAt(scheduledAt, 1) * owned.length)] };
+    // v1.12: the TOP owned tier. A random victim was both unpredictable and
+    // usually trivial (~1/14 of output); the top tier is legible in the UI
+    // ("your Quantum Foam Harvester lost a drive") and actually worth insuring
+    // against. `owned` is built in ascending order, so the last entry is the
+    // highest tier. Switchable back to the derived-random pick.
+    scope = {
+      lane: 'tiers',
+      index: config.risk.driveFailureTargetsTopTier
+        ? owned[owned.length - 1]
+        : owned[Math.floor(unitAt(scheduledAt, 1) * owned.length)],
+    };
   }
 
   return {
@@ -397,7 +407,9 @@ export function overheatOutage(state, config, now) {
   }
   if (owned.length === 0) return null;
 
-  const index = owned[Math.floor(unitAt(now, 2) * owned.length)];
+  const index = config.risk.overheatTargetsTopTier
+    ? owned[owned.length - 1]
+    : owned[Math.floor(unitAt(now, 2) * owned.length)];
   const id = `overheat:${Math.floor(now)}`;
   if (state.server.outages.some((o) => o && o.id === id)) return null;
 

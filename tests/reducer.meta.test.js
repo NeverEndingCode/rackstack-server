@@ -14,7 +14,7 @@ describe('reducer: migrate', () => {
 
   it('happy path: fresh run with deepcache/bootstrap start credits, +gain+echo cores, stats.migrates+1', () => {
     const s = initialState();
-    s.run.lifetimeRun = 4e6; // gain = floor(sqrt(4)) = 2
+    s.run.lifetimeRun = 4e12; // v1.12: gain = floor((4e12 / 2e12) ** 1.0) = 2
     s.run.tiers[0].owned = 5;
     s.run.credits = 999;
     const { state: s2, result } = applyAction(s, { type: 'migrate' }, DEFAULT_CONFIG, NOW);
@@ -35,15 +35,23 @@ describe('reducer: migrate', () => {
     expect(s2.meta.stats.lifetimeFlopsAllTime).toBe(12345);
   });
 
-  it('applies deepCacheBonus and bootstrapMult to start credits, and echoCoresBonus to cores gained', () => {
+  it('applies deepCacheBonus and bootstrapMult to start credits, and echoCores as a share of gain', () => {
     const s = initialState();
-    s.run.lifetimeRun = 4e6;
-    s.meta.upgrades.deepcache = 2; // +10 each => +20
-    s.meta.shardUpgrades.bootstrap = 1; // x10
-    s.meta.shardUpgrades.echocores = 3; // +3 cores
+    s.run.lifetimeRun = 4e13;                 // migrateGain = floor((4e13/2e12)^1) = 20
+    s.meta.upgrades.deepcache = 2;            // +10 each => +20
+    s.meta.shardUpgrades.bootstrap = 1;       // v1.12: x3, not x10
+    s.meta.shardUpgrades.echocores = 3;       // v1.12: +5% of gain per level => +15% of 20 = 3
     const { state: s2 } = applyAction(s, { type: 'migrate' }, DEFAULT_CONFIG, NOW);
-    expect(s2.run.credits).toBe((10 + 20) * 10);
-    expect(s2.meta.legacyCores).toBe(2 + 3);
+    expect(s2.run.credits).toBe((10 + 20) * 3);
+    expect(s2.meta.legacyCores).toBe(20 + 3);
+  });
+
+  it('echoCores cannot be farmed by cheap repeat Migrates', () => {
+    const s = initialState();
+    s.run.lifetimeRun = 2e12;                 // gain = 1
+    s.meta.shardUpgrades.echocores = 10;      // 10 levels => +50% of gain => floor(0.5) = 0
+    const { state: s2 } = applyAction(s, { type: 'migrate' }, DEFAULT_CONFIG, NOW);
+    expect(s2.meta.legacyCores).toBe(1);
   });
 });
 
@@ -57,16 +65,23 @@ describe('reducer: singularity', () => {
 
   it('happy path: resets run + legacyCores, grants shards, bumps stats.singularities', () => {
     const s = initialState();
-    s.meta.legacyCores = 50; // floor(sqrt(50)) = 7
+    s.meta.legacyCores = 400;        // v1.12: floor(400 * 0.4) = 160
     s.run.tiers[0].owned = 3;
     s.meta.wafers = 42; // untouched
     const { state: s2, result } = applyAction(s, { type: 'singularity' }, DEFAULT_CONFIG, NOW);
     expect(result.ok).toBe(true);
     expect(s2.meta.legacyCores).toBe(0);
-    expect(s2.meta.singularityShards).toBe(7);
+    expect(s2.meta.singularityShards).toBe(160);
     expect(s2.meta.stats.singularities).toBe(1);
     expect(s2.run.tiers[0].owned).toBe(0);
     expect(s2.meta.wafers).toBe(42);
+  });
+
+  it('yield is linear in cores, so a capped core pool still funds the tree', () => {
+    const s = initialState();
+    s.meta.legacyCores = 800;
+    const { state: s2 } = applyAction(s, { type: 'singularity' }, DEFAULT_CONFIG, NOW);
+    expect(s2.meta.singularityShards).toBe(320);   // 2x the cores => 2x the shards
   });
 });
 
@@ -229,9 +244,9 @@ describe('reducer: claimAnomaly', () => {
     expect(result.reward.amount).toBeCloseTo(20);
     expect(s2.run.credits).toBeCloseTo(10 + 20);
 
-    // scheduleAnomaly with rng=0.1: next = now + 70000 + 0.1*(150000-70000) = now + 78000
-    expect(s2.server.nextAnomalyAt).toBeCloseTo(NOW + 78000);
-    expect(s2.server.anomalyExpiresAt).toBeCloseTo(NOW + 78000 + 15000);
+    // v1.12: next = now + 420000 + 0.1*(900000-420000) = now + 468000
+    expect(s2.server.nextAnomalyAt).toBeCloseTo(NOW + 468000);
+    expect(s2.server.anomalyExpiresAt).toBeCloseTo(NOW + 468000 + 30000);
 
     const { result: result2 } = applyAction(s2, { type: 'claimAnomaly' }, DEFAULT_CONFIG, NOW, () => 0.1);
     expect(result2).toEqual({ ok: false, error: 'cooldown_active' });
@@ -242,11 +257,23 @@ describe('reducer: claimAnomaly', () => {
     const { state: s2, result } = applyAction(s, { type: 'claimAnomaly' }, DEFAULT_CONFIG, NOW, () => 0.9);
     expect(result.ok).toBe(true);
     expect(result.reward.kind).toBe('boost');
-    // mult = [2,3,4][floor(0.9*3)] = [2,3,4][2] = 4
-    expect(result.reward.mult).toBe(4);
-    expect(s2.server.boost).toEqual({ mult: 4, until: result.reward.until });
-    // duration = (45 + 0.9*30) * eventRewardMult(1) = 72s
-    expect(s2.server.boost.until).toBeCloseTo(NOW + 72 * 1000);
+    // v1.12: mult = 1.5 + 0.9*(3.0-1.5) = 2.85, a continuous range
+    expect(result.reward.mult).toBeCloseTo(2.85);
+    // duration = 45000 + 0.9*(75000-45000) = 72000ms
+    expect(s2.server.boost.until).toBeCloseTo(NOW + 72000);
+  });
+
+  it('Signal Boost scales the PAYOUT but never the boost duration', () => {
+    const withSignal = openState();
+    withSignal.meta.upgrades.signal = 10;      // eventRewardMult = 3
+    const { state: sBoost } = applyAction(withSignal, { type: 'claimAnomaly' }, DEFAULT_CONFIG, NOW, () => 0.9);
+    // identical duration to the un-upgraded save above - this is the whole fix.
+    // Before v1.12 this was 216000ms, longer than the respawn interval, which
+    // made a 2-4x global multiplier permanently active.
+    expect(sBoost.server.boost.until).toBeCloseTo(NOW + 72000);
+
+    const { result: credits } = applyAction(withSignal, { type: 'claimAnomaly' }, DEFAULT_CONFIG, NOW, () => 0.1);
+    expect(credits.reward.amount).toBeCloseTo(60);   // 20 * 3 - the payout DOES scale
   });
 });
 
@@ -306,11 +333,11 @@ describe('bestLegacyCores', () => {
     // The test that fails if the singularity() call site is ever removed as
     // "redundant with evaluate()". /api/actions applies batches.
     //
-    // migrateGain = floor(sqrt(lifetimeRun / 1e6) * legacyGainMult), so 1e8
-    // grants 10 cores at the default multiplier - comfortably above the
-    // `shardsGained > 0` floor singularity() requires.
+    // v1.12: migrateGain = floor((lifetimeRun / 2e12) ** 1.0 * legacyGainMult),
+    // so 2e13 grants 10 cores at the default multiplier - comfortably above the
+    // `shardsGained > 0` floor singularity() requires (10 * 0.4 = 4 shards).
     let s = initialState();
-    s.run.lifetimeRun = 1e8;
+    s.run.lifetimeRun = 2e13;
     s = applyAction(s, { type: 'migrate' }, DEFAULT_CONFIG, NOW).state;
     const granted = s.meta.legacyCores;
     expect(granted).toBe(10);
@@ -325,7 +352,8 @@ describe('scheduleAnomaly', () => {
   it('mutates the passed server object with next/expires derived from config + rng', () => {
     const server = { nextAnomalyAt: 0, anomalyExpiresAt: 0, boost: null, lastVentAt: 0, gameCooldowns: {} };
     scheduleAnomaly(server, DEFAULT_CONFIG, NOW, () => 0.5);
-    expect(server.nextAnomalyAt).toBe(NOW + 70000 + 0.5 * (150000 - 70000));
-    expect(server.anomalyExpiresAt).toBe(server.nextAnomalyAt + 15000);
+    // v1.12 cadence: 420000-900000ms, 30s catch window
+    expect(server.nextAnomalyAt).toBe(NOW + 420000 + 0.5 * (900000 - 420000));
+    expect(server.anomalyExpiresAt).toBe(server.nextAnomalyAt + 30000);
   });
 });

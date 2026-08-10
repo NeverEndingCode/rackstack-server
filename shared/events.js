@@ -99,6 +99,18 @@ export function validateModifiers(modifiers) {
 const MAX_LADDER_RUNGS = 20;
 const REWARD_KEYS = ['wafers', 'tapes', 'flops'];
 
+/**
+ * v1.12: a rung's target may be expressed in SECONDS OF THE PLAYER'S OUTPUT
+ * rather than as an absolute number. Absolute FLOPS targets were the one reward
+ * system in the game not priced against the player's rate - contracts
+ * (social.contractFlopsSeconds) and streaks (social.streakFlopsSeconds) already
+ * were - so every seasonal ladder's FLOPS rungs cleared in under 0.02 seconds.
+ *
+ * Count-based metrics (minigamesWon, blocksClaimed) stay absolute; scaling a
+ * count by output is meaningless.
+ */
+const RUNG_UNITS = ['absolute', 'secondsOfOutput'];
+
 export function validateLadder(ladder) {
   const errors = [];
   if (!Array.isArray(ladder) || ladder.length < 1 || ladder.length > MAX_LADDER_RUNGS) {
@@ -113,6 +125,10 @@ export function validateLadder(ladder) {
 
     if (typeof metric !== 'string' || !Object.prototype.hasOwnProperty.call(EVENT_METRICS, metric)) {
       errors.push(`rung ${i}: unknown metric ${metric}`);
+    }
+    const unit = rung.unit === undefined ? 'absolute' : rung.unit;
+    if (!RUNG_UNITS.includes(unit)) {
+      errors.push(`rung ${i}: unknown unit ${rung.unit}`);
     }
     if (typeof target !== 'number' || !Number.isFinite(target) || target <= 0) {
       errors.push(`rung ${i}: target must be a positive finite number`);
@@ -132,9 +148,13 @@ export function validateLadder(ladder) {
 
     if (typeof metric === 'string' && Object.prototype.hasOwnProperty.call(EVENT_METRICS, metric)
         && typeof target === 'number' && Number.isFinite(target)) {
-      const prev = Object.prototype.hasOwnProperty.call(lastTargetByMetric, metric) ? lastTargetByMetric[metric] : -Infinity;
+      // Keyed by (metric, unit): a ladder may legitimately carry both an
+      // absolute and a rate-scaled series for the same metric, and comparing
+      // "1800 seconds of output" against "20000 FLOPS" would be meaningless.
+      const key = `${metric}:${unit}`;
+      const prev = Object.prototype.hasOwnProperty.call(lastTargetByMetric, key) ? lastTargetByMetric[key] : -Infinity;
       if (target <= prev) errors.push(`rung ${i}: target must strictly increase within metric ${metric}`);
-      lastTargetByMetric[metric] = target;
+      lastTargetByMetric[key] = target;
     }
   });
 
@@ -183,11 +203,23 @@ export function isValidRecurrence(recurrence) {
   return recurrence !== null && recurrence !== undefined && validateRecurrence(recurrence).ok;
 }
 
-export function rungProgress(rung, meta, baseline) {
+/**
+ * `materialisedTarget` is the join-time snapshot from meta.eventProgress.targets
+ * (see server/eventService.js). It is passed for EVERY rung, absolute or not, so
+ * this function never needs to know the player's output. When it is absent - an
+ * older save that joined before v1.12 - fall back to the literal target, which
+ * is exactly the pre-v1.12 behaviour.
+ *
+ * Snapshot-at-join rather than recompute-on-read is the same choice
+ * rolloverContracts makes, and for the same reason: a rate-scaled target
+ * recomputed on every read would recede as fast as the player approached it.
+ */
+export function rungProgress(rung, meta, baseline, materialisedTarget) {
   const value = eventMetricValue(rung.metric, meta) ?? 0;
   const hasBaseline = baseline && typeof rung.metric === 'string'
     && Object.prototype.hasOwnProperty.call(baseline, rung.metric);
   const base = hasBaseline ? baseline[rung.metric] : 0;
   const current = Math.max(0, value - (typeof base === 'number' ? base : 0));
-  return { current, target: rung.target, met: current >= rung.target };
+  const target = Number.isFinite(materialisedTarget) ? materialisedTarget : rung.target;
+  return { current, target, met: current >= target };
 }

@@ -1,21 +1,47 @@
 export const DEFAULT_CONFIG = {
   schemaVersion: 1,
-  heat: { capacity: 2000, ventPercent: 25, ventCooldownMs: 2500, overheatCooldownMs: 10000, overheatPopupMs: 15000 },
+  // v1.12: venting is slower but passive Auto-Vent is far stronger, so the
+  // sustainable Overclock fleet is a real decision instead of "free if you tap,
+  // catastrophic if you don't". The per-level rates and the floor are tunables
+  // because they were hardcoded in computeEffects and could not be rebalanced
+  // without a deploy.
+  heat: { capacity: 2000, ventPercent: 35, ventCooldownMs: 15000, overheatCooldownMs: 10000, overheatPopupMs: 15000,
+          autoVentPerLevel: 4.0, thermalPerLevel: 0.05, heatsinkPerLevel: 0.15, discountFloor: 0.40 },
   minigames: {
-    winCooldownMs: 30000,
-    rush:  { durationSec: 10, waferDivisor: 4, maxTapsPerSec: 15 },
-    debug: { durationSec: 15, spawnMinMs: 400, spawnMaxMs: 900, maxLit: 3, waferDivisor: 2 },
+    winCooldownMs: 300000,
+    rush:  { durationSec: 10, waferDivisor: 6, maxTapsPerSec: 15 },
+    debug: { durationSec: 15, spawnMinMs: 400, spawnMaxMs: 900, maxLit: 3, waferDivisor: 3 },
     match: { durationSec: 40, pairCount: 10, waferPerPair: 2 },
-    balance: { durationSec: 12, safeZoneMin: 35, safeZoneMax: 65, riskZoneWidth: 4,
+    balance: { durationSec: 12, waferPerPoint: 0.20, safeZoneMin: 35, safeZoneMax: 65, riskZoneWidth: 4,
                pointsSafe: 1, pointsRisk: 5, missPenalty: 2, maxScore: 150 },
   },
-  production: { globalMult: 1, racksMult: 1, gridMult: 1, overclockMult: 1 },
+  production: { globalMult: 1, racksMult: 1, gridMult: 1, overclockMult: 1,
+                levelBonusPerLevel: 0.02, levelBonusMaxLevel: 200 },
+  // v1.12 prestige. `coreBonusCap` is load-bearing: it is what turns Singularity
+  // from a strict downgrade into the required next step, and it is also what
+  // makes a near-linear `migrateExponent` safe (the cap bounds the runaway).
+  prestige: {
+    migrateDivisor: 2e12,
+    migrateExponent: 1.0,
+    corePercentPerCore: 0.05,
+    coreBonusCap: 400,
+    echoPercentPerLevel: 0.05,
+    shardsPerCore: 0.4,
+  },
   offline: { baseCapHours: 4, capPerUptimeLevel: 1, hardCapHours: 72, onlineGapThresholdSec: 60 },
-  anomaly: { windowMs: 15000, minDelayMs: 70000, maxDelayMs: 150000 },
+  // v1.12: rarer and more valuable, with a doubled catch window so the lower
+  // frequency isn't a harsher attention tax. The payout magnitudes were
+  // hardcoded in claimAnomaly; note boostDuration* is deliberately SEPARATE
+  // from the payout and must never be scaled by Signal Boost - that is what
+  // made the boost permanent.
+  anomaly: { windowMs: 30000, minDelayMs: 420000, maxDelayMs: 900000,
+             creditsSecondsMin: 30, creditsSecondsMax: 90,
+             boostDurationMinMs: 45000, boostDurationMaxMs: 75000,
+             boostMultMin: 1.5, boostMultMax: 3.0 },
   upgrades: { maxLevels: {
     firmware: 20, psu: 10, uptime: 8, signal: 10, gridamp: 15, legacy: 10,
     thermal: 8, autovent: 8, occlock: 15, lucky: 10, deepcache: 10,
-    bootstrap: 5, temporal: 5, engine: 8, heatsink: 4, infiniteloop: 5, echocores: 10,
+    bootstrap: 5, temporal: 5, engine: 12, heatsink: 4, infiniteloop: 5, echocores: 10,
     compression: 10, robotarm: 20, priorityspinup: 10, headstart: 5, coldfusion: 15, heatsinktapes: 10, deepuptime: 10,
   } },
   batchQueue: {
@@ -69,25 +95,31 @@ export const DEFAULT_CONFIG = {
     ispOutageEnabled: true,
     driveFailureEnabled: true,
 
-    // ~1 incident per 6h on average. The player is shown this RATE, derived
-    // from these two numbers - never server.nextHazardAt (spec decision 3).
-    hazardMinDelayMs: 14400000,   // 4h
-    hazardMaxDelayMs: 28800000,   // 8h
+    // v1.12: ~1 incident per 3h (was 6h). Twice as frequent but individually
+    // softer, which raises the unmanaged drag from a 1.89% rounding error to
+    // ~9.4% and makes every supply clearly EV-positive to buy. The player is
+    // shown this RATE, derived from these two numbers - never
+    // server.nextHazardAt (spec decision 3).
+    hazardMinDelayMs: 7200000,    // 2h
+    hazardMaxDelayMs: 14400000,   // 4h
 
-    ransomwareFactor: 0.5,
-    ransomwareDurationMs: 1800000,    // 30m, all lanes at half
+    ransomwareFactor: 0.35,
+    ransomwareDurationMs: 2700000,    // 45m, all lanes degraded
     ispOutageFactor: 0,
-    ispOutageDurationMs: 900000,      // 15m, Grid dark
+    ispOutageDurationMs: 2400000,     // 40m, Grid dark
     driveFailureFactor: 0,
-    driveFailureDurationMs: 1200000,  // 20m, one rack tier dark
+    driveFailureDurationMs: 2700000,  // 45m, the TOP rack tier dark
 
     // Supply prices are expressed in SECONDS OF CURRENT OUTPUT, the same
     // idiom as social.contractFlopsSeconds and batchQueue.blockFlopsSeconds,
     // so a sink priced today still bites at 1e12 FLOPS/s. supplyPriceMin is
     // the floor for a fresh save whose output is ~0.
-    antivirusPriceSeconds: 900,
-    backupIspPriceSeconds: 600,
-    spareDrivesPriceSeconds: 750,
+    // v1.12: sharply cheaper. At the old prices the EV of buying was 1.00x /
+    // 0.30x / 0.19x - break-even at best and a straight loss for two of the
+    // three - so the rational play was to ignore the whole prepaid economy.
+    antivirusPriceSeconds: 500,
+    backupIspPriceSeconds: 200,
+    spareDrivesPriceSeconds: 250,
     supplyPriceMin: 500,
 
     // The reactive cure is priced strictly worse than preparing (decision 2):
@@ -99,7 +131,14 @@ export const DEFAULT_CONFIG = {
     maintenanceMaxDelayMs: 86400000,  // 24h
     maintenanceDurationMs: 1800000,   // 30m
 
-    overheatOutageMs: 600000,         // 10m of one rack tier offline
+    overheatOutageMs: 900000,         // 15m of the top rack tier offline
+
+    // v1.12: a random victim made both the drive failure and the overheat
+    // unpredictable AND usually trivial (~1/14 of output). The top owned tier
+    // is legible in the UI and actually worth insuring against. Switchable so
+    // the old behaviour can be restored from the Balancing tab.
+    driveFailureTargetsTopTier: true,
+    overheatTargetsTopTier: true,
 
     // Overclock's conversion factor (spec §7). At 1 the lane contributes
     // exactly the output it used to produce directly, so a mid-game save's
@@ -248,6 +287,33 @@ export const TUNABLES = [
   { path: 'risk.maintenanceDurationMs', label: 'Maintenance duration (ms)', min: 1000, max: 86400000, integer: true },
   { path: 'risk.overheatOutageMs', label: 'Overheat rack shutdown (ms)', min: 1000, max: 86400000, integer: true },
   { path: 'risk.overclockBoostGain', label: 'Overclock boost gain', min: 0, max: 100, integer: false },
+
+  // v1.12 Economy Rebalance. The recurring failure this release fixes is that
+  // rate curves were tunable while reward MAGNITUDES were hardcoded constants,
+  // so every payout system was calibrated for the early game and never
+  // rescaled. Every magnitude below used to be a literal in gameRules.js or
+  // reducer.js.
+  { path: 'risk.driveFailureTargetsTopTier', label: 'Drive failure hits the top tier', type: 'boolean' },
+  { path: 'risk.overheatTargetsTopTier', label: 'Overheat hits the top tier', type: 'boolean' },
+  { path: 'heat.autoVentPerLevel', label: 'Auto-vent per level (heat/s)', min: 0, max: 100, integer: false },
+  { path: 'heat.thermalPerLevel', label: 'Thermal Regulators per level', min: 0, max: 1, integer: false },
+  { path: 'heat.heatsinkPerLevel', label: 'Heat Sink Mastery per level', min: 0, max: 1, integer: false },
+  { path: 'heat.discountFloor', label: 'Heat generation discount floor', min: 0, max: 1, integer: false },
+  { path: 'anomaly.creditsSecondsMin', label: 'Anomaly credits (min seconds of output)', min: 0, max: 3600, integer: false },
+  { path: 'anomaly.creditsSecondsMax', label: 'Anomaly credits (max seconds of output)', min: 0, max: 3600, integer: false },
+  { path: 'anomaly.boostDurationMinMs', label: 'Anomaly boost duration min (ms)', min: 0, max: 3600000, integer: true },
+  { path: 'anomaly.boostDurationMaxMs', label: 'Anomaly boost duration max (ms)', min: 0, max: 3600000, integer: true },
+  { path: 'anomaly.boostMultMin', label: 'Anomaly boost multiplier min', min: 1, max: 100, integer: false },
+  { path: 'anomaly.boostMultMax', label: 'Anomaly boost multiplier max', min: 1, max: 100, integer: false },
+  { path: 'production.levelBonusPerLevel', label: 'Output bonus per account level', min: 0, max: 1, integer: false },
+  { path: 'production.levelBonusMaxLevel', label: 'Account level bonus cap (levels)', min: 1, max: 10000, integer: true },
+  { path: 'prestige.migrateDivisor', label: 'Migrate: lifetime divisor', min: 1, max: 1e18, integer: false },
+  { path: 'prestige.migrateExponent', label: 'Migrate: gain exponent', min: 0.05, max: 2, integer: false },
+  { path: 'prestige.corePercentPerCore', label: 'Output per Legacy Core', min: 0, max: 1, integer: false },
+  { path: 'prestige.coreBonusCap', label: 'Legacy Core bonus cap (cores)', min: 1, max: 1e9, integer: true },
+  { path: 'prestige.echoPercentPerLevel', label: 'Echo Cores: % of Migrate gain per level', min: 0, max: 1, integer: false },
+  { path: 'prestige.shardsPerCore', label: 'Singularity: shards per Legacy Core', min: 0, max: 10, integer: false },
+  { path: 'minigames.balance.waferPerPoint', label: 'Balance wafers per point', min: 0, max: 100, integer: false },
 ];
 
 export function getAtPath(obj, path) {

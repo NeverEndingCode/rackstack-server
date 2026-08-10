@@ -5,20 +5,21 @@ describe('configSchema', () => {
   it('has the spec §3.6 defaults', () => {
     expect(DEFAULT_CONFIG.schemaVersion).toBe(1);
     expect(DEFAULT_CONFIG.heat.capacity).toBe(2000);
-    expect(DEFAULT_CONFIG.heat.ventPercent).toBe(25);
+    // v1.12 retuned the vent curve: 35% of capacity per 15s, was 25% per 2.5s.
+    expect(DEFAULT_CONFIG.heat.ventPercent).toBe(35);
     expect(DEFAULT_CONFIG.heat.overheatPopupMs).toBe(15000);
     expect(DEFAULT_CONFIG.heat.ventAmount).toBeUndefined();
-    expect(DEFAULT_CONFIG.heat.ventCooldownMs).toBe(2500);
+    expect(DEFAULT_CONFIG.heat.ventCooldownMs).toBe(15000);
     expect(DEFAULT_CONFIG.heat.overheatCooldownMs).toBe(10000);
     expect(DEFAULT_CONFIG.minigames.balance).toMatchObject({
       pointsSafe: 1, pointsRisk: 5, missPenalty: 2, riskZoneWidth: 4,
       safeZoneMin: 35, safeZoneMax: 65, durationSec: 12,
     });
-    expect(DEFAULT_CONFIG.production).toEqual({ globalMult: 1, racksMult: 1, gridMult: 1, overclockMult: 1 });
+    expect(DEFAULT_CONFIG.production).toMatchObject({ globalMult: 1, racksMult: 1, gridMult: 1, overclockMult: 1 });
     expect(DEFAULT_CONFIG.offline.onlineGapThresholdSec).toBe(60);
     expect(DEFAULT_CONFIG.offline.hardCapHours).toBe(72);
     expect(DEFAULT_CONFIG.upgrades.maxLevels.firmware).toBe(20);
-    expect(DEFAULT_CONFIG.anomaly).toEqual({ windowMs: 15000, minDelayMs: 70000, maxDelayMs: 150000 });
+    expect(DEFAULT_CONFIG.anomaly).toMatchObject({ windowMs: 30000, minDelayMs: 420000, maxDelayMs: 900000 });
   });
   it('every TUNABLES path resolves in DEFAULT_CONFIG and is in range', () => {
     for (const t of TUNABLES) {
@@ -98,7 +99,7 @@ describe('v1.6 heat tunables', () => {
     const legacy = { heat: { capacity: 4000, ventAmount: 900, ventCooldownMs: 3000 } };
     const out = upgradeConfig(legacy);
     expect(out.heat.ventAmount).toBeUndefined();
-    expect(out.heat.ventPercent).toBe(25);
+    expect(out.heat.ventPercent).toBe(35);
     expect(out.heat.overheatPopupMs).toBe(15000);
     expect(out.heat.capacity).toBe(4000);      // tuned values still carry over
     expect(out.heat.ventCooldownMs).toBe(3000);
@@ -132,11 +133,61 @@ describe('boolean tunables (v1.11)', () => {
 
   it('has the v1.11 risk defaults and every risk leaf is a TUNABLES row', () => {
     expect(DEFAULT_CONFIG.risk.enabled).toBe(true);
-    expect(DEFAULT_CONFIG.risk.ransomwareFactor).toBe(0.5);
+    expect(DEFAULT_CONFIG.risk.ransomwareFactor).toBe(0.35);   // v1.12: softer but twice as frequent
     expect(DEFAULT_CONFIG.risk.overclockBoostGain).toBe(1);
     const paths = new Set(TUNABLES.map((t) => t.path));
     for (const key of Object.keys(DEFAULT_CONFIG.risk)) {
       expect(paths.has(`risk.${key}`), `risk.${key}`).toBe(true);
     }
+  });
+});
+
+describe('v1.12 config surface', () => {
+  it('DEFAULT_CONFIG still validates with the new leaves', () => {
+    expect(validateConfig(DEFAULT_CONFIG)).toEqual({ ok: true });
+  });
+
+  it('every new v1.12 path exists and has a TUNABLES row', () => {
+    const paths = [
+      'heat.autoVentPerLevel', 'heat.thermalPerLevel', 'heat.heatsinkPerLevel', 'heat.discountFloor',
+      'anomaly.creditsSecondsMin', 'anomaly.creditsSecondsMax',
+      'anomaly.boostDurationMinMs', 'anomaly.boostDurationMaxMs',
+      'anomaly.boostMultMin', 'anomaly.boostMultMax',
+      'production.levelBonusPerLevel', 'production.levelBonusMaxLevel',
+      'prestige.migrateDivisor', 'prestige.migrateExponent', 'prestige.corePercentPerCore',
+      'prestige.coreBonusCap', 'prestige.echoPercentPerLevel', 'prestige.shardsPerCore',
+      'minigames.balance.waferPerPoint',
+      'risk.driveFailureTargetsTopTier', 'risk.overheatTargetsTopTier',
+    ];
+    const rows = new Set(TUNABLES.map((t) => t.path));
+    for (const p of paths) {
+      expect(getAtPath(DEFAULT_CONFIG, p), `missing DEFAULT_CONFIG leaf ${p}`).toBeDefined();
+      expect(rows.has(p), `missing TUNABLES row ${p}`).toBe(true);
+    }
+  });
+
+  it('the two new risk switches are boolean-typed tunables', () => {
+    for (const p of ['risk.driveFailureTargetsTopTier', 'risk.overheatTargetsTopTier']) {
+      expect(TUNABLES.find((t) => t.path === p).type).toBe('boolean');
+    }
+  });
+
+  it('upgradeConfig folds the new paths into a stored pre-v1.12 config', () => {
+    // a stored config written before v1.12 simply lacks these leaves
+    const old = structuredClone(DEFAULT_CONFIG);
+    delete old.prestige;
+    delete old.production.levelBonusPerLevel;
+    const upgraded = upgradeConfig(old);
+    expect(upgraded.prestige.coreBonusCap).toBe(400);
+    expect(upgraded.production.levelBonusPerLevel).toBe(0.02);
+    expect(validateConfig(upgraded)).toEqual({ ok: true });
+  });
+
+  it('carries the recalibrated v1.12 values', () => {
+    expect(DEFAULT_CONFIG.anomaly.minDelayMs).toBe(420000);
+    expect(DEFAULT_CONFIG.heat.ventCooldownMs).toBe(15000);
+    expect(DEFAULT_CONFIG.risk.hazardMinDelayMs).toBe(7200000);
+    expect(DEFAULT_CONFIG.minigames.winCooldownMs).toBe(300000);
+    expect(DEFAULT_CONFIG.upgrades.maxLevels.engine).toBe(12);
   });
 });

@@ -7,10 +7,11 @@ import { initialState } from '../shared/state.js';
 const meta0 = { legacyCores: 0, level: 0, upgrades: {}, shardUpgrades: {} };
 
 describe('gameRules', () => {
+  // The FORMULAS are unchanged; only tier 0's baseCost moved 4 -> 5 in v1.12.
   it('cost math matches v1.1 formulas', () => {
-    expect(costAt(TIER_DEFS[0], 0)).toBe(4);
-    expect(costAt(TIER_DEFS[0], 1)).toBeCloseTo(4 * 1.14);
-    expect(costForN(TIER_DEFS[0], 0, 2)).toBeCloseTo(4 + 4 * 1.14);
+    expect(costAt(TIER_DEFS[0], 0)).toBe(5);
+    expect(costAt(TIER_DEFS[0], 1)).toBeCloseTo(5 * 1.14);
+    expect(costForN(TIER_DEFS[0], 0, 2)).toBeCloseTo(5 + 5 * 1.14);
     expect(maxAffordable(TIER_DEFS[0], 0, 100)).toBeGreaterThan(0);
     expect(maxAffordable(TIER_DEFS[0], 0, 3)).toBe(0);
   });
@@ -44,13 +45,83 @@ describe('gameRules', () => {
   });
   it('xp and migrate math', () => {
     expect(xpForLevel(0)).toBe(50);
-    expect(migrateGain(1e6, 1)).toBe(1);
-    expect(migrateGain(4e6, 1)).toBe(2);
+    // v1.12: (L / 2e12) ** 1.0. Below the divisor there is nothing to claim yet.
+    expect(migrateGain(1e6, 1, DEFAULT_CONFIG)).toBe(0);
+    expect(migrateGain(2e12, 1, DEFAULT_CONFIG)).toBe(1);
+    expect(migrateGain(4e13, 1, DEFAULT_CONFIG)).toBe(20);
+    expect(migrateGain(0, 1, DEFAULT_CONFIG)).toBe(0);
+    expect(migrateGain(-5, 1, DEFAULT_CONFIG)).toBe(0);
   });
   it('minigame payouts', () => {
-    expect(minigameWafers('rush', 40, meta0, DEFAULT_CONFIG)).toBe(10);
+    // v1.12 divisors: rush 6 (was 4), debug 3 (was 2)
+    expect(minigameWafers('rush', 40, meta0, DEFAULT_CONFIG)).toBe(6);
     expect(minigameWafers('match', 10, meta0, DEFAULT_CONFIG)).toBe(20);
-    expect(minigameWafers('balance', 6, meta0, DEFAULT_CONFIG)).toBe(9);
+    expect(minigameWafers('balance', 150, meta0, DEFAULT_CONFIG)).toBe(30);   // 150 * 0.20
+  });
+
+  it('balance payout is config-driven, not a hardcoded 1.5', () => {
+    const doubled = structuredClone(DEFAULT_CONFIG);
+    doubled.minigames.balance.waferPerPoint = 0.40;
+    expect(minigameWafers('balance', 150, meta0, doubled)).toBe(60);
+  });
+});
+
+describe('v1.12 heat curve is config-driven', () => {
+  const meta = (upgrades = {}, shardUpgrades = {}) => ({
+    upgrades, shardUpgrades, level: 0, legacyCores: 0,
+    coldStorage: { upgrades: {} },
+  });
+
+  it('reads per-level rates and the floor from config', () => {
+    const eff = computeEffects(meta({ thermal: 8, autovent: 8 }, { heatsink: 4 }), DEFAULT_CONFIG);
+    // 1 - 0.05*8 - 0.15*4 = 0, clamped to the 0.40 floor
+    expect(eff.heatDiscount).toBeCloseTo(0.40);
+    expect(eff.autoVentPerSec).toBeCloseTo(32);
+  });
+
+  it('an un-upgraded save generates full heat and vents nothing passively', () => {
+    const eff = computeEffects(meta(), DEFAULT_CONFIG);
+    expect(eff.heatDiscount).toBeCloseTo(1);
+    expect(eff.autoVentPerSec).toBe(0);
+  });
+});
+
+describe('v1.12 Legacy Core bonus is capped', () => {
+  const meta = (legacyCores) => ({
+    upgrades: {}, shardUpgrades: {}, level: 0, legacyCores,
+    coldStorage: { upgrades: {} },
+  });
+
+  it('scales below the cap', () => {
+    const a = computeMults(meta(0), DEFAULT_CONFIG).racksMult;
+    const b = computeMults(meta(100), DEFAULT_CONFIG).racksMult;
+    expect(b / a).toBeCloseTo(1 + 0.05 * 100);
+  });
+
+  it('plateaus at the cap - this is what makes Singularity necessary', () => {
+    const a = computeMults(meta(0), DEFAULT_CONFIG).racksMult;
+    const atCap = computeMults(meta(400), DEFAULT_CONFIG).racksMult;
+    const wayPast = computeMults(meta(1e9), DEFAULT_CONFIG).racksMult;
+    expect(atCap / a).toBeCloseTo(1 + 0.05 * 400);
+    expect(wayPast).toBeCloseTo(atCap);
+  });
+});
+
+describe('v1.12 level bonus is capped', () => {
+  const meta = (level) => ({
+    upgrades: {}, shardUpgrades: {}, level, legacyCores: 0,
+    coldStorage: { upgrades: {} },
+  });
+
+  it('scales below the cap', () => {
+    expect(computeEffects(meta(50), DEFAULT_CONFIG).levelBonusMult).toBeCloseTo(1 + 0.02 * 50);
+  });
+
+  it('stops scaling at the cap', () => {
+    const atCap = computeEffects(meta(200), DEFAULT_CONFIG).levelBonusMult;
+    const wayPast = computeEffects(meta(5000), DEFAULT_CONFIG).levelBonusMult;
+    expect(atCap).toBeCloseTo(1 + 0.02 * 200);
+    expect(wayPast).toBeCloseTo(atCap);
   });
 });
 

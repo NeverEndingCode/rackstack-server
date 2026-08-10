@@ -4,7 +4,7 @@ import {
   hazardFrom, scheduleNextHazard, fireDueHazards, hazardRatePerHour, riskOn,
   HAZARD_KINDS, MAX_HAZARDS_PER_EVALUATION,
   SUPPLY_IDS, SUPPLY_FOR_KIND, supplyPrice, cureCost,
-  scheduleGridMaintenance, activateDueMaintenance,
+  scheduleGridMaintenance, activateDueMaintenance, overheatOutage,
 } from '../shared/outages.js';
 import { DEFAULT_CONFIG } from '../shared/configSchema.js';
 import { initialState } from '../shared/state.js';
@@ -172,11 +172,12 @@ describe('hazard derivation', () => {
       if (h) seen[h.kind] = h;
     }
     expect(seen.ransomware.scope).toEqual({ lane: '*' });
-    expect(seen.ransomware.factor).toBe(0.5);
+    expect(seen.ransomware.factor).toBe(0.35);   // v1.12: softer, but twice as frequent
     expect(seen.ispOutage.scope).toEqual({ lane: 'grid' });
     expect(seen.driveFailure.scope.lane).toBe('tiers');
-    // only an OWNED tier can fail
-    expect([0, 3]).toContain(seen.driveFailure.scope.index);
+    // v1.12: the TOP owned tier, not a derived-random one. Still necessarily an
+    // OWNED tier - `stocked()` owns 0 and 3, so the victim is 3.
+    expect(seen.driveFailure.scope.index).toBe(3);
     for (const h of Object.values(seen)) expect(h.source).toBe('hazard');
   });
 
@@ -249,8 +250,8 @@ describe('hazard scheduling and firing', () => {
   });
 
   it('reports a rate, never a next time', () => {
-    // default band 4h-8h -> mean 6h -> 1/6 per hour
-    expect(hazardRatePerHour(DEFAULT_CONFIG)).toBeCloseTo(1 / 6, 6);
+    // v1.12 band 2h-4h -> mean 3h -> 1/3 per hour (was 4h-8h -> 1/6)
+    expect(hazardRatePerHour(DEFAULT_CONFIG)).toBeCloseTo(1 / 3, 6);
   });
 });
 
@@ -382,5 +383,58 @@ describe('riskOn ANDs the master switch first', () => {
     expect(riskOn(cfg, 'hazardsEnabled')).toBe(true);
     cfg.risk.hazardsEnabled = false;
     expect(riskOn(cfg, 'hazardsEnabled')).toBe(false);
+  });
+});
+
+
+function stateWithTiers(indices) {
+  const s = initialState();
+  for (const i of indices) s.run.tiers[i].owned = 5;
+  return s;
+}
+
+describe('v1.12 hazards target the top owned tier', () => {
+  const driveOnly = () => {
+    const c = structuredClone(DEFAULT_CONFIG);
+    c.risk.ransomwareEnabled = false;
+    c.risk.ispOutageEnabled = false;
+    return c;
+  };
+
+  it('drive failure always picks the highest owned tier', () => {
+    const c = driveOnly();
+    const s = stateWithTiers([0, 3, 7]);
+    for (const at of [1e12, 1e12 + 137, 1e12 + 9999]) {
+      const h = hazardFrom(at, c, s);
+      expect(h.kind).toBe('driveFailure');
+      expect(h.scope).toEqual({ lane: 'tiers', index: 7 });
+    }
+  });
+
+  it('the switch restores random targeting, and the two paths really differ', () => {
+    const c = driveOnly();
+    c.risk.driveFailureTargetsTopTier = false;
+    const s = stateWithTiers([0, 3, 7]);
+    const times = [1e12, 2e12, 3e12, 4e12, 5e12, 6e12, 7e12, 8e12];
+    const picks = new Set(times.map((at) => hazardFrom(at, c, s).scope.index));
+    expect([...picks].every((i) => [0, 3, 7].includes(i))).toBe(true);
+    // The derived pick must actually vary, otherwise the top-tier assertion
+    // above would pass for the wrong reason.
+    expect(picks.size).toBeGreaterThan(1);
+
+    const top = driveOnly();
+    expect(new Set(times.map((at) => hazardFrom(at, top, s).scope.index))).toEqual(new Set([7]));
+  });
+
+  it('overheat downs the top owned tier', () => {
+    const s = stateWithTiers([0, 2, 9]);
+    const o = overheatOutage(s, DEFAULT_CONFIG, 1e12);
+    expect(o.scope).toEqual({ lane: 'tiers', index: 9 });
+    expect(o.factor).toBe(0);
+    expect(o.endAt - o.startAt).toBe(DEFAULT_CONFIG.risk.overheatOutageMs);
+  });
+
+  it('overheat with no owned tier still returns null', () => {
+    expect(overheatOutage(initialState(), DEFAULT_CONFIG, 1e12)).toBeNull();
   });
 });

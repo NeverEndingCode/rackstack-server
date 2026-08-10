@@ -29,6 +29,15 @@ global leaderboards, and a badge case of achievements that unlock on their own
 as you play. A daily login streak sits in the header. See
 [Social & Retention](#social--retention) below.
 
+As of v1.12, the economy is retuned to a weeks-long curve: tiers 0-9 in the
+first few days, tier 10 as a wall around day 18, and the top of the ladder over
+the weeks after. Legacy Cores plateau at a cap, which is what makes Singularity
+worth taking; anomaly boosts no longer run permanently; incidents are more
+frequent but softer and preparing for them now pays; overheating is a genuine
+trade-off; and Live Event ladders scale with your output instead of using fixed
+targets. Reward magnitudes that used to be hardcoded are admin-tunable. Existing
+saves keep their progress - nothing is rewritten.
+
 ## Architecture
 
 - `shared/` - a package used by both server and client (via a `@shared` Vite

@@ -1,4 +1,5 @@
 import { AlertTriangle } from 'lucide-react';
+import { TIER_DEFS } from '@shared/gameData.js';
 import { amber, violet, danger, textDim, textMain } from '../../theme.js';
 import { fmt } from '../../helpers.js';
 
@@ -38,14 +39,24 @@ export default function MessageModal({ modal, onClose }) {
           <button onClick={onClose} className="w-full rounded-lg py-2 text-sm font-semibold" style={{ background: violet, color: '#0E141B' }}>Nice</button>
         </>
       );
-    case 'meltdown':
+    // The pre-v1.12 copy here described PRE-v1.11 behaviour ("the lane is
+    // frozen ... no nodes were lost"), which stopped being true when the
+    // overheat penalty moved to the Racks lane. Name the actual victim.
+    case 'meltdown': {
+      const downed = typeof modal.tierIndex === 'number' ? TIER_DEFS[modal.tierIndex] : null;
       return (
         <>
           <h2 className="text-lg font-bold mb-2 flex items-center gap-2" style={{ color: danger }}><AlertTriangle size={18} /> Overheated!</h2>
-          <p className="text-sm mb-4" style={{ color: textDim }}>Your Overclock Bay hit 100% heat and the lane is frozen for a short cooldown - no nodes were lost. Keep an eye on the heat gauge and vent regularly, or invest in Thermal Regulators / Auto-Vent upgrades to avoid the lockout.</p>
+          <p className="text-sm mb-4" style={{ color: textDim }}>
+            {downed
+              ? `Your Overclock Bay hit 100% heat and took your ${downed.name} offline while it cools. Overclocking is what multiplies your racks, so running it hot risks the very thing it amplifies.`
+              : 'Your Overclock Bay hit 100% heat and the lane is frozen while it cools.'}
+            {' '}Vent before the gauge fills, or invest in Thermal Regulators / Auto-Vent to raise the fleet you can run unattended.
+          </p>
           <button onClick={onClose} className="w-full rounded-lg py-2 text-sm font-semibold" style={{ background: danger, color: textMain }}>Understood</button>
         </>
       );
+    }
     case 'singularityDone':
       return (
         <>

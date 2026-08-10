@@ -339,7 +339,7 @@ export default function RackStack({ user }) {
     lastTickAtRef.current = now;
     setState(next);
 
-    if (serverState.server.overheated) setModal({ type: 'meltdown' });
+    if (serverState.server.overheated) setModal({ type: 'meltdown', tierIndex: serverState.server.overheated?.tierIndex });
 
     // v1.11: one-shot outage notices, same lifecycle as `overheated` above.
     // Toast, not modal - these are information, not a reward (the v1.10 rule:
@@ -526,7 +526,7 @@ export default function RackStack({ user }) {
       if (stateRes.offlineGain > 1) {
         setModal({ type: 'welcome', amount: stateRes.offlineGain });
       } else if (initial.server.overheated) {
-        setModal({ type: 'meltdown' });
+        setModal({ type: 'meltdown', tierIndex: initial.server.overheated?.tierIndex });
       }
       // Live Events (v1.4): GET /api/state already carries this player's
       // claimable event identity - seed activeEvent from it directly so the
@@ -566,7 +566,7 @@ export default function RackStack({ user }) {
       lastTickAtRef.current = now;
       stateRef.current = next;
       setState(next);
-      if (next.server.overheated) setModal({ type: 'meltdown' });
+      if (next.server.overheated) setModal({ type: 'meltdown', tierIndex: next.server.overheated?.tierIndex });
     }, TICK_MS);
     return () => clearInterval(iv);
   }, [loaded]);
@@ -1093,8 +1093,8 @@ export default function RackStack({ user }) {
   const runForOverclock = { ...state.run, heat: heatPct };
 
   const ctx = goalCtx(state, config.data, now);
-  const gain = migrateGain(state.run.lifetimeRun, eff.legacyGainMult);
-  const singularityGain = Math.floor(Math.sqrt(state.meta.legacyCores || 0));
+  const gain = migrateGain(state.run.lifetimeRun, eff.legacyGainMult, config.data);
+  const singularityGain = Math.floor((state.meta.legacyCores || 0) * config.data.prestige.shardsPerCore);
 
   // Single source of truth with the tour's auto-start effect above.
   const { gridUnlocked, overclockUnlocked, singularityUnlocked, coldStorageUnlocked } = buildTourCtx(state, now);

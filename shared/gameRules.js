@@ -58,12 +58,26 @@ export function computeEffects(meta, config) {
     gridExtraMult: 1 + 0.25 * (lv.gridamp || 0),
     overclockExtraMult: 1 + 0.25 * (lv.occlock || 0),
     legacyGainMult: (1 + 0.10 * (lv.legacy || 0)) * (1 + 0.25 * (sv.temporal || 0)),
-    levelBonusMult: 1 + 0.02 * (meta.level || 0),
-    heatDiscount: Math.max(0.15, 1 - 0.08 * (lv.thermal || 0) - 0.25 * (sv.heatsink || 0)),
-    autoVentPerSec: 0.5 * (lv.autovent || 0),
+    // v1.12: capped. This was uncapped, and the repeatable goals never run out,
+    // so account level - and therefore output - grew without bound.
+    levelBonusMult: 1 + config.production.levelBonusPerLevel
+      * Math.min(meta.level || 0, config.production.levelBonusMaxLevel),
+    // v1.12: config-driven, and retuned. The old stack cut heat generation by
+    // 85% and passively vented 4/s, which - together with manual venting
+    // supplying 200 heat/s - made overheating unreachable for an attentive
+    // player and unavoidable for an inattentive one. The floor is now 0.40 and
+    // passive venting is much stronger, so the gap between tapping and not is
+    // ~2.5x the sustainable fleet rather than ~26x.
+    heatDiscount: Math.max(config.heat.discountFloor,
+      1 - config.heat.thermalPerLevel * (lv.thermal || 0)
+        - config.heat.heatsinkPerLevel * (sv.heatsink || 0)),
+    autoVentPerSec: config.heat.autoVentPerLevel * (lv.autovent || 0),
     luckyMinigameMult: 1 + 0.15 * (lv.lucky || 0),
     deepCacheBonus: 10 * (lv.deepcache || 0),
-    bootstrapMult: Math.pow(10, sv.bootstrap || 0),
+    // v1.12: x3 per level, was x10. Maxed, that plus Deep Cache handed the
+    // player 11,000,000 credits at every Migrate - enough to buy straight back
+    // into tier-6 territory, so Migrate stopped being a reset at all.
+    bootstrapMult: Math.pow(3, sv.bootstrap || 0),
     milestoneDiscount: Math.max(0.3, 1 - 0.10 * (sv.infiniteloop || 0)),
     echoCoresBonus: sv.echocores || 0,
   };
@@ -85,7 +99,16 @@ export function milestoneThresholds(meta, config) {
 export function computeMults(meta, config, boostMult = 1) {
   const eff = computeEffects(meta, config);
   const thresholds = milestoneThresholds(meta, config);
-  const base = (1 + (meta.legacyCores || 0) * 0.05) * eff.firmwareMult * eff.engineMult
+  // v1.12: the core bonus PLATEAUS. Past the cap, extra cores buy no output at
+  // all - they are only fuel for the next Singularity. That plateau is the gate
+  // that makes Singularity worth taking: before it, Singularity was a strict
+  // downgrade at every scale (it zeroes cores worth 1 + 0.05*C and returns
+  // shards worth far less), and was only survivable because cores regrew within
+  // a day.
+  const pr = config.prestige;
+  const coreMult = 1 + pr.corePercentPerCore
+    * Math.min(meta.legacyCores || 0, pr.coreBonusCap);
+  const base = coreMult * eff.firmwareMult * eff.engineMult
     * eff.levelBonusMult * boostMult * config.production.globalMult;
   // coldFusionMult folded in here (not applied ad-hoc by each caller) so
   // every consumer of computeMults - evaluate()'s online/offline branches,
@@ -135,8 +158,20 @@ export function overclockBoost(run, config, overclockMult, thresholds, racksOutp
   return 1 + gain * (ocOutput / racksOutput);
 }
 
-export function migrateGain(lifetimeRun, legacyGainMult) {
-  return Math.floor(Math.sqrt(lifetimeRun / 1e6) * legacyGainMult);
+/**
+ * v1.12: was sqrt(lifetimeRun / 1e6), which handed out thousands of cores after
+ * a single day and made every later prestige explosive.
+ *
+ * `migrateDivisor` is fixed by one requirement - the first Migrate should land
+ * on day 4-8 - which leaves `migrateExponent` as the only dial controlling how
+ * fast cores climb toward `coreBonusCap`. It has to be near-linear to reach the
+ * cap at all, and that is safe ONLY because computeMults caps the payoff. If you
+ * ever remove that cap, this exponent restores the runaway.
+ */
+export function migrateGain(lifetimeRun, legacyGainMult, config) {
+  if (!(lifetimeRun > 0)) return 0;
+  const p = config.prestige;
+  return Math.floor(Math.pow(lifetimeRun / p.migrateDivisor, p.migrateExponent) * legacyGainMult);
 }
 
 export function minigameWafers(game, metric, meta, config) {
@@ -145,6 +180,9 @@ export function minigameWafers(game, metric, meta, config) {
   if (game === 'rush') return Math.max(1, Math.floor((metric / mg.rush.waferDivisor) * lucky));
   if (game === 'debug') return Math.max(1, Math.floor((metric / mg.debug.waferDivisor) * lucky));
   if (game === 'match') return Math.floor(metric * mg.match.waferPerPair * lucky);
-  if (game === 'balance') return Math.max(1, Math.floor(metric * 1.5 * lucky));
+  // v1.12: the coefficient is a tunable. At the old hardcoded 1.5, a maxScore
+  // run with Lucky Silicon paid 562 wafers per 12-second game, so ~2.5 hours of
+  // minigames maxed every permanent upgrade in the game.
+  if (game === 'balance') return Math.max(1, Math.floor(metric * mg.balance.waferPerPoint * lucky));
   throw new Error(`unknown game: ${game}`);
 }

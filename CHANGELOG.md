@@ -1,5 +1,61 @@
 # Changelog
 
+## v1.12.0
+
+- **The whole economy is retuned to a weeks-long curve.** A daily player now
+  reaches tiers 0-9 in the first four days, tier 10 around day 18, and the top
+  of the ladder over the following weeks. Previously the entire 14-tier ladder
+  fell inside two weeks and a Singularity was available *every single day*.
+
+  The rack ladder itself was never the problem - in isolation it was a clean
+  doubling curve. What broke it was every reward system layered on top, which
+  together multiplied progression by about 21x.
+
+- **Signal Boost no longer makes the anomaly boost permanent.** It scaled the
+  boost's *duration* as well as its payout, so at max level a 2-4x global
+  multiplier lasted longer than the interval between anomalies. Measured boost
+  uptime was 55% of session time. Signal Boost now scales the payout only, and
+  anomalies are rarer, more valuable, and give you twice as long to catch one.
+
+- **Legacy Cores plateau, and Singularity is finally worth taking.** Cores
+  stop buying output past a cap; beyond it they are fuel for the next
+  Singularity. That plateau is the point - Singularity used to be a strict
+  downgrade at every scale (it zeroes cores and returned far less than it
+  destroyed), and was only survivable because cores regrew within a day.
+  Singularity yield is now linear in cores rather than a square root, and the
+  Engine upgrade has a longer tail so the shard tree stays a long-term goal.
+
+- **Quantum Bootstrap is x3 per level, not x10.** Maxed alongside Deep Cache it
+  handed you 11,000,000 credits at every Migrate - enough to buy straight back
+  into the mid-game, so Migrate had stopped being a reset. Echo Cores now
+  grants a share of the Migrate gain instead of a flat amount.
+
+- **Incidents are twice as frequent but individually softer, and preparing is
+  now clearly worth it.** Supplies used to be break-even at best and an
+  outright loss for two of the three, so the rational play was to ignore the
+  entire prepaid economy. Drive failures and overheats now hit your *top* rack
+  tier - a random victim was both unpredictable and usually trivial.
+
+- **Overheating is a real trade-off instead of a cliff.** Venting used to
+  supply far more cooling than any fleet could generate, so an attentive player
+  could never overheat and an inattentive one was punished constantly. Venting
+  is slower now, passive Auto-Vent is much stronger, and the meltdown notice
+  tells you which rack went dark and why.
+
+- **Live Event ladders scale with your output.** Their FLOPS rungs were fixed
+  numbers, so every seasonal event's FLOPS ladder cleared in a fraction of a
+  second. Targets are now expressed in seconds of your own production and
+  snapshotted when you join.
+
+- **Minigames pay far fewer wafers.** The whole permanent upgrade tree used to
+  be reachable in about two and a half hours of minigames.
+
+- **Reward magnitudes are now admin-tunable.** The root cause of most of the
+  above was that rate curves were tunable while payout sizes were hardcoded
+  constants calibrated for the early game. 21 new tunables cover them.
+
+Existing saves are unaffected in balance terms - no progress is rewritten.
+
 ## v1.11.0
 
 - **Things can now go wrong.** Every few hours something breaks: ransomware
