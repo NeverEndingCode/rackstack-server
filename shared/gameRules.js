@@ -74,7 +74,10 @@ export function computeEffects(meta, config) {
     autoVentPerSec: config.heat.autoVentPerLevel * (lv.autovent || 0),
     luckyMinigameMult: 1 + 0.15 * (lv.lucky || 0),
     deepCacheBonus: 10 * (lv.deepcache || 0),
-    bootstrapMult: Math.pow(10, sv.bootstrap || 0),
+    // v1.12: x3 per level, was x10. Maxed, that plus Deep Cache handed the
+    // player 11,000,000 credits at every Migrate - enough to buy straight back
+    // into tier-6 territory, so Migrate stopped being a reset at all.
+    bootstrapMult: Math.pow(3, sv.bootstrap || 0),
     milestoneDiscount: Math.max(0.3, 1 - 0.10 * (sv.infiniteloop || 0)),
     echoCoresBonus: sv.echocores || 0,
   };

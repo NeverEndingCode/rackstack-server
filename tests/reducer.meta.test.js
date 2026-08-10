@@ -14,7 +14,7 @@ describe('reducer: migrate', () => {
 
   it('happy path: fresh run with deepcache/bootstrap start credits, +gain+echo cores, stats.migrates+1', () => {
     const s = initialState();
-    s.run.lifetimeRun = 4e6; // gain = floor(sqrt(4)) = 2
+    s.run.lifetimeRun = 4e12; // v1.12: gain = floor((4e12 / 2e12) ** 1.0) = 2
     s.run.tiers[0].owned = 5;
     s.run.credits = 999;
     const { state: s2, result } = applyAction(s, { type: 'migrate' }, DEFAULT_CONFIG, NOW);
@@ -35,15 +35,23 @@ describe('reducer: migrate', () => {
     expect(s2.meta.stats.lifetimeFlopsAllTime).toBe(12345);
   });
 
-  it('applies deepCacheBonus and bootstrapMult to start credits, and echoCoresBonus to cores gained', () => {
+  it('applies deepCacheBonus and bootstrapMult to start credits, and echoCores as a share of gain', () => {
     const s = initialState();
-    s.run.lifetimeRun = 4e6;
-    s.meta.upgrades.deepcache = 2; // +10 each => +20
-    s.meta.shardUpgrades.bootstrap = 1; // x10
-    s.meta.shardUpgrades.echocores = 3; // +3 cores
+    s.run.lifetimeRun = 4e13;                 // migrateGain = floor((4e13/2e12)^1) = 20
+    s.meta.upgrades.deepcache = 2;            // +10 each => +20
+    s.meta.shardUpgrades.bootstrap = 1;       // v1.12: x3, not x10
+    s.meta.shardUpgrades.echocores = 3;       // v1.12: +5% of gain per level => +15% of 20 = 3
     const { state: s2 } = applyAction(s, { type: 'migrate' }, DEFAULT_CONFIG, NOW);
-    expect(s2.run.credits).toBe((10 + 20) * 10);
-    expect(s2.meta.legacyCores).toBe(2 + 3);
+    expect(s2.run.credits).toBe((10 + 20) * 3);
+    expect(s2.meta.legacyCores).toBe(20 + 3);
+  });
+
+  it('echoCores cannot be farmed by cheap repeat Migrates', () => {
+    const s = initialState();
+    s.run.lifetimeRun = 2e12;                 // gain = 1
+    s.meta.shardUpgrades.echocores = 10;      // 10 levels => +50% of gain => floor(0.5) = 0
+    const { state: s2 } = applyAction(s, { type: 'migrate' }, DEFAULT_CONFIG, NOW);
+    expect(s2.meta.legacyCores).toBe(1);
   });
 });
 

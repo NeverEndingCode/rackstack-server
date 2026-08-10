@@ -143,7 +143,10 @@ function migrate(s, action, config) {
   const gain = migrateGain(s.run.lifetimeRun, eff.legacyGainMult, config);
   if (gain <= 0) return err('invalid_target');
 
-  const echoBonus = eff.echoCoresBonus || 0;
+  // v1.12: a share of the gain, not a flat grant. A flat +10 cores per Migrate
+  // is farmable once cores are scarce - migrate cheaply and repeatedly for free
+  // cores - which the new curve would otherwise make the dominant strategy.
+  const echoBonus = Math.floor(gain * config.prestige.echoPercentPerLevel * (eff.echoCoresBonus || 0));
   const startCredits = (10 + eff.deepCacheBonus) * eff.bootstrapMult;
 
   s.run = { ...initialState().run, credits: startCredits };
