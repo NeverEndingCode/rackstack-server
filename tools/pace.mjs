@@ -84,6 +84,20 @@ function bestBuy() {
   return best;
 }
 
+const SHARD_TREE_TOTAL = SINGULARITY_DEFS.reduce((sum, d) => {
+  let t = 0;
+  for (let l = 0; l < config.upgrades.maxLevels[d.id]; l++) t += Math.ceil(d.baseCost * Math.pow(d.costMult, l));
+  return sum + t;
+}, 0);
+function shardTreePct() {
+  let spent = 0;
+  for (const d of SINGULARITY_DEFS) {
+    const lvl = state.meta.shardUpgrades[d.id] || 0;
+    for (let l = 0; l < lvl; l++) spent += Math.ceil(d.baseCost * Math.pow(d.costMult, l));
+  }
+  return 100 * spent / SHARD_TREE_TOTAL;
+}
+
 const perDay = [];
 for (let d = 0; d < DAYS; d++) {
   // offline until the session
@@ -108,7 +122,7 @@ for (let d = 0; d < DAYS; d++) {
       if (!act({ type: 'buy', lane: b.lane, index: b.index, mode: 1 }).ok) break;
       if (b.lane === 'tiers' && state.run.tiers[b.index].owned === 1) note(`tier${b.index}`);
     }
-    if (k % 6 === 0) {
+    if (k % 18 === 0) {
       for (const g of GOAL_DEFS) if (!state.meta.goalsCompleted[g.id]) act({ type: 'claimGoal', id: g.id });
       for (const rp of REPEATABLE_DEFS) for (let z = 0; z < 20; z++) if (!act({ type: 'claimRepeatable', id: rp.id }).ok) break;
       for (let z = 0; z < 30; z++) {
@@ -136,15 +150,39 @@ for (let d = 0; d < DAYS; d++) {
     }
   }
 
-  // prestige decisions, once per day at end of session
+  // Prestige decisions, once per day at end of session.
+  //
+  // Cap-aware (spec §4.3b): below the Legacy Core cap, cores still buy output,
+  // so a player resets when the gain is a meaningful fraction of what they
+  // hold. At or above the cap, extra cores buy NOTHING - the only reason to
+  // keep migrating is to bank cores for a Singularity, which is precisely the
+  // gate the cap exists to create.
   const eff = computeEffects(state.meta, config);
-  const gain = migrateGain(state.run.lifetimeRun, eff.legacyGainMult);
-  // a real player resets when it at least TRIPLES their permanent multiplier
-  if (gain > 0 && gain >= Math.max(3, state.meta.legacyCores * 2)) {
+  const NOPRESTIGE = process.env.NOPRESTIGE === '1';
+  const capNow = config.prestige ? config.prestige.coreBonusCap : Infinity;
+  const pushPhase = shardTreePct() >= 25 && state.meta.legacyCores >= capNow;
+  const gain = migrateGain(state.run.lifetimeRun, eff.legacyGainMult, config);
+  // At least DOUBLE the core count, or don't reset. Resetting at the earliest
+  // profitable moment (the old `cores * 0.3` rule) pins per-run lifetimeRun near
+  // its floor forever, so migrate gains never escalate and the Singularity gate
+  // is never reached - an artefact of the bot, not of the balance.
+  if (!NOPRESTIGE && !pushPhase && gain > 0 && gain >= Math.max(2, state.meta.legacyCores)) {
     if (act({ type: 'migrate' }).ok) note(`migrate${state.meta.stats.migrates}`);
   }
-  const shards = Math.floor(Math.sqrt(state.meta.legacyCores || 0));
-  if (shards >= 10 && shards >= state.meta.singularityShards * 1.5) {
+  const cap = config.prestige ? config.prestige.coreBonusCap : null;
+  const shards = config.prestige
+    ? Math.floor((state.meta.legacyCores || 0) * config.prestige.shardsPerCore)
+    : Math.floor(Math.sqrt(state.meta.legacyCores || 0));
+  const wantSing = cap === null
+    ? (shards >= 10 && shards >= state.meta.singularityShards * 1.5)   // shipped baseline
+    : (state.meta.legacyCores >= cap && shards >= state.meta.singularityShards * 1.5 + 5);
+  // PUSH PHASE. Once the meta layer has paid out - cores at their cap and a
+  // meaningful slice of the shard tree bought - further resets buy nothing,
+  // and the rational play is one long uninterrupted run at the top tiers.
+  // Without this the bot resets forever and NO run ever accumulates enough to
+  // buy tier 13, which would make A4 unreachable by construction rather than
+  // by balance.
+  if (wantSing && !NOPRESTIGE && !pushPhase) {
     if (act({ type: 'singularity' }).ok) note(`singularity${state.meta.stats.singularities}`);
   }
 
@@ -153,21 +191,23 @@ for (let d = 0; d < DAYS; d++) {
     out: goalCtx(state, config, t).totalOutputPerSec,
     top: state.run.tiers.reduce((m, ts, i) => (ts.owned > 0 ? i : m), 0),
     cores: state.meta.legacyCores,
+    lifeRun: state.run.lifetimeRun,
     shards: state.meta.singularityShards,
     mig: state.meta.stats.migrates,
     sing: state.meta.stats.singularities,
     lvl: state.meta.level,
     wafers: state.meta.stats.totalWafersEarned,
+    treePct: shardTreePct(),
   });
 }
 
 console.log(`\n===== ${DIR} — ${SESSION_MIN}min/day, ${DAYS} days =====`);
-console.log(' day |     output/s | topTier | cores | shards | mig | sing | lvl | lifetime wafers');
+console.log(' day |     output/s | topTier | lifeRun | cores | shards | mig | sing | lvl | shardTree');
 for (const r of perDay) {
   if (r.d <= 10 || r.d % 5 === 0) {
     console.log(String(r.d).padStart(4) + ' | ' + fmt(r.out).padStart(12) + ' | ' + String(r.top).padStart(7) +
-      ' | ' + String(r.cores).padStart(5) + ' | ' + String(r.shards).padStart(6) + ' | ' + String(r.mig).padStart(3) +
-      ' | ' + String(r.sing).padStart(4) + ' | ' + String(r.lvl).padStart(3) + ' | ' + fmt(r.wafers).padStart(15));
+      ' | ' + fmt(r.lifeRun).padStart(9) + ' | ' + String(r.cores).padStart(5) + ' | ' + String(r.shards).padStart(6) + ' | ' + String(r.mig).padStart(3) +
+      ' | ' + String(r.sing).padStart(4) + ' | ' + String(r.lvl).padStart(3) + ' | ' + (r.treePct.toFixed(0) + '%').padStart(6));
   }
 }
 console.log('\nfirst reached (in DAYS):');
