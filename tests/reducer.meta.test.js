@@ -229,9 +229,9 @@ describe('reducer: claimAnomaly', () => {
     expect(result.reward.amount).toBeCloseTo(20);
     expect(s2.run.credits).toBeCloseTo(10 + 20);
 
-    // scheduleAnomaly with rng=0.1: next = now + 70000 + 0.1*(150000-70000) = now + 78000
-    expect(s2.server.nextAnomalyAt).toBeCloseTo(NOW + 78000);
-    expect(s2.server.anomalyExpiresAt).toBeCloseTo(NOW + 78000 + 15000);
+    // v1.12: next = now + 420000 + 0.1*(900000-420000) = now + 468000
+    expect(s2.server.nextAnomalyAt).toBeCloseTo(NOW + 468000);
+    expect(s2.server.anomalyExpiresAt).toBeCloseTo(NOW + 468000 + 30000);
 
     const { result: result2 } = applyAction(s2, { type: 'claimAnomaly' }, DEFAULT_CONFIG, NOW, () => 0.1);
     expect(result2).toEqual({ ok: false, error: 'cooldown_active' });
@@ -325,7 +325,8 @@ describe('scheduleAnomaly', () => {
   it('mutates the passed server object with next/expires derived from config + rng', () => {
     const server = { nextAnomalyAt: 0, anomalyExpiresAt: 0, boost: null, lastVentAt: 0, gameCooldowns: {} };
     scheduleAnomaly(server, DEFAULT_CONFIG, NOW, () => 0.5);
-    expect(server.nextAnomalyAt).toBe(NOW + 70000 + 0.5 * (150000 - 70000));
-    expect(server.anomalyExpiresAt).toBe(server.nextAnomalyAt + 15000);
+    // v1.12 cadence: 420000-900000ms, 30s catch window
+    expect(server.nextAnomalyAt).toBe(NOW + 420000 + 0.5 * (900000 - 420000));
+    expect(server.anomalyExpiresAt).toBe(server.nextAnomalyAt + 30000);
   });
 });

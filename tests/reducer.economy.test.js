@@ -316,7 +316,7 @@ describe('reducer: vent', () => {
     s.run.heat = 900;
     const { state: s2, result } = applyAction(s, { type: 'vent' }, DEFAULT_CONFIG, NOW);
     expect(result.ok).toBe(true);
-    expect(s2.run.heat).toBe(400);
+    expect(s2.run.heat).toBe(200);            // v1.12: 35% of 2000 = 700
     expect(s2.server.lastVentAt).toBe(NOW);
   });
   it('floors heat at 0', () => {
@@ -329,24 +329,25 @@ describe('reducer: vent', () => {
     const s = initialState();
     s.run.heat = 900;
     const a = applyAction(s, { type: 'vent' }, DEFAULT_CONFIG, NOW);
-    expect(a.state.run.heat).toBe(400);
+    expect(a.state.run.heat).toBe(200);
+    // v1.12: the cooldown is 15000ms, so 1s later is still locked out
     const b = applyAction(a.state, { type: 'vent' }, DEFAULT_CONFIG, NOW + 1000);
     expect(b.result.error).toBe('cooldown_active');
     s.run.heatCooldownUntil = NOW + 5000;
     expect(applyAction(s, { type: 'vent' }, DEFAULT_CONFIG, NOW).result.error).toBe('cooldown_active');
   });
 
-  // v1.6: the two cases above are unchanged from v1.5 on purpose - 25% of the
-  // default 2000 capacity is exactly the 500 flat amount it replaced, so the
-  // unit change is balance-neutral at stock settings. What follows is what
-  // actually changed.
+  // v1.6 introduced percentage venting; v1.12 retuned it to 35% per 15s so that
+  // manual venting can no longer trivially outrun any Overclock fleet (it used
+  // to supply 200 heat/s against a maxed fleet's ~69). What follows is the
+  // capacity-scaling behaviour, which is unchanged in kind.
   it('scales with a raised heat capacity', () => {
     const cfg = { ...DEFAULT_CONFIG, heat: { ...DEFAULT_CONFIG.heat, capacity: 4000 } };
     const s = initialState();
     s.run.heat = 3000;
     const { state: s2 } = applyAction(s, { type: 'vent' }, cfg, NOW);
-    // 25% of 4000 = 1000, where the old flat 500 would have been diluted
-    expect(s2.run.heat).toBe(2000);
+    // 35% of 4000 = 1400, where a flat amount would have been diluted
+    expect(s2.run.heat).toBe(1600);
   });
 
   it('includes the Cold Storage heatCapacityBonus in the capacity it vents against', () => {
@@ -355,8 +356,8 @@ describe('reducer: vent', () => {
     expect(computeColdStorageEffects(s.meta, DEFAULT_CONFIG).heatCapacityBonus).toBe(400);
     s.run.heat = 1000;
     const { state: s2 } = applyAction(s, { type: 'vent' }, DEFAULT_CONFIG, NOW);
-    // 25% of (2000 + 400) = 600
-    expect(s2.run.heat).toBe(400);
+    // 35% of (2000 + 400) = 840
+    expect(s2.run.heat).toBe(160);
   });
 
   it('never goes negative even at a 100% vent', () => {
