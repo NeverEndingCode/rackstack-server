@@ -96,7 +96,16 @@ export function milestoneThresholds(meta, config) {
 export function computeMults(meta, config, boostMult = 1) {
   const eff = computeEffects(meta, config);
   const thresholds = milestoneThresholds(meta, config);
-  const base = (1 + (meta.legacyCores || 0) * 0.05) * eff.firmwareMult * eff.engineMult
+  // v1.12: the core bonus PLATEAUS. Past the cap, extra cores buy no output at
+  // all - they are only fuel for the next Singularity. That plateau is the gate
+  // that makes Singularity worth taking: before it, Singularity was a strict
+  // downgrade at every scale (it zeroes cores worth 1 + 0.05*C and returns
+  // shards worth far less), and was only survivable because cores regrew within
+  // a day.
+  const pr = config.prestige;
+  const coreMult = 1 + pr.corePercentPerCore
+    * Math.min(meta.legacyCores || 0, pr.coreBonusCap);
+  const base = coreMult * eff.firmwareMult * eff.engineMult
     * eff.levelBonusMult * boostMult * config.production.globalMult;
   // coldFusionMult folded in here (not applied ad-hoc by each caller) so
   // every consumer of computeMults - evaluate()'s online/offline branches,
@@ -146,8 +155,20 @@ export function overclockBoost(run, config, overclockMult, thresholds, racksOutp
   return 1 + gain * (ocOutput / racksOutput);
 }
 
-export function migrateGain(lifetimeRun, legacyGainMult) {
-  return Math.floor(Math.sqrt(lifetimeRun / 1e6) * legacyGainMult);
+/**
+ * v1.12: was sqrt(lifetimeRun / 1e6), which handed out thousands of cores after
+ * a single day and made every later prestige explosive.
+ *
+ * `migrateDivisor` is fixed by one requirement - the first Migrate should land
+ * on day 4-8 - which leaves `migrateExponent` as the only dial controlling how
+ * fast cores climb toward `coreBonusCap`. It has to be near-linear to reach the
+ * cap at all, and that is safe ONLY because computeMults caps the payoff. If you
+ * ever remove that cap, this exponent restores the runaway.
+ */
+export function migrateGain(lifetimeRun, legacyGainMult, config) {
+  if (!(lifetimeRun > 0)) return 0;
+  const p = config.prestige;
+  return Math.floor(Math.pow(lifetimeRun / p.migrateDivisor, p.migrateExponent) * legacyGainMult);
 }
 
 export function minigameWafers(game, metric, meta, config) {

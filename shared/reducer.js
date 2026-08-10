@@ -140,7 +140,7 @@ function vent(s, action, config, now) {
 
 function migrate(s, action, config) {
   const eff = computeEffects(s.meta, config);
-  const gain = migrateGain(s.run.lifetimeRun, eff.legacyGainMult);
+  const gain = migrateGain(s.run.lifetimeRun, eff.legacyGainMult, config);
   if (gain <= 0) return err('invalid_target');
 
   const echoBonus = eff.echoCoresBonus || 0;

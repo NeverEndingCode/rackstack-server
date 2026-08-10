@@ -45,8 +45,12 @@ describe('gameRules', () => {
   });
   it('xp and migrate math', () => {
     expect(xpForLevel(0)).toBe(50);
-    expect(migrateGain(1e6, 1)).toBe(1);
-    expect(migrateGain(4e6, 1)).toBe(2);
+    // v1.12: (L / 2e12) ** 1.0. Below the divisor there is nothing to claim yet.
+    expect(migrateGain(1e6, 1, DEFAULT_CONFIG)).toBe(0);
+    expect(migrateGain(2e12, 1, DEFAULT_CONFIG)).toBe(1);
+    expect(migrateGain(4e13, 1, DEFAULT_CONFIG)).toBe(20);
+    expect(migrateGain(0, 1, DEFAULT_CONFIG)).toBe(0);
+    expect(migrateGain(-5, 1, DEFAULT_CONFIG)).toBe(0);
   });
   it('minigame payouts', () => {
     // v1.12 divisors: rush 6 (was 4), debug 3 (was 2)
@@ -73,6 +77,27 @@ describe('v1.12 heat curve is config-driven', () => {
     const eff = computeEffects(meta(), DEFAULT_CONFIG);
     expect(eff.heatDiscount).toBeCloseTo(1);
     expect(eff.autoVentPerSec).toBe(0);
+  });
+});
+
+describe('v1.12 Legacy Core bonus is capped', () => {
+  const meta = (legacyCores) => ({
+    upgrades: {}, shardUpgrades: {}, level: 0, legacyCores,
+    coldStorage: { upgrades: {} },
+  });
+
+  it('scales below the cap', () => {
+    const a = computeMults(meta(0), DEFAULT_CONFIG).racksMult;
+    const b = computeMults(meta(100), DEFAULT_CONFIG).racksMult;
+    expect(b / a).toBeCloseTo(1 + 0.05 * 100);
+  });
+
+  it('plateaus at the cap - this is what makes Singularity necessary', () => {
+    const a = computeMults(meta(0), DEFAULT_CONFIG).racksMult;
+    const atCap = computeMults(meta(400), DEFAULT_CONFIG).racksMult;
+    const wayPast = computeMults(meta(1e9), DEFAULT_CONFIG).racksMult;
+    expect(atCap / a).toBeCloseTo(1 + 0.05 * 400);
+    expect(wayPast).toBeCloseTo(atCap);
   });
 });
 

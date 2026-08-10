@@ -1093,7 +1093,7 @@ export default function RackStack({ user }) {
   const runForOverclock = { ...state.run, heat: heatPct };
 
   const ctx = goalCtx(state, config.data, now);
-  const gain = migrateGain(state.run.lifetimeRun, eff.legacyGainMult);
+  const gain = migrateGain(state.run.lifetimeRun, eff.legacyGainMult, config.data);
   const singularityGain = Math.floor(Math.sqrt(state.meta.legacyCores || 0));
 
   // Single source of truth with the tour's auto-start effect above.
