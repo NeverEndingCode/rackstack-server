@@ -400,7 +400,7 @@ describe('buySupply (v1.11)', () => {
   it('supplies survive a Migrate', () => {
     const s = initialState();
     s.meta.supplies.spareDrives = 3;
-    s.run.lifetimeRun = 1e12;
+    s.run.lifetimeRun = 4e12;   // v1.12: must clear prestige.migrateDivisor (2e12)
     const { state: s1, result } = applyAction(s, { type: 'migrate' }, DEFAULT_CONFIG, 1000);
     expect(result.ok).toBe(true);
     expect(s1.meta.supplies.spareDrives).toBe(3);

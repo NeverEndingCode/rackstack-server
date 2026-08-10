@@ -1,7 +1,7 @@
 # v1.12 Economy Rebalance — design
 
 **Date:** 2026-08-09
-**Status:** Calibrated and converged (15/16 acceptance criteria; see §6). Awaiting owner review before implementation.
+**Status:** Implemented on `v1.12-balance-audit`. 12 of 16 acceptance criteria hold across seeds; A3/A4/A6/A7 are marginal and need one more calibration sweep (see §6.1.2). The original "15/16 converged" reading came from a non-reproducible harness (§6.1.1).
 **Baseline audited:** `v1.11-risk-reliability` @ d7418ce (the current tip; `origin/main` is v1.10.0).
 **Scope:** Retune the whole economy to AdVenture-Communist / ISEPS pacing. Config
 changes plus a bounded set of formula fixes. No new subsystems.
@@ -521,11 +521,11 @@ Measured with `SHARED=<sandbox> DAYS=45 node tools/pace.mjs` (daily player,
 
 ---
 
-## 6. Calibration: converged
+## 6. Calibration
 
 Ten parallel sweeps, ~70 configurations, all graded by `tools/score.py`.
 
-### 6.1 The converged constants
+### 6.1 The constants
 
 ```
 RATIO                        2.50     (tier cost curve, §4.1)
@@ -541,32 +541,51 @@ SINGULARITY engine maxLevel  12       (was 8)
 minigames.winCooldownMs      300000
 ```
 
-The resulting curve for a 60 min/day player:
+### 6.1.1 The harness was not reproducible, and the first reading was one sample
 
-| day | milestone |
-|---|---|
-| 1 | tiers 0–5 |
-| 2 | tiers 6–8 |
-| 4 | tier 9, **first Migrate** |
-| 7, 11 | Migrates 2 and 3 |
-| 18 | **tier 10** — the wall |
-| 21 | **first Singularity** |
-| 27 | second Singularity |
-| 38 | tier 11 |
-| 43 | tier 12 |
-| 44 | **tier 13** |
-| 45 | 4 Singularities, shard tree 38%, 20 Migrates |
+**Found during implementation, and it invalidates the original "15/16 converged"
+claim.** `tools/pace.mjs` started its timeline at `Date.now()`. The UTC day
+boundary drives contract rollovers and streak claims, and `initialState()` stamps
+`coldStorage.trackStartedAt` from the wall clock, so a 45-day run depended on the
+*time of day it was launched*. Two runs of the same sandbox could disagree about
+whether tiers 11-13 were reached at all — the sandbox that scored 7/8 during
+calibration re-scored 5/8 when re-run hours later, unchanged.
 
-Shipped, for comparison: all 14 tiers by day 14, and a Singularity *every day*
-from day 1 (18 of them, 21.7M shards, tree maxed 47x over).
+The harness now pins `T0` to a fixed epoch and accepts `SEED`; two runs of the
+same seed are byte-identical. Every future calibration MUST use it this way, and
+must read several seeds rather than one.
 
-The shape is the AdComm one: a generous onboarding through tiers 0–9 in the
-first four days, a hard wall at tier 10 that takes two weeks to break, and a
-late game that only opens once the meta layer has been fed.
+### 6.1.2 What the implementation actually measures
 
-15 of 16 acceptance criteria pass. Two targets were revised against evidence
-rather than met — both are documented below, because a target quietly moved to
-fit a result is worthless.
+Five seeds against the shipped `shared/` (`SEED=1..4,4242`):
+
+| criterion | target | seed 1 | 2 | 3 | 4 | 4242 | verdict |
+|---|---|---|---|---|---|---|---|
+| A1 tier 4 | d1–2 | d1 | d1 | d1 | d1 | d1 | **holds** |
+| A2 tier 7 | d2–4 | d2 | d2 | d2 | d2 | d2 | **holds** |
+| A3 tier 10 | d18–25 | d17 | d16 | d16 | d18 | d18 | marginal, ~2d fast |
+| A4 tier 13 | d28–45 | d40 | — | — | d44 | — | **reached in 2 of 5** |
+| A5 first Migrate | d4–8 | d3 | d4 | d4 | d4 | d4 | holds (1 seed 1d fast) |
+| A6 first Singularity | d11–21 | d23 | d22 | d22 | d22 | d21 | consistently ~1d late |
+| A7 Singularities | 2–4 | 3 | 5 | 5 | 4 | 5 | marginal |
+| A8 shard tree | < 40% | 27% | 27% | 27% | 27% | 21% | **holds** |
+
+The non-pacing criteria are stable and hold on every seed: A9 boost uptime
+3.6–4.2% (target < 8%), A10 drag 9.4%, A11 supply EV 3.51/2.40/3.24,
+A12/A13 heat band idle-stable to 49 nodes/tier and 121 while tapping, A15 65h to
+max the wafer tree.
+
+**Honest verdict.** The shape is right and is a large improvement on the shipped
+game — the opening is generous, tier 10 is a two-and-a-half week wall, and the
+meta tree is a long goal. But the *tail* is marginal: tier 13 lands inside 45
+days only about 40% of the time, and the first Singularity consistently arrives a
+day or two after the target band. A4, A6 and A7 are not reliably met.
+
+This is a calibration gap, not an implementation defect: the shipped `shared/`
+reproduces the reference sandbox exactly (identical milestones, 2564 overheats,
+same tree %). Closing it needs another sweep over `coreBonusCap`,
+`shardsPerCore` and `RATIO` — read across seeds this time — not a single value
+nudged by eye.
 
 ### 6.2 A2 revised: tier 7 on day 2, and no cost dial changes it
 

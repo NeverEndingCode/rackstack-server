@@ -22,7 +22,7 @@ const { scheduleNextHazard, scheduleGridMaintenance } = await import(`../${DIR}/
 const { rolloverContracts } = await import(`../${DIR}/contracts.js`);
 
 const config = structuredClone(DEFAULT_CONFIG);
-let seed = 4242;
+let seed = Number(process.env.SEED || 4242);
 const rng = () => {
   seed = (seed + 0x6d2b79f5) >>> 0;
   let x = seed;
@@ -31,9 +31,18 @@ const rng = () => {
   return ((x ^ (x >>> 14)) >>> 0) / 4294967296;
 };
 
+// DETERMINISM. The timeline must NOT start at Date.now(): the UTC day boundary
+// drives contract rollovers and streak claims, and initialState() stamps
+// coldStorage.trackStartedAt from the wall clock, so starting "now" made the
+// whole 45-day run depend on the time of day it was launched. Two runs of the
+// SAME sandbox could disagree on whether tiers 11-13 were reached at all.
+// Pin the epoch, and pin the cold-storage track to it.
+const T0_EPOCH = Date.UTC(2026, 0, 1, 0, 0, 0);
+
 let state = initialState();
-let t = Date.now();
+let t = T0_EPOCH;
 const T0 = t;
+state.meta.coldStorage.trackStartedAt = t;
 let lastEval = t;
 scheduleAnomaly(state.server, config, t, rng);
 
