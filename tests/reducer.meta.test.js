@@ -257,11 +257,23 @@ describe('reducer: claimAnomaly', () => {
     const { state: s2, result } = applyAction(s, { type: 'claimAnomaly' }, DEFAULT_CONFIG, NOW, () => 0.9);
     expect(result.ok).toBe(true);
     expect(result.reward.kind).toBe('boost');
-    // mult = [2,3,4][floor(0.9*3)] = [2,3,4][2] = 4
-    expect(result.reward.mult).toBe(4);
-    expect(s2.server.boost).toEqual({ mult: 4, until: result.reward.until });
-    // duration = (45 + 0.9*30) * eventRewardMult(1) = 72s
-    expect(s2.server.boost.until).toBeCloseTo(NOW + 72 * 1000);
+    // v1.12: mult = 1.5 + 0.9*(3.0-1.5) = 2.85, a continuous range
+    expect(result.reward.mult).toBeCloseTo(2.85);
+    // duration = 45000 + 0.9*(75000-45000) = 72000ms
+    expect(s2.server.boost.until).toBeCloseTo(NOW + 72000);
+  });
+
+  it('Signal Boost scales the PAYOUT but never the boost duration', () => {
+    const withSignal = openState();
+    withSignal.meta.upgrades.signal = 10;      // eventRewardMult = 3
+    const { state: sBoost } = applyAction(withSignal, { type: 'claimAnomaly' }, DEFAULT_CONFIG, NOW, () => 0.9);
+    // identical duration to the un-upgraded save above - this is the whole fix.
+    // Before v1.12 this was 216000ms, longer than the respawn interval, which
+    // made a 2-4x global multiplier permanently active.
+    expect(sBoost.server.boost.until).toBeCloseTo(NOW + 72000);
+
+    const { result: credits } = applyAction(withSignal, { type: 'claimAnomaly' }, DEFAULT_CONFIG, NOW, () => 0.1);
+    expect(credits.reward.amount).toBeCloseTo(60);   // 20 * 3 - the payout DOES scale
   });
 });
 

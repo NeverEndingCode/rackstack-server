@@ -463,14 +463,21 @@ function claimAnomaly(s, action, config, now, rng) {
 
   if (roll < 0.5) {
     const ctx = goalCtx(s, config, now);
-    const seconds = 30 + rng() * 60;
+    const ac = config.anomaly;
+    const seconds = ac.creditsSecondsMin + rng() * (ac.creditsSecondsMax - ac.creditsSecondsMin);
     const amount = Math.max(ctx.totalOutputPerSec * seconds, 20) * eff.eventRewardMult;
     s.run.credits += amount;
     s.run.lifetimeRun += amount;
     reward = { kind: 'credits', amount };
   } else {
-    const mult = [2, 3, 4][Math.floor(rng() * 3)];
-    const duration = (45 + rng() * 30) * eff.eventRewardMult;
+    // v1.12: the boost's DURATION must never be scaled by eventRewardMult. It
+    // was, and at max Signal Boost that pushed the duration (135-225s) past the
+    // respawn interval (70-150s), so a 2-4x GLOBAL multiplier was permanently
+    // active - measured at 55% boost uptime, worth ~+245% output. Signal Boost
+    // scales the payout only.
+    const ab = config.anomaly;
+    const mult = ab.boostMultMin + rng() * (ab.boostMultMax - ab.boostMultMin);
+    const duration = (ab.boostDurationMinMs + rng() * (ab.boostDurationMaxMs - ab.boostDurationMinMs)) / 1000;
     s.server.boost = { mult, until: now + duration * 1000 };
     reward = { kind: 'boost', mult, until: s.server.boost.until };
   }
