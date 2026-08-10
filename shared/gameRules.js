@@ -58,9 +58,20 @@ export function computeEffects(meta, config) {
     gridExtraMult: 1 + 0.25 * (lv.gridamp || 0),
     overclockExtraMult: 1 + 0.25 * (lv.occlock || 0),
     legacyGainMult: (1 + 0.10 * (lv.legacy || 0)) * (1 + 0.25 * (sv.temporal || 0)),
-    levelBonusMult: 1 + 0.02 * (meta.level || 0),
-    heatDiscount: Math.max(0.15, 1 - 0.08 * (lv.thermal || 0) - 0.25 * (sv.heatsink || 0)),
-    autoVentPerSec: 0.5 * (lv.autovent || 0),
+    // v1.12: capped. This was uncapped, and the repeatable goals never run out,
+    // so account level - and therefore output - grew without bound.
+    levelBonusMult: 1 + config.production.levelBonusPerLevel
+      * Math.min(meta.level || 0, config.production.levelBonusMaxLevel),
+    // v1.12: config-driven, and retuned. The old stack cut heat generation by
+    // 85% and passively vented 4/s, which - together with manual venting
+    // supplying 200 heat/s - made overheating unreachable for an attentive
+    // player and unavoidable for an inattentive one. The floor is now 0.40 and
+    // passive venting is much stronger, so the gap between tapping and not is
+    // ~2.5x the sustainable fleet rather than ~26x.
+    heatDiscount: Math.max(config.heat.discountFloor,
+      1 - config.heat.thermalPerLevel * (lv.thermal || 0)
+        - config.heat.heatsinkPerLevel * (sv.heatsink || 0)),
+    autoVentPerSec: config.heat.autoVentPerLevel * (lv.autovent || 0),
     luckyMinigameMult: 1 + 0.15 * (lv.lucky || 0),
     deepCacheBonus: 10 * (lv.deepcache || 0),
     bootstrapMult: Math.pow(10, sv.bootstrap || 0),

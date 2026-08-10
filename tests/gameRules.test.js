@@ -56,6 +56,44 @@ describe('gameRules', () => {
   });
 });
 
+describe('v1.12 heat curve is config-driven', () => {
+  const meta = (upgrades = {}, shardUpgrades = {}) => ({
+    upgrades, shardUpgrades, level: 0, legacyCores: 0,
+    coldStorage: { upgrades: {} },
+  });
+
+  it('reads per-level rates and the floor from config', () => {
+    const eff = computeEffects(meta({ thermal: 8, autovent: 8 }, { heatsink: 4 }), DEFAULT_CONFIG);
+    // 1 - 0.05*8 - 0.15*4 = 0, clamped to the 0.40 floor
+    expect(eff.heatDiscount).toBeCloseTo(0.40);
+    expect(eff.autoVentPerSec).toBeCloseTo(32);
+  });
+
+  it('an un-upgraded save generates full heat and vents nothing passively', () => {
+    const eff = computeEffects(meta(), DEFAULT_CONFIG);
+    expect(eff.heatDiscount).toBeCloseTo(1);
+    expect(eff.autoVentPerSec).toBe(0);
+  });
+});
+
+describe('v1.12 level bonus is capped', () => {
+  const meta = (level) => ({
+    upgrades: {}, shardUpgrades: {}, level, legacyCores: 0,
+    coldStorage: { upgrades: {} },
+  });
+
+  it('scales below the cap', () => {
+    expect(computeEffects(meta(50), DEFAULT_CONFIG).levelBonusMult).toBeCloseTo(1 + 0.02 * 50);
+  });
+
+  it('stops scaling at the cap', () => {
+    const atCap = computeEffects(meta(200), DEFAULT_CONFIG).levelBonusMult;
+    const wayPast = computeEffects(meta(5000), DEFAULT_CONFIG).levelBonusMult;
+    expect(atCap).toBeCloseTo(1 + 0.02 * 200);
+    expect(wayPast).toBeCloseTo(atCap);
+  });
+});
+
 describe('overclockBoost (v1.11)', () => {
   it('is exactly 1 with an empty overclock lane', () => {
     const s = initialState();
