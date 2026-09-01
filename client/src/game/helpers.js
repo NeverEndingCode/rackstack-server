@@ -7,4 +7,6 @@
 export {
   costAt, costForN, maxAffordable, milestoneMult, nextMilestone, tierRate,
   fmt, xpForLevel, computeEffects, computeMults, migrateGain,
+  fmtCores, CORE_FORMATS, CORE_FORMAT_LABELS, CORE_FORMAT_SAMPLES,
+  DEFAULT_CORE_FORMAT, normalizeCoreFormat, nextCoreFormat,
 } from '@shared/gameRules.js';

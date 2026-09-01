@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.11.1
+
+- **Core counts you can actually read.** Legacy Cores were the one number in
+  the game still printed in full — nineteen digits wide by the time Migrate is
+  paying out quintillions, in a row sized for a phone. Profile → Settings now
+  offers three renderings: **Full** (what it always was, still the default),
+  **ABC** (`4.09F` — one letter per power of a thousand, A through Z and then
+  AA, AB), and **Sci** (`4.09e+18`). Tapping the cores chip in the header
+  cycles the same setting without opening Settings.
+
+  It applies everywhere a core count appears — the header chip, the Migrate
+  button's payout, the Singularity panel and its confirmation, Profile stats,
+  and the Legacy Cores leaderboard. The choice is per-device (it lives in the
+  browser, not in your save) and is display-only: nothing about the simulation
+  reads it.
+
 ## v1.11.0
 
 - **Things can now go wrong.** Every few hours something breaks: ransomware

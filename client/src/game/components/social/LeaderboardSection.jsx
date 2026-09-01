@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { cardBg, cardBorder, inset, textMain, textDim, amber } from '../../theme.js';
-import { fmt } from '../../helpers.js';
+import { fmt, fmtCores } from '../../helpers.js';
+import { useCoreFormat } from '../../coreFormat.js';
 import { achievementDef } from '@shared/achievements.js';
 import { achievementIcon, TIER_COLOR } from '../../data/achievementIcons.js';
 
@@ -9,7 +10,9 @@ import { achievementIcon, TIER_COLOR } from '../../data/achievementIcons.js';
 const BOARDS = [
   { key: 'allTimeFlops', label: 'FLOPS', format: (v) => `${fmt(v)} all-time` },
   { key: 'level', label: 'Level', format: (v) => `lv ${v}` },
-  { key: 'legacyCores', label: 'Legacy Cores (best)', format: (v) => `${fmt(v)} cores` },
+  // The one board whose unit the player can restyle - `format` takes the
+  // chosen core notation so this row matches the header chip.
+  { key: 'legacyCores', label: 'Legacy Cores (best)', format: (v, coreFormat) => `${fmtCores(v, coreFormat)} cores` },
   { key: 'singularities', label: 'Singularities', format: (v) => `${fmt(v)}x` },
   { key: 'tapes', label: 'Tapes', format: (v) => `${fmt(v)} tapes` },
   { key: 'latestEventRung', label: 'Last event', format: (v) => `${v} rungs` },
@@ -41,6 +44,7 @@ export default function LeaderboardSection({ boards, userId, optOut, loading, on
   const [active, setActive] = useState('allTimeFlops');
   const board = (boards && boards[active]) || [];
   const activeDef = BOARDS.find((b) => b.key === active);
+  const coreFormat = useCoreFormat();
 
   return (
     <div className="flex flex-col gap-2">
@@ -88,7 +92,7 @@ export default function LeaderboardSection({ boards, userId, optOut, loading, on
                     <span className="truncate">{row.username || 'Anonymous'}{mine ? ' (you)' : ''}</span>
                     <Badges ids={row.badges} />
                   </span>
-                  <span className="shrink-0">{activeDef.format(row.value)}</span>
+                  <span className="shrink-0">{activeDef.format(row.value, coreFormat)}</span>
                 </div>
               );
             })}

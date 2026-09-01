@@ -1,8 +1,12 @@
 import { CircuitBoard, Gem, Zap } from 'lucide-react';
 import { cardBg, cardBorder, textDim, amber, teal, violet } from '../theme.js';
-import { fmt } from '../helpers.js';
+import { fmt, fmtCores, CORE_FORMAT_LABELS } from '../helpers.js';
+import { useCoreFormat, cycleCoreFormat } from '../coreFormat.js';
 
 export default function StatsRow({ run, meta, totalOutputPerSec, xpNeeded, boost, boostMultNow }) {
+  // Tapping the chip cycles Full -> ABC -> Sci in place; the same setting
+  // also lives in Profile > Settings for players who'd rather pick it there.
+  const coreFormat = useCoreFormat();
   return (
     <>
       <div className="mt-3 grid grid-cols-2 gap-3" data-tour="header-stats">
@@ -17,7 +21,17 @@ export default function StatsRow({ run, meta, totalOutputPerSec, xpNeeded, boost
       </div>
 
       <div className="mt-2 flex items-center gap-3 text-xs font-mono" style={{ color: textDim }}>
-        <span className="flex items-center gap-1" style={{ color: teal }}><CircuitBoard size={13} /> {meta.legacyCores} cores</span>
+        <button
+          type="button"
+          onClick={cycleCoreFormat}
+          title={`Core number format: ${CORE_FORMAT_LABELS[coreFormat]} (tap to change)`}
+          aria-label={`Legacy cores: ${fmtCores(meta.legacyCores, coreFormat)}. Tap to change the number format.`}
+          data-testid="cores-chip"
+          className="flex items-center gap-1 font-mono"
+          style={{ color: teal, cursor: 'pointer' }}
+        >
+          <CircuitBoard size={13} /> {fmtCores(meta.legacyCores, coreFormat)} cores
+        </button>
         <span className="flex items-center gap-1" style={{ color: violet }}><Gem size={13} /> {fmt(meta.wafers)} wafers</span>
         <span className="flex-1 h-1 rounded" style={{ background: cardBorder }}>
           <span className="block h-1 rounded" style={{ background: violet, width: `${Math.min(100, (meta.xp / xpNeeded) * 100)}%` }} />
