@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.11.2
+
+- **Fixed a cross-tab logout.** Two tabs of the same session left open
+  long enough could each try to renew an expired login at the same moment;
+  the server treats that second, near-simultaneous renewal as stolen
+  credentials and revokes the whole session, logging out every tab even
+  though nothing was actually wrong. Renewals across tabs are now
+  serialized so this can no longer happen.
+
 ## v1.11.1
 
 - **Core counts you can actually read.** Legacy Cores were the one number in

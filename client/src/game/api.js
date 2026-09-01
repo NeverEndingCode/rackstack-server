@@ -67,31 +67,72 @@ export function __resetAuthRefreshForTests() {
 // forced logout, and only ever under concurrency.
 //
 // One promise, shared by every caller, same shape as server/userLock.js.
+//
+// That covers concurrency WITHIN one tab. It does nothing across tabs, and
+// this is an idle game - the genre where players routinely leave it open in
+// two or more at once, each polling independently. When two tabs' access
+// tokens expire in the same window, each tab's inFlightRefresh is its own
+// module-level variable, so each fires its own refresh presenting what was,
+// at send time, the SAME refresh-token cookie - the exact multi-caller race
+// described above, just with the callers in different browsing contexts
+// instead of different promises in one. withRefreshLock is what closes that
+// gap: it serialises the actual network call across tabs too.
 let inFlightRefresh = null;
+
+// Web Locks name for cross-tab refresh serialisation. Same-origin only by
+// construction (the API is scoped per-origin), which is exactly the set of
+// tabs sharing the session cookie this is protecting.
+const REFRESH_LOCK_NAME = 'rackstack:session-refresh';
+
+/**
+ * Runs `fn` (the actual refresh network call) exclusively across every
+ * same-origin tab via the Web Locks API, falling back to running it directly
+ * when that API is unavailable - older browsers, and this project's own test
+ * environment, which runs under plain Node and has no navigator.locks (same
+ * feature-detection convention as makeActionQueue()'s window/navigator checks
+ * below, and game/auth.js's sessionStorage try/catch: degrade silently to
+ * today's per-tab-only behaviour rather than throw).
+ *
+ * A hand-rolled localStorage/BroadcastChannel mutex could do the same job but
+ * would need its own deadlock recovery for a tab that dies mid-refresh; Web
+ * Locks releases automatically when the holding context is destroyed, so
+ * there is nothing to recover from.
+ */
+function withRefreshLock(fn) {
+  const locks = typeof navigator !== 'undefined' ? navigator.locks : undefined;
+  if (!locks || typeof locks.request !== 'function') return fn();
+  return locks.request(REFRESH_LOCK_NAME, fn);
+}
+
+async function doRefreshRequest() {
+  try {
+    const res = await fetch('/auth/session/refresh', {
+      method: 'POST',
+      credentials: 'include',
+      // Same reason as the signinup call in game/auth.js: this is what tells
+      // SuperTokens to put the rotated tokens back in cookies. Refresh
+      // tolerates its absence better than session creation does (it infers
+      // the method from the tokens it was given), but a refresh that
+      // silently switched the session to header transport would log the
+      // player out on the next request, which is the same invisible failure
+      // one step later.
+      headers: { 'st-auth-mode': 'cookie' },
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
 
 function refreshSession() {
   if (inFlightRefresh) return inFlightRefresh;
 
   inFlightRefresh = (async () => {
     try {
-      const res = await fetch('/auth/session/refresh', {
-        method: 'POST',
-        credentials: 'include',
-        // Same reason as the signinup call in game/auth.js: this is what tells
-        // SuperTokens to put the rotated tokens back in cookies. Refresh
-        // tolerates its absence better than session creation does (it infers
-        // the method from the tokens it was given), but a refresh that
-        // silently switched the session to header transport would log the
-        // player out on the next request, which is the same invisible failure
-        // one step later.
-        headers: { 'st-auth-mode': 'cookie' },
-      });
-      return res.ok;
-    } catch {
-      return false;
+      return await withRefreshLock(doRefreshRequest);
     } finally {
-      // Cleared before this promise settles, so the NEXT 401 starts a fresh
-      // attempt rather than re-awaiting a completed one.
+      // Cleared before this promise settles, so the NEXT 401 in THIS tab
+      // starts a fresh attempt rather than re-awaiting a completed one.
       inFlightRefresh = null;
     }
   })();
