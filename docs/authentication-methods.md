@@ -233,6 +233,16 @@ serialised so a burst of concurrent 401s produces exactly one refresh call.
 `GET /api/auth-info` tells the client which stack to drive, so one build serves
 `passport` and `supertokens` alike and the rollback stays real.
 
+> **That serialisation now spans tabs, not just one page (v1.11.2).** SuperTokens
+> rotates the refresh token on every use, so two tabs of the same session
+> refreshing at once — routine for an idle game left open in several — each
+> present what was, at send time, the same token; whichever the core sees
+> second reads as theft and revokes the whole session, logging out every tab.
+> `refreshSession()` wraps its network call in a Web Locks
+> (`navigator.locks`) mutex shared by every same-origin tab, so two tabs'
+> refreshes are never sent concurrently. Falls back to the old per-tab-only
+> guarantee on a browser (or test runtime) without Web Locks.
+
 > **If you touch those calls, keep the `st-auth-mode: cookie` header.**
 > SuperTokens chooses the session's token transfer method at creation from that
 > header, and **defaults to `header` when it is absent** — the session comes

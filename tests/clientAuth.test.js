@@ -35,14 +35,21 @@ function jsonResponse(body, { ok = true, status = 200 } = {}) {
 }
 
 let originalFetch;
+let originalNavigator;
 
 beforeEach(() => {
   originalFetch = globalThis.fetch;
+  originalNavigator = globalThis.navigator;
   __resetAuthRefreshForTests();
 });
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
+  // Plain reassignment can throw: the real `navigator` global is an accessor
+  // with no setter, and a test may have left it in that pristine state.
+  // Deleting first (a no-op if a test already replaced it) sidesteps that.
+  delete globalThis.navigator;
+  if (originalNavigator !== undefined) globalThis.navigator = originalNavigator;
   vi.restoreAllMocks();
 });
 
@@ -375,5 +382,153 @@ describe('refresh on 401', () => {
 
     expect(seen).toEqual(['/api/state', '/auth/session/refresh']);
     expect(res.status).toBe(401);
+  });
+});
+
+// The real `navigator` global (Node 21+, and every browser) exposes
+// `navigator` as an accessor with no setter, so a plain `globalThis.navigator
+// = ...` throws in this ESM test file's strict mode. Delete it first, same
+// as this codebase's own withRefreshLock() feature-detects its absence.
+function stubNavigator(value) {
+  delete globalThis.navigator;
+  if (value !== undefined) globalThis.navigator = value;
+}
+
+describe('cross-tab refresh coordination', () => {
+  it('still sends exactly one refresh for concurrent 401s when navigator.locks exists', async () => {
+    configureAuthRefresh({ loginFlow: 'supertokens' });
+    // A trivial single-tab-shaped stub: Web Locks exists, but only one caller
+    // is ever asking, so it should behave exactly like having no lock at all.
+    stubNavigator({ locks: { request: (name, fn) => fn() } });
+
+    let refreshes = 0;
+    let refreshResolve;
+    const refreshGate = new Promise((resolve) => { refreshResolve = resolve; });
+    let refreshed = false;
+
+    globalThis.fetch = vi.fn(async (url) => {
+      if (url === '/auth/session/refresh') {
+        refreshes += 1;
+        await refreshGate;
+        refreshed = true;
+        return { ok: true, status: 200, text: async () => '' };
+      }
+      if (!refreshed) return jsonResponse({ error: 'unauthorized' }, { ok: false, status: 401 });
+      return jsonResponse({ ok: true });
+    });
+
+    const all = Promise.all([fetchState(), fetchState(), fetchState()]);
+    await new Promise((r) => setTimeout(r, 10));
+    refreshResolve();
+    await all;
+
+    // Proves the lock wrapper doesn't defeat the existing in-tab single-flight
+    // guard now that a navigator.locks happens to exist.
+    expect(refreshes).toBe(1);
+  });
+
+  it('serialises refreshes across tabs so neither ever overlaps the other', async () => {
+    // Two tabs = two independent module instances, each with its own private
+    // inFlightRefresh closure - exactly what two separate browsing contexts
+    // running the same bundle would have. vi.resetModules() + a fresh
+    // dynamic import gets us that inside one test file; it does not disturb
+    // the module instance this file's own top-level `fetchState` etc. are
+    // bound to (those bindings were already linked when the file loaded).
+    vi.resetModules();
+    const tab1 = await import('../client/src/game/api.js');
+    vi.resetModules();
+    const tab2 = await import('../client/src/game/api.js');
+
+    tab1.configureAuthRefresh({ loginFlow: 'supertokens' });
+    tab2.configureAuthRefresh({ loginFlow: 'supertokens' });
+
+    // Both "tabs" share one browser-wide Web Locks manager in reality; model
+    // that with one real FIFO mutex shared by both module instances (they
+    // already share globalThis, exactly as two tabs share it).
+    let queue = Promise.resolve();
+    stubNavigator({
+      locks: {
+        request: (name, fn) => {
+          const run = queue.then(fn, fn);
+          queue = run.catch(() => {});
+          return run;
+        },
+      },
+    });
+
+    let active = 0;
+    let overlapped = false;
+    let refreshCalls = 0;
+    globalThis.fetch = vi.fn(async (url) => {
+      if (url === '/auth/session/refresh') {
+        refreshCalls += 1;
+        if (active > 0) overlapped = true;
+        active += 1;
+        // Wide enough to make an unguarded race show up reliably.
+        await new Promise((r) => setTimeout(r, 10));
+        active -= 1;
+        return { ok: true, status: 200, text: async () => '' };
+      }
+      // Both tabs' access tokens are expired - each retries its own request
+      // exactly once, same as every other test in this file.
+      return jsonResponse({ error: 'unauthorized' }, { ok: false, status: 401 });
+    });
+
+    await Promise.all([tab1.fetchState(), tab2.fetchState()]);
+
+    // The invariant that actually prevents SuperTokens' theft detection: the
+    // two tabs' refresh network calls never overlap in time.
+    expect(overlapped).toBe(false);
+    // And the fix doesn't falsely dedupe tab2's refresh away - a lock delays,
+    // it does not merge, so each tab still gets exactly one refresh call.
+    expect(refreshCalls).toBe(2);
+  });
+
+  it('falls back to per-tab-only refresh when navigator is entirely unavailable', async () => {
+    configureAuthRefresh({ loginFlow: 'supertokens' });
+    stubNavigator(undefined);
+
+    let refreshes = 0;
+    let refreshed = false;
+    globalThis.fetch = vi.fn(async (url) => {
+      if (url === '/auth/session/refresh') {
+        refreshes += 1;
+        refreshed = true;
+        return { ok: true, status: 200, text: async () => '' };
+      }
+      if (!refreshed) return jsonResponse({ error: 'unauthorized' }, { ok: false, status: 401 });
+      return jsonResponse({ ok: true });
+    });
+
+    const res = await fetchState();
+
+    expect(refreshes).toBe(1);
+    expect(res).toEqual({ ok: true });
+  });
+
+  it('falls back when navigator exists but has no locks (this test runtime today)', async () => {
+    configureAuthRefresh({ loginFlow: 'supertokens' });
+    // Exactly the shape Node's own built-in `navigator` global has - no
+    // `.locks` - which is why every OTHER test in this file already exercises
+    // this path implicitly. This test pins it explicitly so it can't regress
+    // silently if a future Node/vitest version adds navigator.locks.
+    stubNavigator({ userAgent: 'test' });
+
+    let refreshes = 0;
+    let refreshed = false;
+    globalThis.fetch = vi.fn(async (url) => {
+      if (url === '/auth/session/refresh') {
+        refreshes += 1;
+        refreshed = true;
+        return { ok: true, status: 200, text: async () => '' };
+      }
+      if (!refreshed) return jsonResponse({ error: 'unauthorized' }, { ok: false, status: 401 });
+      return jsonResponse({ ok: true });
+    });
+
+    const res = await fetchState();
+
+    expect(refreshes).toBe(1);
+    expect(res).toEqual({ ok: true });
   });
 });
