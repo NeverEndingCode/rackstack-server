@@ -1,7 +1,10 @@
 import { RefreshCw } from 'lucide-react';
 import { amber, cardBg, inset, cardBorder, textDim, textMain } from '../theme.js';
+import { fmtCores } from '../helpers.js';
+import { useCoreFormat } from '../coreFormat.js';
 
 export default function MigrateBar({ gain, showCollectAll, collectDisabled, onMigrate, onCollectAll }) {
+  const coreFormat = useCoreFormat();
   return (
     <div className="mt-3 flex gap-2" data-tour="migrate-bar">
       <button
@@ -10,7 +13,7 @@ export default function MigrateBar({ gain, showCollectAll, collectDisabled, onMi
         className="flex-1 rounded-lg py-2 text-sm font-semibold tracking-wide flex items-center justify-center gap-2"
         style={{ background: gain > 0 ? amber : cardBg, color: gain > 0 ? '#0E141B' : textDim, cursor: gain > 0 ? 'pointer' : 'not-allowed' }}
       >
-        <RefreshCw size={16} /> Migrate{gain > 0 ? ` (+${gain} cores)` : ''}
+        <RefreshCw size={16} /> Migrate{gain > 0 ? ` (+${fmtCores(gain, coreFormat)} cores)` : ''}
       </button>
       {showCollectAll && (
         <button

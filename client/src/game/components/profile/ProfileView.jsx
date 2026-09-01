@@ -66,6 +66,7 @@ export default function ProfileView({ user, meta, memberSince, displayName, onUs
             onConfigSaved={onConfigSaved}
             toursCompleted={toursCompleted}
             onStartTour={onStartTour}
+            legacyCores={meta.legacyCores}
           />
         )}
 

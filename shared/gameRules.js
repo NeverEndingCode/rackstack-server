@@ -42,6 +42,64 @@ export function fmt(n) {
   const decimals = scaled < 10 ? 2 : scaled < 100 ? 1 : 0;
   return scaled.toFixed(decimals) + suffixes[tier];
 }
+
+// Legacy-core readout formats. Core counts climb well past the top of
+// the K/M/G suffix ladder above, and the cores chip printed them raw - nineteen
+// unreadable digits by the mid game. These are the three renderings a player
+// can pick between; 'full' is the historical one and stays the default, so an
+// existing save reads exactly as it did before the setting existed.
+export const CORE_FORMATS = ['full', 'letters', 'scientific'];
+export const DEFAULT_CORE_FORMAT = 'full';
+export const CORE_FORMAT_LABELS = {
+  full: 'Full',
+  letters: 'ABC',
+  scientific: 'Sci',
+};
+// Shown under each choice in Settings so the difference is visible before
+// picking. All three are the same number: 4087353084334554000 cores.
+export const CORE_FORMAT_SAMPLES = {
+  full: '4087353084334554000',
+  letters: '4.09F',
+  scientific: '4.09e+18',
+};
+
+export function normalizeCoreFormat(format) {
+  return CORE_FORMATS.includes(format) ? format : DEFAULT_CORE_FORMAT;
+}
+export function nextCoreFormat(format) {
+  const i = CORE_FORMATS.indexOf(normalizeCoreFormat(format));
+  return CORE_FORMATS[(i + 1) % CORE_FORMATS.length];
+}
+
+// Bijective base-26, one letter per power of a thousand: 1 -> A ... 26 -> Z,
+// then 27 -> AA, 28 -> AB. Bijective (not plain base-26) because there is no
+// zero digit - 'A' is 1, so AA is 27, not 26.
+function coreLetterSuffix(tier) {
+  let out = '';
+  let n = tier;
+  while (n > 0) {
+    const rem = (n - 1) % 26;
+    out = String.fromCharCode(65 + rem) + out;
+    n = Math.floor((n - 1) / 26);
+  }
+  return out;
+}
+
+export function fmtCores(n, format = DEFAULT_CORE_FORMAT) {
+  const mode = normalizeCoreFormat(format);
+  if (!isFinite(n)) return '∞';
+  if (n < 0) return '-' + fmtCores(-n, mode);
+  if (mode === 'full') return Math.floor(n).toString();
+  // Below a thousand there is nothing to abbreviate, and "5.00e+1 cores" reads
+  // worse than "50 cores" - so both compact modes stay literal down here.
+  if (n < 1000) return Math.floor(n).toString();
+  if (mode === 'scientific') return n.toExponential(2);
+  const tier = Math.floor(Math.log10(n) / 3);
+  const scaled = n / Math.pow(1000, tier);
+  const decimals = scaled < 10 ? 2 : scaled < 100 ? 1 : 0;
+  return scaled.toFixed(decimals) + coreLetterSuffix(tier);
+}
+
 export function xpForLevel(level) {
   return Math.floor(50 * Math.pow(level + 1, 1.6));
 }

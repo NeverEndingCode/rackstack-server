@@ -1,6 +1,7 @@
 import { CircuitBoard, Gem, Sparkles, Trophy, RefreshCw, Gamepad2, ListChecks, Calendar } from 'lucide-react';
 import { textMain, textDim, teal, violet, amber } from '../../theme.js';
-import { xpForLevel } from '../../helpers.js';
+import { xpForLevel, fmtCores } from '../../helpers.js';
+import { useCoreFormat } from '../../coreFormat.js';
 import { GOAL_DEFS } from '../../data/goals.js';
 
 function StatRow({ Icon, color, label, value }) {
@@ -13,6 +14,7 @@ function StatRow({ Icon, color, label, value }) {
 }
 
 export default function ProfileStats({ meta, memberSince }) {
+  const coreFormat = useCoreFormat();
   const xpNeeded = xpForLevel(meta.level);
   const completedCount = Object.keys(meta.goalsCompleted).length;
   const joined = memberSince ? new Date(memberSince).toLocaleDateString() : null;
@@ -20,7 +22,7 @@ export default function ProfileStats({ meta, memberSince }) {
     <div>
       <StatRow Icon={Trophy} color={violet} label="Level" value={`${meta.level} (${meta.xp}/${xpNeeded} xp)`} />
       <StatRow Icon={Gem} color={violet} label="Wafers" value={meta.wafers} />
-      <StatRow Icon={CircuitBoard} color={teal} label="Legacy Cores" value={meta.legacyCores} />
+      <StatRow Icon={CircuitBoard} color={teal} label="Legacy Cores" value={fmtCores(meta.legacyCores, coreFormat)} />
       <StatRow Icon={Sparkles} color={violet} label="Singularity Shards" value={meta.singularityShards} />
       <StatRow Icon={RefreshCw} color={amber} label="Migrates" value={meta.stats.migrates} />
       <StatRow Icon={Sparkles} color={violet} label="Singularities" value={meta.stats.singularities} />

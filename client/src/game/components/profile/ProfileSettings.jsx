@@ -1,11 +1,13 @@
 import { useState } from 'react';
-import { LogOut, GraduationCap } from 'lucide-react';
+import { LogOut, GraduationCap, CircuitBoard } from 'lucide-react';
 import { textMain, textDim, danger, teal, inset, cardBorder, cardBg, amber } from '../../theme.js';
 import DangerZone from './DangerZone.jsx';
 import AdminPanel from './AdminPanel.jsx';
 import { setUsername } from '../../api.js';
 import { USERNAME_RE } from '@shared/validation.js';
 import { TOURS } from '@shared/tours.js';
+import { CORE_FORMATS, CORE_FORMAT_LABELS, CORE_FORMAT_SAMPLES, fmtCores } from '../../helpers.js';
+import { useCoreFormat, setCoreFormat } from '../../coreFormat.js';
 
 // Same rule the server enforces (server/routes/api.js, via shared/validation.js).
 // Used here purely for instant inline feedback; the server's regex is still
@@ -74,7 +76,44 @@ function UsernameForm({ displayName, onUsernameChanged }) {
   );
 }
 
-export default function ProfileSettings({ user, displayName, onUsernameChanged, onLogout, onOpenReset, onConfigSaved, toursCompleted = [], onStartTour }) {
+// Core counts outrun the K/M/G suffix ladder the rest of the UI uses, so the
+// header chip used to print them raw. This picks the rendering; the header chip
+// itself is also tappable and cycles the same setting.
+function CoreFormatPicker({ legacyCores }) {
+  const format = useCoreFormat();
+  const sample = Number.isFinite(legacyCores) && legacyCores > 0 ? legacyCores : null;
+  return (
+    <div className="rounded-xl p-3" style={{ background: cardBg, border: `1px solid ${cardBorder}` }}>
+      <div className="flex items-center gap-2 text-sm font-semibold mb-1" style={{ color: textMain }}>
+        <CircuitBoard size={16} /> Core number format
+      </div>
+      <div className="text-xs mb-2" style={{ color: textDim }}>
+        How Legacy Core counts are written. Tapping the cores chip in the header cycles it too.
+      </div>
+      <div className="flex gap-1 rounded-lg p-1" style={{ background: '#0E141B' }}>
+        {CORE_FORMATS.map((f) => (
+          <button
+            key={f}
+            onClick={() => setCoreFormat(f)}
+            aria-pressed={format === f}
+            data-testid={`core-format-${f}`}
+            className="flex-1 rounded-md py-1.5 text-xs font-semibold"
+            style={{ background: format === f ? teal : 'transparent', color: format === f ? '#0E141B' : textDim }}
+          >
+            {CORE_FORMAT_LABELS[f]}
+          </button>
+        ))}
+      </div>
+      <div className="mt-2 text-xs font-mono truncate" style={{ color: textDim }}>
+        {sample === null
+          ? CORE_FORMAT_SAMPLES[format]
+          : fmtCores(sample, format)} cores
+      </div>
+    </div>
+  );
+}
+
+export default function ProfileSettings({ user, displayName, onUsernameChanged, onLogout, onOpenReset, onConfigSaved, toursCompleted = [], onStartTour, legacyCores }) {
   // Admin-panel UI visibility - the real gate is server-side (server/auth.js
   // requireRole per route), this only decides whether to show the section at
   // all. /api/me now returns the caller's effective roles (owners implicitly
@@ -122,6 +161,7 @@ export default function ProfileSettings({ user, displayName, onUsernameChanged, 
           })}
         </div>
       )}
+      <CoreFormatPicker legacyCores={legacyCores} />
       <DangerZone onOpenReset={onOpenReset} />
       {canSeeAdminPanel && <AdminPanel user={user} onConfigSaved={onConfigSaved} />}
     </div>
